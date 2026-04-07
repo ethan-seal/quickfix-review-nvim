@@ -209,6 +209,15 @@ end
 -- Save current review to file
 function M.save_review()
   local qf_list = vim.fn.getqflist()
+  -- Resolve bufnr to absolute filename so external tools and cross-cwd loads work
+  for _, item in ipairs(qf_list) do
+    if (not item.filename or item.filename == '') and item.bufnr and item.bufnr ~= 0 then
+      item.filename = vim.fn.bufname(item.bufnr)
+    end
+    if item.filename and item.filename ~= '' then
+      item.filename = vim.fn.fnamemodify(item.filename, ':p')
+    end
+  end
   local success, message = storage.save(qf_list, config.options.storage_file)
   print(message)
 end
@@ -220,6 +229,14 @@ function M.load_review()
   if not qf_list then
     print(message)
     return
+  end
+
+  -- Strip stale bufnr so setqflist doesn't fail on buffer-not-found;
+  -- entries with a filename will re-resolve on their own.
+  for _, item in ipairs(qf_list) do
+    if item.filename and item.filename ~= '' then
+      item.bufnr = nil
+    end
   end
 
   vim.fn.setqflist(qf_list, 'r')
@@ -257,14 +274,56 @@ function M.view_comment()
 
   if #comments == 0 then
     print('No comment on this line')
-  elseif #comments == 1 then
-    print(comments[1])
-  else
-    print(string.format('%d comments on this line:', #comments))
-    for i, comment in ipairs(comments) do
-      print(string.format('  %d. %s', i, comment))
+    return
+  end
+
+  -- Build lines for a floating window
+  local lines = {}
+  for i, text in ipairs(comments) do
+    if i > 1 then table.insert(lines, '') end
+    local comment, response = text:match('^(.-)%s*|%s*Response:%s*(.+)$')
+    if comment and response then
+      table.insert(lines, comment)
+      table.insert(lines, '')
+      table.insert(lines, 'Response: ' .. response)
+    else
+      table.insert(lines, text)
     end
   end
+
+  local width = math.min(80, vim.o.columns - 4)
+  -- Word-wrap lines to fit width
+  local wrapped = {}
+  for _, line in ipairs(lines) do
+    if line == '' then
+      table.insert(wrapped, '')
+    else
+      while #line > width do
+        local cut = line:sub(1, width):match('.*()%s') or width
+        table.insert(wrapped, line:sub(1, cut))
+        line = line:sub(cut + 1):gsub('^%s+', '')
+      end
+      table.insert(wrapped, line)
+    end
+  end
+
+  local height = math.min(#wrapped, 20)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, wrapped)
+  vim.bo[buf].modifiable = false
+
+  local win = vim.api.nvim_open_win(buf, false, {
+    relative = 'cursor', row = 1, col = 0,
+    width = width, height = height,
+    style = 'minimal', border = 'rounded',
+  })
+  vim.wo[win].wrap = true
+
+  -- Close on any cursor move or keypress
+  vim.api.nvim_create_autocmd({ 'CursorMoved', 'BufLeave' }, {
+    once = true,
+    callback = function() pcall(vim.api.nvim_win_close, win, true) end,
+  })
 end
 
 -- Show summary of current review
@@ -482,6 +541,29 @@ function M.setup(opts)
   config.setup(opts)
   utils.init_signs(config.options)
   setup_keymaps()
+
+  -- Auto-show floating comment after quickfix navigation
+  vim.api.nvim_create_autocmd('QuickFixCmdPost', {
+    pattern = { 'cnext', 'cprev', 'cc', 'cfirst', 'clast' },
+    callback = function() M.view_comment() end,
+  })
+
+  -- Place signs when entering a buffer that has review comments
+  vim.api.nvim_create_autocmd('BufEnter', {
+    callback = function()
+      local bufnr = vim.fn.bufnr()
+      local file = vim.fn.expand('%:p')
+      if file == '' then return end
+      local qf_list = vim.fn.getqflist()
+      for _, item in ipairs(qf_list) do
+        local item_file = item.filename or vim.fn.bufname(item.bufnr)
+        if utils.files_match(item_file, file) then
+          utils.refresh_buffer_signs(bufnr, file)
+          break
+        end
+      end
+    end
+  })
 
   -- Prompt to clear comments when file is reloaded from disk
   if config.options.prompt_on_file_change then

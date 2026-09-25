@@ -9,6 +9,7 @@ package.loaded['quickfix-review'] = nil
 package.loaded['quickfix-review.config'] = nil
 package.loaded['quickfix-review.utils'] = nil
 package.loaded['quickfix-review.storage'] = nil
+package.loaded['quickfix-review.store'] = nil
 package.loaded['quickfix-review.export'] = nil
 
 -- Load the plugin
@@ -23,12 +24,16 @@ end
 -- Test helper functions
 local M = {}
 
+-- Never touch the real review in stdpath('data')
+M.storage_file = vim.fn.tempname() .. '-quickfix-review.json'
+
 function M.setup_test_environment()
   -- Clear any existing quickfix list
   vim.fn.setqflist({})
 
   -- Setup the plugin with test configuration
   quickfix_review.setup({
+    storage_file = M.storage_file,
     comment_types = {
       issue = { sign = '!', highlight = 'DiagnosticError', description = 'Problems' },
       suggestion = { sign = 'S', highlight = 'DiagnosticWarn', description = 'Improvements' },
@@ -63,8 +68,10 @@ function M.cleanup_test_environment()
   -- Restore original input function
   vim.fn.input = original_input
 
-  -- Clear quickfix list
+  -- Clear quickfix list and the review
   vim.fn.setqflist({})
+  quickfix_review.clear_review()
+  os.remove(M.storage_file)
 
   -- Remove extmarks from all buffers
   local utils = require('quickfix-review.utils')
@@ -90,13 +97,9 @@ function M.create_test_file(content)
   return nil
 end
 
-function M.get_qf_list()
-  return vim.fn.getqflist()
-end
-
-function M.print_qf_list()
-  local list = M.get_qf_list()
-  print('Quickfix List (' .. #list .. ' items):')
+function M.print_comments()
+  local list = quickfix_review.comments()
+  print('Review (' .. #list .. ' comments):')
   for i, item in ipairs(list) do
     print(string.format('  %d. %s:%d-%d - %s',
       i, vim.fn.fnamemodify(item.filename, ':.'), item.lnum, item.end_lnum or item.lnum, item.text))

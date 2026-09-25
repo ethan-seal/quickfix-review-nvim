@@ -24,6 +24,7 @@ quickfix-review.add_comment()	quickfix-review.txt	/*quickfix-review.add_comment(
 quickfix-review.add_comment_cycle()	quickfix-review.txt	/*quickfix-review.add_comment_cycle()*
 quickfix-review.add_comment_visual()	quickfix-review.txt	/*quickfix-review.add_comment_visual()*
 quickfix-review.clear_review()	quickfix-review.txt	/*quickfix-review.clear_review()*
+quickfix-review.comments()	quickfix-review.txt	/*quickfix-review.comments()*
 quickfix-review.cycle_next_comment_type()	quickfix-review.txt	/*quickfix-review.cycle_next_comment_type()*
 quickfix-review.cycle_previous_comment_type()	quickfix-review.txt	/*quickfix-review.cycle_previous_comment_type()*
 quickfix-review.delete_comment()	quickfix-review.txt	/*quickfix-review.delete_comment()*

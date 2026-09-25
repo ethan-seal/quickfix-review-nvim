@@ -29,7 +29,7 @@ Features:
 - Visual signs in the gutter for each comment type
 - Multiline comment support with visual selection
 - Export reviews to markdown format
-- Save and load reviews to/from disk
+- Reviews are saved to disk on every change and reloaded on startup
 - Works with diff buffers (diffview, fugitive, codediff)
 - Navigate between comments using quickfix commands
 
@@ -151,7 +151,6 @@ Basic workflow:
 4. Repeat for all comments
 5. Press `<leader>co` to open the quickfix list and see all comments
 6. Press `<leader>ce` to export the review to markdown
-7. Optionally press `<leader>cw` to save for later
 
 Comment type cycling:~
 
@@ -175,8 +174,19 @@ automatically associated with the real file path. You can use
 
 Navigating comments:~
 
-Use `]r` and `[r` to jump between review comments, or use the standard
-quickfix commands (`:cnext`, `:cprev`).
+Use `]r` and `[r` to jump between review comments across all files.
+
+Where comments live:~
+
+The plugin keeps comments itself, not in the quickfix list, and writes
+every change to `storage_file` immediately. The review is read back at
+setup, and re-read whenever the file changes on disk (another Neovim, or
+an external script), so it is never lost when you quit.
+
+The quickfix list is only a view: `<leader>co` and |:ReviewLoad| publish
+the review as a new quickfix list, which then follows changes to the
+review. Replacing the quickfix list (LSP references, |:grep|) doesn't
+touch the review, and `:cnext`/`:cprev` work as usual on the view.
 
 Deleting comments:~
 
@@ -217,11 +227,13 @@ press `dd` to delete the comment under cursor.
 :ReviewClear            Clear all review comments and signs.
 
                                                              *:ReviewSave*
-:ReviewSave             Save the current review to disk.
+:ReviewSave             Write the review to disk. Every change is already
+                        saved as it is made, so this is rarely needed.
                         Uses the configured storage_file path.
 
                                                              *:ReviewLoad*
-:ReviewLoad             Load a previously saved review from disk.
+:ReviewLoad             Re-read the review from disk and show it in the
+                        quickfix list.
 
                                                           *:ReviewSummary*
 :ReviewSummary          Show a summary of comment counts by type.
@@ -250,9 +262,9 @@ Default keymaps (normal and visual mode where applicable):
   `<leader>ce`    Export review to markdown
   `<leader>cc`    Clear all comments
   `<leader>cS`    Show review summary
-  `<leader>cw`    Save review to disk
-  `<leader>cr`    Load review from disk
-  `<leader>co`    Open quickfix list
+  `<leader>cw`    Write review to disk
+  `<leader>cr`    Re-read review and show it in quickfix
+  `<leader>co`    Show review in quickfix and open the window
   `]r`            Next review comment
   `[r`            Previous review comment
   `<leader>cg`    Go to real file from diff
@@ -307,10 +319,15 @@ require('quickfix-review').clear_review()           *quickfix-review.clear_revie
     Clear all comments and signs.
 
 require('quickfix-review').save_review()             *quickfix-review.save_review()*
-    Save current review to the configured storage file.
+    Write the review to the configured storage file (every change
+    already is).
 
 require('quickfix-review').load_review()             *quickfix-review.load_review()*
-    Load review from the configured storage file.
+    Re-read the review from the configured storage file and show it in
+    the quickfix list.
+
+require('quickfix-review').comments()                 *quickfix-review.comments()*
+    All review comments, in creation order. Treat as read-only.
 
 require('quickfix-review').summary()                   *quickfix-review.summary()*
     Print a summary of comment counts.

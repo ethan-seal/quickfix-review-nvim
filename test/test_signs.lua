@@ -92,7 +92,7 @@ assert.run_test('sign definitions exist', function()
 end)
 
 assert.run_test('single line comment places one sign', function()
-  vim.fn.setqflist({})
+  qf.clear_review()
   clear_extmarks(vim.fn.bufnr())
   local bufnr = vim.fn.bufnr()
 
@@ -105,7 +105,7 @@ assert.run_test('single line comment places one sign', function()
 end)
 
 assert.run_test('multiline comment places signs on all lines', function()
-  vim.fn.setqflist({})
+  qf.clear_review()
   clear_extmarks(vim.fn.bufnr())
   local bufnr = vim.fn.bufnr()
 
@@ -126,7 +126,7 @@ assert.run_test('multiline comment places signs on all lines', function()
 end)
 
 assert.run_test('continuation signs on middle lines', function()
-  vim.fn.setqflist({})
+  qf.clear_review()
   clear_extmarks(vim.fn.bufnr())
   local bufnr = vim.fn.bufnr()
 
@@ -146,7 +146,7 @@ assert.run_test('continuation signs on middle lines', function()
 end)
 
 assert.run_test('deleting comment removes signs', function()
-  vim.fn.setqflist({})
+  qf.clear_review()
   clear_extmarks(vim.fn.bufnr())
   local bufnr = vim.fn.bufnr()
 
@@ -159,7 +159,7 @@ assert.run_test('deleting comment removes signs', function()
 end)
 
 assert.run_test('deleting multiline comment removes all signs', function()
-  vim.fn.setqflist({})
+  qf.clear_review()
   clear_extmarks(vim.fn.bufnr())
   local bufnr = vim.fn.bufnr()
 
@@ -175,7 +175,7 @@ assert.run_test('deleting multiline comment removes all signs', function()
 end)
 
 assert.run_test('clear_review removes all signs', function()
-  vim.fn.setqflist({})
+  qf.clear_review()
   clear_extmarks(vim.fn.bufnr())
   local bufnr = vim.fn.bufnr()
 
@@ -193,7 +193,7 @@ assert.run_test('clear_review removes all signs', function()
 end)
 
 assert.run_test('different comment types use correct signs', function()
-  vim.fn.setqflist({})
+  qf.clear_review()
   clear_extmarks(vim.fn.bufnr())
   local bufnr = vim.fn.bufnr()
 
@@ -219,7 +219,7 @@ assert.run_test('different comment types use correct signs', function()
 end)
 
 assert.run_test('multiple comments on same line shows count', function()
-  vim.fn.setqflist({})
+  qf.clear_review()
   clear_extmarks(vim.fn.bufnr())
   local bufnr = vim.fn.bufnr()
 
@@ -242,7 +242,7 @@ assert.run_test('multiple comments on same line shows count', function()
 end)
 
 assert.run_test('single comment shows symbol not count', function()
-  vim.fn.setqflist({})
+  qf.clear_review()
   clear_extmarks(vim.fn.bufnr())
   local bufnr = vim.fn.bufnr()
 
@@ -255,7 +255,7 @@ assert.run_test('single comment shows symbol not count', function()
 end)
 
 assert.run_test('overlapping multiline comments show count on shared lines', function()
-  vim.fn.setqflist({})
+  qf.clear_review()
   clear_extmarks(vim.fn.bufnr())
   local bufnr = vim.fn.bufnr()
 
@@ -286,7 +286,7 @@ assert.run_test('overlapping multiline comments show count on shared lines', fun
 end)
 
 assert.run_test('two comments starting on same line shows count', function()
-  vim.fn.setqflist({})
+  qf.clear_review()
   clear_extmarks(vim.fn.bufnr())
   local bufnr = vim.fn.bufnr()
 
@@ -305,7 +305,7 @@ assert.run_test('two comments starting on same line shows count', function()
 end)
 
 assert.run_test('deleting one of multiple comments updates count', function()
-  vim.fn.setqflist({})
+  qf.clear_review()
   clear_extmarks(vim.fn.bufnr())
   local bufnr = vim.fn.bufnr()
 
@@ -327,7 +327,7 @@ assert.run_test('deleting one of multiple comments updates count', function()
 end)
 
 assert.run_test('review signs coexist with git gutter signs when signcolumn >= 2', function()
-  vim.fn.setqflist({})
+  qf.clear_review()
   clear_extmarks(vim.fn.bufnr())
   local bufnr = vim.fn.bufnr()
 

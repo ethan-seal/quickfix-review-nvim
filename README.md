@@ -21,7 +21,7 @@ This tool was inspired by:
 - **Visual gutter signs**: See review comments at a glance
 - **Diff buffer support**: Works also on diffbuffers
 - **Export to markdown**: Share reviews with formatted output
-- **Persistent storage**: Save and load reviews between sessions
+- **Persistent storage**: Every change is saved immediately and reloaded on startup
 - **Quickfix integration**: Navigate comments with familiar commands
 
 ## Installation
@@ -179,8 +179,8 @@ Signs and continuation signs are auto-generated. The `description` field is show
 | `:ReviewView` | View comment at cursor |
 | `:ReviewExport` | Export to markdown and clipboard |
 | `:ReviewClear` | Clear all comments |
-| `:ReviewSave` | Save review to disk |
-| `:ReviewLoad` | Load review from disk |
+| `:ReviewSave` | Write review to disk (changes are already saved as they are made) |
+| `:ReviewLoad` | Re-read review from disk and show it in the quickfix list |
 | `:ReviewSummary` | Show comment summary |
 | `:ReviewGoto` | Jump to real file from diff |
 

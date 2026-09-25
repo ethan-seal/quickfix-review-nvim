@@ -113,21 +113,18 @@ end
 
 -- Refresh all signs for a buffer, showing count when multiple comments overlap
 -- This clears and re-renders all signs, consolidating overlapping start/end lines
-function M.refresh_buffer_signs(bufnr, file)
+function M.refresh_buffer_signs(bufnr, file, comments)
   if bufnr <= 0 or vim.fn.bufexists(bufnr) ~= 1 then return end
 
   -- Clear existing signs
   vim.api.nvim_buf_clear_namespace(bufnr, M.get_ns_id(), 0, -1)
 
-  local qf_list = vim.fn.getqflist()
-
   -- Collect all comments for this file
   -- Track: line -> { count = N, types = {type1, type2, ...}, is_continuation = bool }
   local line_info = {}
 
-  for _, item in ipairs(qf_list) do
-    local item_file = item.filename or vim.fn.bufname(item.bufnr)
-    if M.files_match(item_file, file) then
+  for _, item in ipairs(comments) do
+    if M.files_match(item.filename, file) then
       local comment_type = M.parse_comment_type(item.text)
       local start_line = item.lnum
       local end_line = item.end_lnum or item.lnum

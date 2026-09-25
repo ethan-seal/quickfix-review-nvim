@@ -1,10 +1,10 @@
--- Code Review System using Quickfix + Signs
+-- Code Review System using Signs, with the quickfix list as a view
 -- Supports regular files and diff buffers (diffview, fugitive, codediff)
 local M = {}
 
 local config = require('quickfix-review.config')
 local utils = require('quickfix-review.utils')
-local storage = require('quickfix-review.storage')
+local store = require('quickfix-review.store')
 local export = require('quickfix-review.export')
 local context = require('quickfix-review.context')
 
@@ -103,8 +103,6 @@ function M.add_comment(comment_type, range)
   local text = vim.fn.input(prompt .. ': ')
 
   if text ~= '' then
-    local qf_list = vim.fn.getqflist()
-
     -- Format text with line range if multiline
     local comment_text
     if start_line ~= end_line then
@@ -113,7 +111,7 @@ function M.add_comment(comment_type, range)
       comment_text = string.format('[%s] %s', comment_type:upper(), text)
     end
 
-    table.insert(qf_list, {
+    store.add({
       filename = file,
       lnum = start_line,
       end_lnum = end_line,
@@ -122,12 +120,6 @@ function M.add_comment(comment_type, range)
       type = comment_type:sub(1, 1):upper(),
       user_data = context.capture(file, start_line, end_line),
     })
-    vim.fn.setqflist(qf_list, 'r')
-    vim.fn.setqflist({}, 'a', { title = 'Code Review Comments' })
-
-    if not utils.is_special_buffer() then
-      utils.refresh_buffer_signs(vim.fn.bufnr(), file)
-    end
 
     local display_file = vim.fn.fnamemodify(file, ':.')
     if start_line ~= end_line then
@@ -175,14 +167,14 @@ end
 
 -- Export to markdown
 function M.export_review()
-  local qf_list = vim.fn.getqflist()
+  local comments = store.all()
 
-  if #qf_list == 0 then
+  if #comments == 0 then
     print('No comments to export')
     return
   end
 
-  local content, err = export.to_markdown(qf_list, config.options)
+  local content, err = export.to_markdown(comments, config.options)
   if not content then
     print(err or 'Export failed')
     return
@@ -190,7 +182,7 @@ function M.export_review()
 
   local success, message = export.to_clipboard_and_file(content, config.options.export_file)
   if success then
-    print(message .. ' (' .. #qf_list .. ' comments)')
+    print(message .. ' (' .. #comments .. ' comments)')
   else
     print(message)
   end
@@ -198,78 +190,91 @@ end
 
 -- Clear all review comments
 function M.clear_review()
-  vim.fn.setqflist({})
-  -- Clear extmarks from all buffers
-  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_valid(bufnr) then
-      vim.api.nvim_buf_clear_namespace(bufnr, utils.get_ns_id(), 0, -1)
-    end
-  end
+  store.clear()
   print('Review cleared')
 end
 
--- Save current review to file
+-- All review comments, in creation order. Treat as read-only.
+function M.comments()
+  return store.all()
+end
+
+-- Save review to file. Every change is already saved as it is made; this
+-- only forces a write.
 function M.save_review()
-  local qf_list = vim.fn.getqflist()
-  -- Resolve bufnr to absolute filename so external tools and cross-cwd loads work
-  for _, item in ipairs(qf_list) do
-    if (not item.filename or item.filename == '') and item.bufnr and item.bufnr ~= 0 then
-      item.filename = vim.fn.bufname(item.bufnr)
-    end
-    if item.filename and item.filename ~= '' then
-      item.filename = vim.fn.fnamemodify(item.filename, ':p')
-    end
-  end
-  local success, message = storage.save(qf_list, config.options.storage_file)
+  local _, message = store.save()
   print(message)
 end
 
--- Load review from file
+-- Re-read the review from file and show it in the quickfix list
 function M.load_review()
-  local qf_list, message = storage.load(config.options.storage_file)
+  local ok, message = store.reload()
+  if ok then store.show() end
+  print(message)
+end
 
-  if not qf_list then
-    print(message)
+-- Make the review the current quickfix list, without opening the window
+function M.show_list()
+  store.show()
+end
+
+-- Show the review in the quickfix list and open the quickfix window
+function M.open_list()
+  store.show()
+  vim.cmd('copen')
+end
+
+-- Jump to the next (direction 1) or previous (direction -1) comment across
+-- all files, ordered by file then line, wrapping around at the ends
+function M.jump_comment(direction)
+  local sorted = vim.deepcopy(store.all())
+  if #sorted == 0 then
+    print('No review comments')
     return
   end
+  table.sort(sorted, function(a, b)
+    if a.filename ~= b.filename then return a.filename < b.filename end
+    return a.lnum < b.lnum
+  end)
 
-  -- Strip stale bufnr so setqflist doesn't fail on buffer-not-found;
-  -- entries with a filename will re-resolve on their own.
-  for _, item in ipairs(qf_list) do
-    if item.filename and item.filename ~= '' then
-      item.bufnr = nil
-    end
+  local file = vim.fn.fnamemodify(utils.get_real_filepath(), ':p')
+  local line = vim.fn.line('.')
+  local function is_after(c)
+    if c.filename ~= file then return c.filename > file end
+    return c.lnum > line
+  end
+  local function is_before(c)
+    if c.filename ~= file then return c.filename < file end
+    return c.lnum < line
   end
 
-  vim.fn.setqflist(qf_list, 'r')
-  vim.fn.setqflist({}, 'a', { title = 'Code Review Comments' })
-
-  -- Restore signs for loaded comments (refresh each affected buffer once)
-  local refreshed_buffers = {}
-  for _, item in ipairs(qf_list) do
-    local filename = item.filename
-    if filename and type(filename) == 'string' and filename ~= '' then
-      local bufnr = vim.fn.bufnr(filename)
-      if bufnr ~= -1 and not refreshed_buffers[bufnr] then
-        refreshed_buffers[bufnr] = true
-        utils.refresh_buffer_signs(bufnr, filename)
-      end
+  local target
+  if direction > 0 then
+    for _, c in ipairs(sorted) do
+      if is_after(c) then target = c break end
     end
+    target = target or sorted[1]
+  else
+    for i = #sorted, 1, -1 do
+      if is_before(sorted[i]) then target = sorted[i] break end
+    end
+    target = target or sorted[#sorted]
   end
 
-  print(message)
+  if target.filename ~= file then
+    vim.cmd('edit ' .. vim.fn.fnameescape(target.filename))
+  end
+  vim.api.nvim_win_set_cursor(0, { target.lnum, 0 })
+  M.view_comment()
 end
 
 -- Show comment(s) at current line
 function M.view_comment()
   local file = utils.get_real_filepath()
   local line = vim.fn.line('.')
-  local qf_list = vim.fn.getqflist()
-
   local comments = {}
-  for _, item in ipairs(qf_list) do
-    local item_file = item.filename or vim.fn.bufname(item.bufnr)
-    if item.lnum == line and utils.files_match(item_file, file) then
+  for _, item in ipairs(store.all()) do
+    if item.lnum == line and utils.files_match(item.filename, file) then
       table.insert(comments, item.text)
     end
   end
@@ -330,15 +335,15 @@ end
 
 -- Show summary of current review
 function M.summary()
-  local qf_list = vim.fn.getqflist()
+  local comments = store.all()
 
-  if #qf_list == 0 then
+  if #comments == 0 then
     print('No review comments')
     return
   end
 
   local counts = { ISSUE = 0, SUGGESTION = 0, NOTE = 0, PRAISE = 0 }
-  for _, item in ipairs(qf_list) do
+  for _, item in ipairs(comments) do
     local comment_type = utils.parse_comment_type(item.text)
     if counts[comment_type] then
       counts[comment_type] = counts[comment_type] + 1
@@ -346,7 +351,7 @@ function M.summary()
   end
 
   print(string.format('Review: %d total (%d issues, %d suggestions, %d notes, %d praise)',
-    #qf_list, counts.ISSUE, counts.SUGGESTION, counts.NOTE, counts.PRAISE))
+    #comments, counts.ISSUE, counts.SUGGESTION, counts.NOTE, counts.PRAISE))
 end
 
 -- Delete comment(s) at current line or selected range
@@ -366,35 +371,14 @@ function M.delete_comment(range)
     end_line = start_line
   end
   
-  local qf_list = vim.fn.getqflist()
-  local new_qf_list = {}
-  local comments_deleted = 0
-  
-  -- Filter out comments in the specified range
-  for _, item in ipairs(qf_list) do
-    local item_file = item.filename or vim.fn.bufname(item.bufnr)
+  -- Remove comments overlapping the specified range
+  local comments_deleted = store.remove(function(item)
     local item_end = item.end_lnum or item.lnum
+    return utils.files_match(item.filename, file) and
+           item.lnum <= end_line and item_end >= start_line
+  end)
 
-    -- Check if this comment overlaps with the target range and file
-    local is_in_range = utils.files_match(item_file, file) and
-                        item.lnum <= end_line and item_end >= start_line
-
-    if not is_in_range then
-      table.insert(new_qf_list, item)
-    else
-      comments_deleted = comments_deleted + 1
-    end
-  end
-  
   if comments_deleted > 0 then
-    vim.fn.setqflist(new_qf_list, 'r')
-    vim.fn.setqflist({}, 'a', { title = 'Code Review Comments' })
-    
-    -- Refresh signs for proper visualization
-    if not utils.is_special_buffer() then
-      utils.refresh_buffer_signs(vim.fn.bufnr(), file)
-    end
-    
     local display_file = vim.fn.fnamemodify(file, ':.')
     if start_line ~= end_line then
       print(string.format('Deleted %d comment(s) from %s:%d-%d', comments_deleted, display_file, start_line, end_line))
@@ -493,15 +477,15 @@ local function setup_keymaps()
   end
 
   if keymaps.open_list then
-    vim.keymap.set('n', keymaps.open_list, ':copen<CR>',
+    vim.keymap.set('n', keymaps.open_list, M.open_list,
       { desc = 'Open review comments list' })
   end
   if keymaps.next_comment then
-    vim.keymap.set('n', keymaps.next_comment, ':cnext<CR>',
+    vim.keymap.set('n', keymaps.next_comment, function() M.jump_comment(1) end,
       { desc = 'Next review comment' })
   end
   if keymaps.prev_comment then
-    vim.keymap.set('n', keymaps.prev_comment, ':cprev<CR>',
+    vim.keymap.set('n', keymaps.prev_comment, function() M.jump_comment(-1) end,
       { desc = 'Previous review comment' })
   end
 
@@ -516,26 +500,33 @@ local function setup_keymaps()
   end
 end
 
--- Delete comment from quickfix window
+-- Delete the comment under the cursor in the quickfix window. The review
+-- view lists the comments in store order, so the row is the comment's index.
 function M.delete_comment_from_qf()
-  local qf_list = vim.fn.getqflist()
-  local current_idx = vim.fn.line('.')
-  
-  if current_idx < 1 or current_idx > #qf_list then
+  if not store.is_current_view() then
+    print('This quickfix list is not the review')
+    return
+  end
+
+  local target = store.all()[vim.fn.line('.')]
+  if not target then
     print('No comment selected in quickfix list')
     return
   end
-  
-  local item = qf_list[current_idx]
-  local file = item.filename
-  local start_line = item.lnum
-  local end_line = item.end_lnum or start_line
-  
-  -- Delete the comment
-  M.delete_comment({ start_line, end_line })
-  
-  -- Refresh quickfix window
-  vim.cmd('copen')
+
+  store.remove(function(c) return c == target end)
+end
+
+-- Redraw signs in every loaded buffer from the current comments
+local function refresh_all_signs(comments)
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(bufnr) then
+      local name = vim.api.nvim_buf_get_name(bufnr)
+      if name ~= '' then
+        utils.refresh_buffer_signs(bufnr, name, comments)
+      end
+    end
+  end
 end
 
 -- Setup the plugin
@@ -544,26 +535,24 @@ function M.setup(opts)
   utils.init_signs(config.options)
   setup_keymaps()
 
-  -- Auto-show floating comment after quickfix navigation
+  -- Load the saved review now, so it's in place before any change is made
+  store.set_on_change(refresh_all_signs)
+  refresh_all_signs(store.all())
+
+  -- Auto-show floating comment after navigating the review's quickfix list
   vim.api.nvim_create_autocmd('QuickFixCmdPost', {
     pattern = { 'cnext', 'cprev', 'cc', 'cfirst', 'clast' },
-    callback = function() M.view_comment() end,
+    callback = function()
+      if store.is_current_view() then M.view_comment() end
+    end,
   })
 
-  -- Place signs when entering a buffer that has review comments
+  -- Place signs when entering a buffer (also picks up changes made on disk)
   vim.api.nvim_create_autocmd('BufEnter', {
     callback = function()
-      local bufnr = vim.fn.bufnr()
       local file = vim.fn.expand('%:p')
       if file == '' then return end
-      local qf_list = vim.fn.getqflist()
-      for _, item in ipairs(qf_list) do
-        local item_file = item.filename or vim.fn.bufname(item.bufnr)
-        if utils.files_match(item_file, file) then
-          utils.refresh_buffer_signs(bufnr, file)
-          break
-        end
-      end
+      utils.refresh_buffer_signs(vim.fn.bufnr(), file, store.all())
     end
   })
 
@@ -572,11 +561,10 @@ function M.setup(opts)
     vim.api.nvim_create_autocmd('FileChangedShellPost', {
       callback = function()
         local file = utils.get_real_filepath()
-        local qf_list = vim.fn.getqflist()
+        local function in_file(item) return utils.files_match(item.filename, file) end
         local has_comments = false
-        for _, item in ipairs(qf_list) do
-          local item_file = item.filename or vim.fn.bufname(item.bufnr)
-          if utils.files_match(item_file, file) then
+        for _, item in ipairs(store.all()) do
+          if in_file(item) then
             has_comments = true
             break
           end
@@ -584,7 +572,7 @@ function M.setup(opts)
         if has_comments then
           local choice = vim.fn.confirm('File changed on disk. Clear review comments for this file?', '&Yes\n&No', 2)
           if choice == 1 then
-            M.clear_review()
+            store.remove(in_file)
           end
         end
       end

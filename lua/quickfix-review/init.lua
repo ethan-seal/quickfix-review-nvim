@@ -6,6 +6,7 @@ local config = require('quickfix-review.config')
 local utils = require('quickfix-review.utils')
 local storage = require('quickfix-review.storage')
 local export = require('quickfix-review.export')
+local context = require('quickfix-review.context')
 
 -- State for comment type cycling
 local cycle_state = {
@@ -118,7 +119,8 @@ function M.add_comment(comment_type, range)
       end_lnum = end_line,
       col = 1,
       text = comment_text,
-      type = comment_type:sub(1, 1):upper()
+      type = comment_type:sub(1, 1):upper(),
+      user_data = context.capture(file, start_line, end_line),
     })
     vim.fn.setqflist(qf_list, 'r')
     vim.fn.setqflist({}, 'a', { title = 'Code Review Comments' })

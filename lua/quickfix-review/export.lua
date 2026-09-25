@@ -32,6 +32,22 @@ function M.to_markdown(qf_list, config)
     -- Use custom format but replace %s:%d with our line_ref
     local line_str = string.format('%d. **[%s]** `%s` - %s', i, comment_type, line_ref, comment_text)
     table.insert(lines, line_str)
+
+    -- Append captured context (commit + diff snippet) if present
+    local ctx = item.user_data
+    if type(ctx) == 'table' then
+      if ctx.commit_short then
+        table.insert(lines, string.format('   - commit: `%s`', ctx.commit_short))
+      end
+      if type(ctx.snippet) == 'table' and #ctx.snippet > 0 then
+        table.insert(lines, '')
+        table.insert(lines, '   ```diff')
+        for _, l in ipairs(ctx.snippet) do
+          table.insert(lines, '   ' .. l)
+        end
+        table.insert(lines, '   ```')
+      end
+    end
   end
 
   return table.concat(lines, '\n'), nil

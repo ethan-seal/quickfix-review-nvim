@@ -818,6 +818,37 @@ function M.restore(ids)
   end)
 end
 
+-- Whether two anchors name different lines of different content
+local function anchor_changed(old, new)
+  old = old or {}
+  return old.sha ~= new.sha or old.lnum ~= new.lnum or old.end_lnum ~= new.end_lnum
+end
+
+-- Re-anchor comments: `changes` is a list of { id = ..., anchor = { sha,
+-- lnum, end_lnum, lines, before, after } }. One update event per comment
+-- whose anchor actually changes, setting the anchor and the record's
+-- top-level lnum/end_lnum to match (never pos, which is derived and kept in
+-- memory only), with the previous values in `prev`. A comment that is gone,
+-- or an anchor with no snapshot sha, is skipped.
+-- Returns: number of comments updated, or nil if the change was refused
+function M.update(changes)
+  return mutate(function()
+    local events = {}
+    for _, ch in ipairs(changes) do
+      local a = parse_anchor(ch.anchor)
+      local r = reduce.get(reduced, ch.id)
+      if r and a and a.sha and anchor_changed(r.anchor, a) then
+        table.insert(events, log.event('update', {
+          id = ch.id,
+          set = { anchor = a, lnum = a.lnum, end_lnum = a.end_lnum },
+          prev = { anchor = r.anchor, lnum = r.lnum, end_lnum = r.end_lnum },
+        }))
+      end
+    end
+    return events, #events
+  end)
+end
+
 -- Remove every comment for which pred(comment) is true: one delete event,
 -- holding the comment, per match
 -- Returns: number removed, or nil if the change was refused (unreadable file)

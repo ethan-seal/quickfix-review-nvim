@@ -147,6 +147,7 @@ require('quickfix-review').setup({
     next_comment = ']r',
     prev_comment = '[r',
     goto_real_file = '<leader>cg',
+    reanchor = false,  -- :ReviewReanchor (not mapped by default)
   },
 })
 ```
@@ -176,7 +177,7 @@ e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/log.jsonl`, readab
 
 ### When the code changes
 
-Each comment remembers the version of the file it was written against (a snapshot in `snapshots/` in the storage directory). When the file changes, the snapshot is diffed against the file as it is now and the comment moves with its lines. This happens when a file is read or reloaded after changing on disk, as you edit it, and, for a file that isn't open, when it is read for the quickfix list, export or a jump. The new position is kept in memory only; nothing is written to the review log. Diff buffers (fugitive, diffview, codediff) show an old revision and never move a comment.
+Each comment remembers the version of the file it was written against (a snapshot in `snapshots/` in the storage directory). When the file changes, the snapshot is diffed against the file as it is now and the comment moves with its lines. This happens when a file is read or reloaded after changing on disk, as you edit it, and, for a file that isn't open, when it is read for the quickfix list, export or a jump. The new position is kept in memory only until you save the file: on `:w`, every comment in it that is current or shifted is re-anchored to the saved content (one `update` event per comment whose anchor changed), so it reopens where it is now. Unsaved edits (`:q!`, `:e!`) never change a stored anchor, and outdated comments keep theirs. Diff buffers (fugitive, diffview, codediff) show an old revision and never move a comment.
 
 A comment is **outdated** when one of its lines was changed or deleted, a line was inserted inside its range, or its file or snapshot is missing. It stays where its code was (a deleted range collapses to the line before it). Outdated comments get:
 
@@ -185,7 +186,9 @@ A comment is **outdated** when one of its lines was changed or deleted, a line w
 - "outdated — code changed since comment" at the top of the comment float
 - ` (outdated)` after their location in the export
 
-Lines added or removed next to a range don't make it outdated, and neither do CRLF line endings or a missing final newline. While a file is open, a comment whose whole range you delete becomes outdated at once; other edits inside a range are checked the next time the file is read from disk. Comments made before snapshots existed stay at their saved line and are never marked outdated.
+Lines added or removed next to a range don't make it outdated, and neither do CRLF line endings or a missing final newline. While a file is open, a comment whose whole range you delete becomes outdated at once; other edits inside a range are checked when you save the file or it is next read from disk. Comments made before snapshots existed stay at their saved line and are never marked outdated; saving their file gives them a snapshot.
+
+To accept an outdated comment's new position, put the cursor on it and run `:ReviewReanchor` (or map `keymaps.reanchor`): it is re-anchored to the buffer's lines as they are now (unsaved edits included, as when adding a comment) and is current again.
 
 ### Multiple signs per line
 
@@ -258,6 +261,7 @@ A pattern that doesn't accept those four values falls back to the default with a
 | `:ReviewTrash` | List deleted and cleared comments, newest first, in a quickfix list titled "Review trash" |
 | `:ReviewRestore [id]` | Restore a deleted comment; with no id, the last one deleted, or every comment of the last `:ReviewClear` (asks first) |
 | `:ReviewHistory [id]` | Show the logged history of one comment, or the last 50 events |
+| `:ReviewReanchor` | Accept the current lines of the outdated comment at cursor: re-anchor it there, no longer outdated |
 | `:ReviewSave` | Write the `state.json` cache (every change is already in the log as it is made) |
 | `:ReviewLoad` | Replay the review's log from disk and show it in the quickfix list |
 | `:ReviewSummary` | Show comment summary |

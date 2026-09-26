@@ -26,7 +26,7 @@ assert.run_test('setup() twice keeps the same QuickfixReview autocmds', function
 end)
 
 assert.run_test('setup() leaves no ungrouped plugin autocmds', function()
-  for _, event in ipairs({ 'BufEnter', 'CursorMoved', 'FileChangedShellPost', 'FileType', 'DirChanged' }) do
+  for _, event in ipairs({ 'BufEnter', 'CursorMoved', 'FileChangedShellPost', 'FileType', 'DirChanged', 'BufWritePost' }) do
     assert.length(ungrouped(event), 0, 'ungrouped ' .. event .. ' handlers')
   end
 end)
@@ -202,7 +202,7 @@ assert.run_test('commands work before setup()', function()
     assert.truthy(eok, ':ReviewExport does not error: ' .. tostring(eerr))
     assert.truthy(clipboard and clipboard:find('Comment types: ISSUE', 1, true), 'export has the default legend')
     assert.truthy(clipboard:find('**[QUESTION]**', 1, true), 'export has the comment')
-    for _, cmd in ipairs({ 'ReviewTrash', 'ReviewHistory' }) do
+    for _, cmd in ipairs({ 'ReviewTrash', 'ReviewHistory', 'ReviewReanchor' }) do
       local cok, cerr = pcall(vim.cmd, cmd)
       assert.truthy(cok, ':' .. cmd .. ' does not error: ' .. tostring(cerr))
     end

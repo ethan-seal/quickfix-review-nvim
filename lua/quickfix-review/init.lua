@@ -451,6 +451,48 @@ local function auto_show_check()
   M.view_comment()
 end
 
+-- Accept where the outdated comments covering the current line are now:
+-- re-anchor each to the buffer's content as it is (unsaved edits included,
+-- as when adding a comment), making it current. One update event per
+-- comment; nothing is logged when no outdated comment covers the line.
+function M.reanchor()
+  local bufnr = vim.api.nvim_get_current_buf()
+  if vim.bo[bufnr].buftype ~= '' or utils.is_special_buffer(bufnr)
+      or vim.api.nvim_buf_get_name(bufnr) == '' then
+    vim.notify('quickfix-review: re-anchor from the file itself, not a diff or special buffer',
+      vim.log.levels.WARN)
+    return
+  end
+  local file = vim.api.nvim_buf_get_name(bufnr)
+  local line = vim.fn.line('.')
+  local changes, found = {}, 0
+  for _, c in ipairs(store.all()) do
+    local lnum, end_lnum = store.range(c)
+    if lnum <= line and end_lnum >= line and utils.files_match(c.filename, file) then
+      found = found + 1
+      if store.is_outdated(c) then
+        local a = context.anchor(lnum, end_lnum, bufnr)
+        if a.sha then table.insert(changes, { id = c.id, anchor = a }) end
+      end
+    end
+  end
+
+  if #changes == 0 then
+    vim.notify(found == 0 and 'quickfix-review: no comment on this line'
+      or 'quickfix-review: no outdated comment on this line', vim.log.levels.INFO)
+    return
+  end
+  local n = store.update(changes)
+  if not n then return end
+  -- The tracking extmark still holds the outdated position (or is invalid,
+  -- if the whole range was deleted): place it again from the new anchor
+  for _, ch in ipairs(changes) do track.forget(ch.id) end
+  track.relocate_buffer(bufnr, store.all())
+  store.refresh()
+  vim.notify(string.format('quickfix-review: re-anchored %d comment%s', n, n == 1 and '' or 's'),
+    vim.log.levels.INFO)
+end
+
 -- Show every comment whose range covers the current line, in line order
 function M.view_comment()
   local file = utils.get_real_filepath()
@@ -707,6 +749,11 @@ local function setup_keymaps()
     vim.keymap.set('n', keymaps.view, M.view_comment,
       { desc = 'View comment on current line' })
   end
+
+  if keymaps.reanchor then
+    vim.keymap.set('n', keymaps.reanchor, M.reanchor,
+      { desc = 'Re-anchor the outdated comment on current line' })
+  end
 end
 
 -- Delete the comment under the cursor in the quickfix window. Each review
@@ -796,9 +843,16 @@ local function refresh_all_signs(comments)
   end
 end
 
+-- Whether `bufnr` holds a real file (not a diff buffer or a special one)
+local function is_file_buffer(bufnr)
+  return vim.bo[bufnr].buftype == '' and not utils.is_special_buffer(bufnr)
+    and vim.api.nvim_buf_get_name(bufnr) ~= ''
+end
+
 -- The file in `bufnr` was read or reloaded from disk: relocate its comments
 -- from its content (never from a diff buffer, which holds an old revision).
--- Positions are kept in memory only; nothing is logged.
+-- Positions are kept in memory only; nothing is logged here (anchors are
+-- written back only when the file is saved, see write_back).
 local function relocate_buffer(bufnr)
   if vim.bo[bufnr].buftype ~= '' or utils.is_special_buffer(bufnr) then return end
   local comments = store.all()
@@ -807,6 +861,68 @@ local function relocate_buffer(bufnr)
   else
     local name = utils.get_real_filepath(bufnr)
     if name ~= '' then draw_signs(bufnr, name, comments) end
+  end
+end
+
+-- Whether a comment's pos names other lines, or another version of its
+-- file, than its anchor
+local function moved(c)
+  local a, p = c.anchor or {}, c.pos
+  return p.sha ~= a.sha or p.lnum ~= a.lnum or p.end_lnum ~= a.end_lnum
+end
+
+-- The file in `bufnr` was saved (as `file`, the written file): re-anchor its
+-- current and shifted comments to the saved content, one update event per
+-- comment whose anchor changed, so they reopen where they are now. Positions
+-- are first recomputed by diffing each anchor's snapshot against the saved
+-- content (an edit inside a range makes it outdated, which the tracking
+-- extmark alone would not); outdated comments keep their anchor. A write of
+-- part of the buffer, or to another file, is ignored: the anchors would name
+-- content the file doesn't have.
+local function write_back(bufnr, file)
+  if not is_file_buffer(bufnr) or vim.bo[bufnr].modified then return end
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  if vim.fn.fnamemodify(file, ':p') ~= vim.fn.fnamemodify(name, ':p') then return end
+
+  -- A comment with a snapshot is relocated by diffing it against the saved
+  -- content; one with none (from before anchors) can't be diffed, and its
+  -- tracking extmark says where it is now
+  local mine, snapshotted = {}, {}
+  for _, c in ipairs(store.all()) do
+    if utils.files_match(c.filename, name) then
+      table.insert(mine, c)
+      if c.anchor and c.anchor.sha then table.insert(snapshotted, c) end
+    end
+  end
+  local relocated = track.relocate_buffer(bufnr, snapshotted)
+
+  local changes = {}
+  local saved = false
+  for _, c in ipairs(mine) do
+    local p = store.pos(c)
+    if p and p.state ~= 'outdated' and moved(c) then
+      if not saved then
+        local sha, err = require('quickfix-review.snapshots').put(
+          vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+        if not sha then
+          vim.notify('quickfix-review: snapshot not saved, comment anchors not updated: '
+            .. tostring(err), vim.log.levels.WARN)
+          break
+        end
+        saved = true
+      end
+      local a = context.anchor(p.lnum, p.end_lnum, bufnr)
+      if a.sha then table.insert(changes, { id = c.id, anchor = a }) end
+    end
+  end
+
+  if #changes > 0 and (store.update(changes) or 0) > 0 then
+    -- Place the marks from the new anchors (a changed record has a new view,
+    -- whose pos starts at its anchor), then redraw
+    track.relocate_buffer(bufnr, store.all())
+    store.refresh()
+  elseif relocated then
+    store.refresh()
   end
 end
 
@@ -883,6 +999,12 @@ function M.setup(opts)
   vim.api.nvim_create_autocmd({ 'BufReadPost', 'FileChangedShellPost' }, {
     group = augroup,
     callback = function(args) relocate_buffer(args.buf) end,
+  })
+  -- Write the anchors of a saved file's comments back to the log. Only on
+  -- a write: unsaved edits never change a stored anchor.
+  vim.api.nvim_create_autocmd('BufWritePost', {
+    group = augroup,
+    callback = function(args) write_back(args.buf, args.file) end,
   })
   vim.api.nvim_create_autocmd('BufWipeout', {
     group = augroup,

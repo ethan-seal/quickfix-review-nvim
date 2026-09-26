@@ -8,6 +8,7 @@
 :ReviewGoto	quickfix-review.txt	/*:ReviewGoto*
 :ReviewHistory	quickfix-review.txt	/*:ReviewHistory*
 :ReviewLoad	quickfix-review.txt	/*:ReviewLoad*
+:ReviewReanchor	quickfix-review.txt	/*:ReviewReanchor*
 :ReviewRestore	quickfix-review.txt	/*:ReviewRestore*
 :ReviewSave	quickfix-review.txt	/*:ReviewSave*
 :ReviewSummary	quickfix-review.txt	/*:ReviewSummary*

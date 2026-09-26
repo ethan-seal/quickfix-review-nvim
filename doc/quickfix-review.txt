@@ -117,6 +117,7 @@ options are optional; defaults are shown below.
         next_comment = ']r',
         prev_comment = '[r',
         goto_real_file = '<leader>cg',
+        reanchor = false,  -- |:ReviewReanchor|, not mapped by default
       },
     })
 <
@@ -175,9 +176,14 @@ it is now and the comment moves with its lines: when the file is read or
 reloaded after changing on disk (|BufReadPost|, |FileChangedShellPost|), as
 you edit it (tracking extmarks follow the lines), and, for a file that is
 not open, when it is read for the quickfix list, export or a jump (cached by
-the file's size and modification time). Positions are kept in memory only;
-nothing is written to the log. Diff buffers (fugitive, diffview, codediff)
-hold an old revision and never move a comment.
+the file's size and modification time). Positions are kept in memory until
+the file is saved: on |BufWritePost| every comment in it that is current or
+shifted is re-anchored to the saved content (its anchor rewritten, one
+`update` event per comment whose anchor changed), so it reopens where it is
+now. Unsaved edits (|:q!|, |:e!|) never change a stored anchor, outdated
+comments keep theirs, and writing part of a buffer or to another file
+changes nothing. Diff buffers (fugitive, diffview, codediff) hold an old
+revision and never move a comment.
 
 A comment is outdated when one of its lines was changed or deleted, a line
 was inserted inside its range, or its file or snapshot is missing. It stays
@@ -191,9 +197,11 @@ newline don't make it outdated. An outdated comment is shown with:
 - ` (outdated)` after its location in the export
 
 While a file is open, a comment whose whole range is deleted becomes
-outdated at once; other in-session edits inside a range are checked the
-next time the file is read from disk. Comments made before snapshots
-existed stay at their saved line and are never outdated.
+outdated at once; other in-session edits inside a range are checked when
+the file is saved or next read from disk. Comments made before snapshots
+existed stay at their saved line and are never outdated; saving their file
+gives them a snapshot. Use |:ReviewReanchor| to accept an outdated
+comment's new position.
 
                                                  *quickfix-review-migration*
 Earlier versions kept the review in `comments.json` in the same directory.
@@ -419,6 +427,17 @@ press `dd` to delete the comment under cursor.
                         op, kind, file:line, and for an update the fields
                         it changed.
 
+                                                         *:ReviewReanchor*
+:ReviewReanchor         Accept where the outdated comment at the cursor is
+                        now: re-anchor it to the buffer's lines as they are
+                        (unsaved edits included, as when adding a comment),
+                        so it is current again. Every outdated comment
+                        covering the cursor line is re-anchored, one
+                        `update` event each. On a line with no outdated
+                        comment it only says so. Must be run from the file
+                        itself, not a diff buffer. Not mapped by default;
+                        set `keymaps.reanchor` to map it.
+
                                                              *:ReviewSave*
 :ReviewSave             Write the review's `state.json` cache. Every
                         change is already in the log as it is made, so
@@ -461,6 +480,8 @@ Default keymaps (normal and visual mode where applicable):
   `]r`            Next review comment
   `[r`            Previous review comment
   `<leader>cg`    Go to real file from diff
+
+`keymaps.reanchor` (|:ReviewReanchor|) is not mapped by default.
 
 Quickfix window keymaps:
   `dd`            Delete comment under cursor
@@ -526,7 +547,8 @@ require('quickfix-review').comments()                 *quickfix-review.comments(
     the text without any `[KIND]` prefix, and `response` and `context` (the
     captured commit and snippet) may be nil. `anchor` is
     `{ sha, lnum, end_lnum, lines, before, after }`, written when the
-    comment was made: `sha` names a snapshot of the commented buffer (as the
+    comment was made and rewritten when its file is saved while it is
+    current or shifted, or by |:ReviewReanchor|: `sha` names a snapshot of the commented buffer (as the
     reviewer saw it, unsaved edits included) that `lnum`/`end_lnum` refer
     to, `lines` the commented lines (at most 50) and `before`/`after` up to
     2 lines either side. Comments from older versions, or whose snapshot

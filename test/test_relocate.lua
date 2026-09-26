@@ -329,6 +329,276 @@ assert.run_test('restored comments get their tracking extmarks back', function()
   qf.clear_review()
 end)
 
+-- Write-back on save and :ReviewReanchor ------------------------------------
+
+-- Simulate quitting and reopening Neovim: forget every tracked position,
+-- replay the whole log (fresh records, whose pos starts at their anchor) and
+-- re-read the test file
+local function restart()
+  track._reset()
+  assert.truthy(store.reload(), 'review reloaded')
+  vim.api.nvim_set_current_buf(file_buf)
+  vim.cmd('silent edit!')
+end
+
+local function updates()
+  return test_helper.log_ops(test_helper.log_path(), 'update')
+end
+
+-- Save the test file's buffer
+local function save()
+  vim.api.nvim_set_current_buf(file_buf)
+  vim.cmd('silent write')
+end
+
+local function sha_on_disk()
+  return require('quickfix-review.snapshots').hash(vim.fn.readfile(abs))
+end
+
+assert.run_test('an edit above a comment, saved: the anchor is written back, no double shift', function()
+  fresh()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local before = #updates()
+  vim.api.nvim_buf_set_lines(file_buf, 0, 0, false, { 'new 1', 'new 2' })
+  save()
+
+  local ups = updates()
+  assert.equals(#ups, before + 1, 'one update logged')
+  local ev = ups[#ups]
+  assert.equals(ev.set.anchor.sha, sha_on_disk(), 'anchored to the saved content')
+  assert.equals(ev.set.anchor.lnum, 7, 'anchor lnum')
+  assert.equals(ev.set.anchor.end_lnum, 7, 'anchor end_lnum')
+  assert.equals(table.concat(ev.set.anchor.lines, '|'), 'line 5', 'anchor lines')
+  assert.equals(ev.set.pos, nil, 'pos is never logged')
+  assert.equals(ev.set.lnum, 7, 'top-level lnum kept in sync')
+  assert.equals(ev.prev.anchor.lnum, 5, 'prev anchor')
+  local saved = test_helper.saved()[1]
+  assert.equals(saved.lnum, saved.anchor.lnum, 'record lnum matches its anchor')
+
+  local c = qf.comments()[1]
+  assert.equals(store.pos(c).state, 'current', 'current in the session')
+  assert.equals((store.range(c)), 7, 'on line 7 in the session')
+
+  restart()
+  c = qf.comments()[1]
+  assert.equals(store.pos(c).state, 'current', 'current after a restart')
+  assert.equals((store.range(c)), 7, 'on line 7 after a restart')
+  assert.length(signs_on(file_buf, 7), 1, 'sign on line 7')
+  assert.length(signs_on(file_buf, 9), 0, 'no double shift')
+  rewrite(TEN)
+end)
+
+assert.run_test('unsaved edits never change the stored anchor', function()
+  fresh()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local anchor = vim.deepcopy(test_helper.saved()[1].anchor)
+  local logged = log_size()
+  vim.api.nvim_buf_set_lines(file_buf, 0, 0, false, { 'new 1', 'new 2' })
+  for _, ev in ipairs({ 'BufLeave', 'BufEnter', 'FocusGained', 'CursorHold', 'VimLeavePre' }) do
+    vim.api.nvim_exec_autocmds(ev, { buffer = file_buf })
+  end
+  vim.cmd('silent edit!')
+  assert.equals(log_size(), logged, 'nothing logged')
+  assert.truthy(vim.deep_equal(test_helper.saved()[1].anchor, anchor), 'anchor unchanged')
+  restart()
+  local c = qf.comments()[1]
+  assert.equals((store.range(c)), 5, 'on line 5 after a restart')
+  assert.equals(store.pos(c).state, 'current', 'current')
+end)
+
+assert.run_test('saving with no edits logs nothing', function()
+  fresh()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local logged = log_size()
+  save()
+  save()
+  assert.equals(log_size(), logged, 'nothing logged')
+end)
+
+assert.run_test('an edit inside a range, saved: outdated, the anchor kept', function()
+  fresh()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local anchor = vim.deepcopy(test_helper.saved()[1].anchor)
+  local logged = log_size()
+  vim.api.nvim_buf_set_lines(file_buf, 4, 5, false, { 'line 5 changed' })
+  save()
+  assert.equals(log_size(), logged, 'nothing logged')
+  assert.truthy(vim.deep_equal(test_helper.saved()[1].anchor, anchor), 'anchor unchanged')
+  assert.equals(store.pos(qf.comments()[1]).state, 'outdated', 'outdated')
+  rewrite(TEN)
+end)
+
+assert.run_test('comments above the edit are re-anchored to the new file too', function()
+  fresh()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('NOTE')
+  local logged = log_size()
+  vim.api.nvim_buf_set_lines(file_buf, 8, 8, false, { 'below' })
+  save()
+  assert.equals(log_size(), logged + 1, 'one update')
+  local a = test_helper.saved()[1].anchor
+  assert.equals(a.sha, sha_on_disk(), 'new sha')
+  assert.equals(a.lnum, 2, 'same line')
+  rewrite(TEN)
+end)
+
+assert.run_test('comments on other files, and diff buffers, are left alone on a write', function()
+  fresh()
+  store.add({ filename = vim.fn.getcwd() .. '/other_file.txt', lnum = 1, kind = 'note', body = 'x' })
+  vim.fn.cursor(5, 1)
+  qf.add_comment('NOTE')
+  local logged = log_size()
+
+  local path = vim.fn.tempname() .. '-nofile.txt'
+  local nofile = vim.api.nvim_create_buf(true, false)
+  vim.api.nvim_buf_set_lines(nofile, 0, -1, false, { 'a', 'b', 'c', 'd', 'e', 'f' })
+  vim.api.nvim_buf_set_name(nofile, 'fugitive://' .. vim.fn.getcwd() .. '/.git//0/' .. test_file)
+  vim.api.nvim_exec_autocmds('BufWritePost', { buffer = nofile })
+  vim.cmd('bwipeout! ' .. nofile)
+
+  -- A write of the file's buffer to another file
+  vim.api.nvim_set_current_buf(file_buf)
+  vim.api.nvim_buf_set_lines(file_buf, 0, 0, false, { 'top' })
+  vim.cmd('silent write ' .. vim.fn.fnameescape(path))
+  os.remove(path)
+  assert.equals(log_size(), logged, 'nothing logged')
+  vim.cmd('silent edit!')
+end)
+
+assert.run_test('a legacy comment gets a snapshot-backed anchor on save', function()
+  fresh()
+  store.add({ filename = abs, lnum = 4, end_lnum = 5, kind = 'note', body = 'legacy' })
+  vim.api.nvim_buf_set_lines(file_buf, 0, 0, false, { 'top' })
+  save()
+  local a = test_helper.saved()[1].anchor
+  assert.equals(a.sha, sha_on_disk(), 'sha')
+  assert.equals(a.lnum, 5, 'followed the edit')
+  assert.equals(a.end_lnum, 6, 'end')
+  assert.equals(table.concat(a.lines, '|'), 'line 4|line 5', 'lines')
+  assert.equals(store.pos(qf.comments()[1]).state, 'current', 'current')
+  rewrite(TEN)
+end)
+
+-- A file with `content`, commented on line 2, a line inserted at the top and
+-- saved: re-anchored once, current after a reload and from disk
+local function check_eol_write(name, content, edit_cmd)
+  assert.run_test(name, function()
+    local path = vim.fn.tempname() .. '-eolw.txt'
+    local fh = io.open(path, 'wb')
+    fh:write(content)
+    fh:close()
+    local ok, err = pcall(function()
+      qf.clear_review()
+      vim.cmd(edit_cmd .. ' ' .. vim.fn.fnameescape(path))
+      local buf = vim.api.nvim_get_current_buf()
+      vim.fn.cursor(2, 1)
+      qf.add_comment('NOTE')
+      local before = #updates()
+      vim.api.nvim_buf_set_lines(buf, 0, 0, false, { 'top' })
+      vim.cmd('silent write')
+      assert.equals(#updates(), before + 1, 'one update')
+      vim.cmd('silent edit!')
+      vim.cmd('silent write')
+      assert.equals(#updates(), before + 1, 'no second update')
+      local c = qf.comments()[1]
+      assert.equals(store.pos(c).state, 'current', 'current after reload')
+      vim.api.nvim_set_current_buf(file_buf)
+      vim.cmd('bwipeout! ' .. buf)
+      assert.equals(store.pos(c).state, 'current', 'current read from disk')
+      assert.equals((store.range(c)), 3, 'line 3')
+    end)
+    os.remove(path)
+    vim.api.nvim_set_current_buf(file_buf)
+    qf.clear_review()
+    if not ok then error(err, 0) end
+  end)
+end
+
+check_eol_write('a saved CRLF file is re-anchored once', 'a\r\nb\r\nc\r\n', 'edit')
+check_eol_write('a saved CRLF file read as unix is re-anchored once', 'a\r\nb\r\nc\r\n', 'edit ++ff=unix')
+check_eol_write('a saved file without a final newline is re-anchored once', 'a\nb\nc', 'edit')
+
+local function outdated_hl(line)
+  local s = signs_on(file_buf, line)
+  return s[1] and s[1].sign_hl_group == utils.OUTDATED_HL
+end
+
+assert.run_test(':ReviewReanchor accepts an outdated comment changed on disk', function()
+  fresh()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local lines = vim.deepcopy(TEN)
+  lines[5] = 'line 5 rewritten'
+  rewrite(lines)
+  assert.equals(store.pos(qf.comments()[1]).state, 'outdated', 'outdated first')
+  assert.truthy(outdated_hl(5), 'outdated sign')
+
+  local logged = log_size()
+  vim.fn.cursor(5, 1)
+  vim.cmd('ReviewReanchor')
+  assert.equals(log_size(), logged + 1, 'one update')
+  local c = qf.comments()[1]
+  assert.equals(store.pos(c).state, 'current', 'current')
+  assert.equals(table.concat(c.anchor.lines, '|'), 'line 5 rewritten', 'anchor lines')
+  assert.equals(c.anchor.sha, sha_on_disk(), 'anchor sha')
+  assert.falsy(outdated_hl(5), 'sign no longer outdated')
+
+  restart()
+  c = qf.comments()[1]
+  assert.equals(store.pos(c).state, 'current', 'current after a restart')
+  assert.equals((store.range(c)), 5, 'line 5')
+  rewrite(TEN)
+end)
+
+assert.run_test(':ReviewReanchor accepts a comment whose whole range was deleted', function()
+  fresh()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  vim.api.nvim_buf_set_lines(file_buf, 4, 5, false, {})
+  local c = qf.comments()[1]
+  assert.equals(store.pos(c).state, 'outdated', 'outdated first')
+  local line = store.range(c)
+  local logged = log_size()
+  vim.fn.cursor(line, 1)
+  qf.reanchor()
+  assert.equals(log_size(), logged + 1, 'one update')
+  c = qf.comments()[1]
+  assert.equals(store.pos(c).state, 'current', 'current')
+  assert.equals((store.range(c)), line, 'at the line before the gap')
+  -- Saving the same content logs nothing more
+  save()
+  assert.equals(log_size(), logged + 1, 'no update on save')
+  restart()
+  c = qf.comments()[1]
+  assert.equals(store.pos(c).state, 'current', 'current after a restart')
+  rewrite(TEN)
+end)
+
+assert.run_test(':ReviewReanchor with nothing outdated logs nothing', function()
+  fresh()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local logged = log_size()
+  local msgs = {}
+  local original = vim.notify
+  vim.notify = function(msg) table.insert(msgs, msg) end
+  local ok, err = pcall(function()
+    vim.fn.cursor(5, 1)
+    vim.cmd('ReviewReanchor')
+    vim.fn.cursor(8, 1)
+    vim.cmd('ReviewReanchor')
+  end)
+  vim.notify = original
+  if not ok then error(err, 0) end
+  assert.equals(log_size(), logged, 'nothing logged')
+  assert.truthy(msgs[1] and msgs[1]:find('no outdated comment', 1, true), 'says the comment is not outdated')
+  assert.truthy(msgs[2] and msgs[2]:find('no comment', 1, true), 'says there is no comment')
+end)
+
 rewrite(TEN)
 test_helper.cleanup_test_environment()
 

@@ -51,6 +51,10 @@ end, {
   desc = 'Show the event history of a comment, or the last 50 events',
 })
 
+vim.api.nvim_create_user_command('ReviewReanchor', function()
+  require('quickfix-review').reanchor()
+end, { desc = 'Re-anchor the outdated comment on current line to its current lines' })
+
 vim.api.nvim_create_user_command('ReviewSave', function()
   require('quickfix-review').save_review()
 end, { desc = 'Save review to disk' })

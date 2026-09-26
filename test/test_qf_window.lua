@@ -80,6 +80,43 @@ assert.run_test('dd in the review list deletes the comment on that row', functio
   close_lists()
 end)
 
+assert.run_test('dd deletes by id after the file is reordered on disk', function()
+  add_two_comments()
+  qf.open_list()
+  -- Row 1 (not 2): re-rendering the view moves the cursor back to row 1,
+  -- so only row 1 exposes a positional lookup
+  vim.fn.cursor(1, 1) -- the line 1 comment
+
+  local storage_file = test_helper.storage_file
+  local list = vim.json.decode(table.concat(vim.fn.readfile(storage_file), '\n'),
+    { luanil = { object = true, array = true } })
+  vim.uv.sleep(10) -- so the rewrite gets a new mtime
+  vim.fn.writefile({ vim.json.encode({ list[2], list[1] }) }, storage_file)
+
+  pcall(vim.cmd, 'normal dd')
+  local left = qf.comments()
+  assert.length(left, 1, 'one comment left')
+  assert.equals(left[1].lnum, 3, 'the line 1 comment the cursor was on was deleted')
+  close_lists()
+end)
+
+assert.run_test('review rows carry the comment id; export keeps the context', function()
+  add_two_comments()
+  qf.show_list()
+  local rows, comments = vim.fn.getqflist(), qf.comments()
+  assert.length(rows, 2, 'two rows')
+  for i = 1, 2 do
+    assert.truthy(comments[i].id, 'comment has an id')
+    assert.equals(rows[i].user_data.id, comments[i].id, 'row ' .. i .. ' carries the id')
+    assert.equals(type(comments[i].user_data), 'table', 'stored context kept')
+    assert.equals(comments[i].user_data.id, nil, 'id not written into the stored context')
+  end
+  local config = require('quickfix-review.config')
+  local md = require('quickfix-review.export').to_markdown(comments, config.options)
+  assert.truthy(md and md:find('```diff', 1, true), 'export still emits the snippet')
+  close_lists()
+end)
+
 assert.run_test('show_list maps dd when the quickfix window already shows another list', function()
   add_two_comments()
   -- Push enough lists that the review view falls off the quickfix stack

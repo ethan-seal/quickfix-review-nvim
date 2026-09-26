@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-n9cc
 title: Stable comment ids + vim.json storage + id-based quickfix deletion
-status: todo
+status: completed
 type: task
 priority: high
 created_at: 2026-09-26T04:57:33Z
-updated_at: 2026-09-26T05:15:30Z
+updated_at: 2026-09-26T05:22:28Z
 blocked_by:
     - quickfix-review-nvim-mspz
     - quickfix-review-nvim-hh4t

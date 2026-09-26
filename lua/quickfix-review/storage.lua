@@ -38,7 +38,7 @@ end
 -- Save comments to file (an empty list is saved too, so clearing persists)
 -- Returns: success (boolean), message (string)
 function M.save(comments, filepath)
-  local ok, encoded = pcall(vim.fn.json_encode, comments)
+  local ok, encoded = pcall(vim.json.encode, comments)
   if not ok then
     return false, 'Failed to encode comments as JSON'
   end
@@ -69,8 +69,25 @@ function M.load(filepath)
   -- luanil: JSON null becomes nil at every depth (vim.fn.json_decode would
   -- give vim.NIL, which is truthy), e.g. the null commit migrate.ts wrote
   local ok, comments = pcall(vim.json.decode, content, { luanil = { object = true, array = true } })
+  local invalid = 'Failed to parse saved review at ' .. filepath .. ' (invalid JSON)'
   if not ok or type(comments) ~= 'table' then
-    return nil, 'Failed to parse saved review at ' .. filepath .. ' (invalid JSON)'
+    return nil, invalid
+  end
+
+  -- The top level must be a list without holes. With luanil.array a null
+  -- element becomes a hole, and ipairs would silently drop everything after
+  -- it (then the next save would persist the truncation). `#` can't detect
+  -- this: its result is any border when the table has holes.
+  local count, max = 0, 0
+  for k in pairs(comments) do
+    if type(k) ~= 'number' or k ~= math.floor(k) or k < 1 then
+      return nil, invalid
+    end
+    count = count + 1
+    if k > max then max = k end
+  end
+  if max ~= count then
+    return nil, invalid
   end
 
   return comments, nil

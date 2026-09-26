@@ -26,7 +26,20 @@ local function mtime(path)
   return stat and (stat.mtime.sec .. '.' .. stat.mtime.nsec) or nil
 end
 
--- Keep only the fields that describe a comment. Files written by older
+-- A stable identity for a comment: 16 hex chars from the OS RNG. Not
+-- math.random, which LuaJIT leaves unseeded, so every Neovim would produce
+-- the same sequence.
+local function new_id()
+  local bytes = assert((vim.uv or vim.loop).random(8))
+  return (bytes:gsub('.', function(b) return string.format('%02x', b:byte()) end))
+end
+
+local function has_id(item)
+  return type(item.id) == 'string' and item.id ~= ''
+end
+
+-- Keep only the fields that describe a comment, giving it an id if it has
+-- none (comments saved before ids existed). Files written by older
 -- versions were raw quickfix dumps and may carry a stale bufnr.
 local function normalize(item)
   local filename = item.filename
@@ -41,6 +54,7 @@ local function normalize(item)
     end_lnum = item.lnum
   end
   return {
+    id = has_id(item) and item.id or new_id(),
     filename = vim.fn.fnamemodify(filename, ':p'),
     lnum = item.lnum,
     end_lnum = end_lnum,
@@ -55,9 +69,27 @@ local function view_exists()
   return qf_id ~= nil and vim.fn.getqflist({ id = qf_id }).id == qf_id
 end
 
+-- The quickfix rows for the comments. Each row carries only its comment's id
+-- in user_data; the stored user_data (git context) stays in the store.
+local function view_items()
+  local items = {}
+  for i, c in ipairs(comments) do
+    items[i] = {
+      filename = c.filename,
+      lnum = c.lnum,
+      end_lnum = c.end_lnum,
+      col = c.col,
+      text = c.text,
+      type = c.type,
+      user_data = { id = c.id },
+    }
+  end
+  return items
+end
+
 local function refresh_view()
   if view_exists() then
-    vim.fn.setqflist({}, 'r', { id = qf_id, items = comments, title = QF_TITLE })
+    vim.fn.setqflist({}, 'r', { id = qf_id, items = view_items(), title = QF_TITLE })
   end
 end
 
@@ -81,11 +113,22 @@ local function sync()
   bad_file_notified = nil
 
   comments = {}
+  local backfilled = false
   for _, item in ipairs(list) do
     local c = normalize(item)
-    if c then table.insert(comments, c) end
+    if c then
+      table.insert(comments, c)
+      if not has_id(item) then backfilled = true end
+    end
   end
   synced = { path = path, mtime = current }
+  -- Persist ids given to comments that had none, once, so they stay stable.
+  -- Not write(): on failure that would forget the synced version, so every
+  -- sync would re-read the file and hand out new ids. A failure is left
+  -- silent; the next real change retries the write and reports it.
+  if backfilled and storage.save(comments, path) then
+    synced = { path = path, mtime = mtime(path) }
+  end
   refresh_view()
   on_change(comments)
   return true
@@ -138,9 +181,18 @@ function M.add(item)
   update(function() table.insert(comments, normalize(item)) end)
 end
 
+-- The comment with this id, or nil. Treat as read-only.
+function M.get(id)
+  sync()
+  for _, c in ipairs(comments) do
+    if c.id == id then return c end
+  end
+  return nil
+end
+
 -- Remove every comment for which pred(comment) is true
 -- Returns: number removed (0 if the change was refused)
-function M.remove(pred)
+function M.remove_if(pred)
   return update(function()
     local kept, removed = {}, 0
     for _, c in ipairs(comments) do
@@ -149,6 +201,12 @@ function M.remove(pred)
     comments = kept
     return removed
   end) or 0
+end
+
+-- Remove the comment with this id
+-- Returns: number removed (0 if there is none or the change was refused)
+function M.remove(id)
+  return M.remove_if(function(c) return c.id == id end)
 end
 
 function M.clear()
@@ -187,7 +245,7 @@ function M.show()
     -- already sees the review as the current list
     vim.fn.setqflist({}, ' ', { title = QF_TITLE })
     qf_id = vim.fn.getqflist({ id = 0 }).id
-    vim.fn.setqflist({}, 'r', { id = qf_id, items = comments, title = QF_TITLE })
+    vim.fn.setqflist({}, 'r', { id = qf_id, items = view_items(), title = QF_TITLE })
   end
 end
 

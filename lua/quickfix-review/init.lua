@@ -382,7 +382,7 @@ function M.delete_comment(range)
   end
   
   -- Remove comments overlapping the specified range
-  local comments_deleted = store.remove(function(item)
+  local comments_deleted = store.remove_if(function(item)
     local item_end = item.end_lnum or item.lnum
     return utils.files_match(item.filename, file) and
            item.lnum <= end_line and item_end >= start_line
@@ -510,21 +510,25 @@ local function setup_keymaps()
   end
 end
 
--- Delete the comment under the cursor in the quickfix window. The review
--- view lists the comments in store order, so the row is the comment's index.
+-- Delete the comment under the cursor in the quickfix window. Each review
+-- row carries its comment's id in user_data. Read it before any store call:
+-- a store call may re-read the file and re-render the rows in a new order.
 function M.delete_comment_from_qf()
   if vim.fn.win_gettype() ~= 'quickfix' or not store.is_current_view() then
     print('This quickfix list is not the review')
     return
   end
 
-  local target = store.all()[vim.fn.line('.')]
-  if not target then
+  local row = vim.fn.getqflist()[vim.fn.line('.')]
+  local id = row and type(row.user_data) == 'table' and row.user_data.id
+  if not id then
     print('No comment selected in quickfix list')
     return
   end
 
-  store.remove(function(c) return c == target end)
+  if store.remove(id) == 0 then
+    print('Comment no longer exists')
+  end
 end
 
 -- Buffer-local keys in the quickfix window that delete a review comment
@@ -621,7 +625,7 @@ function M.setup(opts)
         if has_comments then
           local choice = vim.fn.confirm('File changed on disk. Clear review comments for this file?', '&Yes\n&No', 2)
           if choice == 1 then
-            store.remove(in_file)
+            store.remove_if(in_file)
           end
         end
       end

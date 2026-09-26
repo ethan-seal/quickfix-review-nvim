@@ -22,8 +22,12 @@ local function reset()
   qf.clear_review()
 end
 
+local function decode(str)
+  return vim.json.decode(str, { luanil = { object = true, array = true } })
+end
+
 local function saved()
-  return vim.fn.json_decode(table.concat(vim.fn.readfile(storage_file), '\n'))
+  return decode(table.concat(vim.fn.readfile(storage_file), '\n'))
 end
 
 -- Simulate quitting and reopening Neovim: drop every module and set up again
@@ -151,7 +155,7 @@ assert.run_test('changes made on disk are picked up', function()
   local list = saved()
   table.insert(list, { filename = vim.fn.fnamemodify(test_file, ':p'), lnum = 4, text = '[NOTE] from elsewhere' })
   vim.uv.sleep(10)
-  vim.fn.writefile({ vim.fn.json_encode(list) }, storage_file)
+  vim.fn.writefile({ vim.json.encode(list) }, storage_file)
 
   assert.length(qf.comments(), 2, 'external comment visible')
   vim.fn.cursor(5, 1)
@@ -196,8 +200,9 @@ assert.run_test('a failed save leaves the file intact', function()
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, 'p')
   local path = dir .. '/review.json'
-  local seed = vim.fn.json_encode({
-    { filename = vim.fn.fnamemodify(test_file, ':p'), lnum = 2, col = 1, text = '[NOTE] seeded' },
+  -- The id marks the seed as already migrated, so loading doesn't rewrite it
+  local seed = vim.json.encode({
+    { id = '0123456789abcdef', filename = vim.fn.fnamemodify(test_file, ':p'), lnum = 2, col = 1, text = '[NOTE] seeded' },
   })
   local fh = io.open(path, 'w')
   fh:write(seed)
@@ -222,7 +227,7 @@ assert.run_test('a failed save leaves the file intact', function()
     vim.fn.setfperm(dir, 'rwxr-xr-x')
     vim.fn.cursor(3, 1)
     qf.add_comment('ISSUE')
-    local on_disk = vim.fn.json_decode(read_bytes(path))
+    local on_disk = decode(read_bytes(path))
     assert.length(on_disk, 2, 'saving works again once writable')
     assert.equals(vim.fn.glob(path .. '.tmp.*'), '', 'no temp files after recovering')
   end)
@@ -300,6 +305,116 @@ assert.run_test('legacy JSON null decodes as nil, even nested', function()
   local md = export_markdown()
   assert.falsy(md:find('commit', 1, true), 'export has no commit line')
   assert.truthy(md:find('line 2', 1, true), 'snippet still exported')
+end)
+
+local function is_id(id)
+  return type(id) == 'string' and #id == 16 and id:match('^%x+$') ~= nil
+end
+
+assert.run_test('adding a comment gives it a 16 hex char id', function()
+  reset()
+  vim.fn.cursor(3, 1)
+  qf.add_comment('ISSUE')
+
+  local id = saved()[1].id
+  assert.truthy(is_id(id), 'saved id is 16 hex chars: ' .. tostring(id))
+  assert.equals(qf.comments()[1].id, id, 'memory has the same id')
+  assert.equals(require('quickfix-review.store').get(id), qf.comments()[1], 'store.get finds it')
+end)
+
+assert.run_test('comments without ids get them on load, written once', function()
+  local abs = vim.fn.fnamemodify(test_file, ':p')
+  seed_legacy(string.format(
+    '[{"filename":%q,"lnum":1,"col":1,"text":"[NOTE] a"},{"filename":%q,"lnum":3,"col":1,"text":"[NOTE] b"}]',
+    abs, abs))
+
+  local list = qf.comments()
+  assert.length(list, 2, 'both loaded')
+  assert.truthy(is_id(list[1].id) and is_id(list[2].id), 'both got ids')
+  assert.not_equals(list[1].id, list[2].id, 'ids differ')
+  local on_disk = saved()
+  assert.equals(on_disk[1].id, list[1].id, 'first id written back')
+  assert.equals(on_disk[2].id, list[2].id, 'second id written back')
+
+  local bytes = read_bytes(storage_file)
+  local stat = vim.uv.fs_stat(storage_file)
+  vim.uv.sleep(10)
+  qf = restart()
+  local again = qf.comments()
+  assert.equals(read_bytes(storage_file), bytes, 'second load leaves the file alone')
+  local stat2 = vim.uv.fs_stat(storage_file)
+  assert.equals(stat2.mtime.sec .. '.' .. stat2.mtime.nsec, stat.mtime.sec .. '.' .. stat.mtime.nsec,
+    'second load does not rewrite')
+  assert.equals(again[1].id, list[1].id, 'first id stable')
+  assert.equals(again[2].id, list[2].id, 'second id stable')
+end)
+
+assert.run_test('two Neovim processes give their comments different ids', function()
+  local abs = vim.fn.fnamemodify(test_file, ':p')
+  local ids = {}
+  for i = 1, 2 do
+    local file = vim.fn.tempname() .. '-ids-' .. i .. '.json'
+    local result = vim.system({
+      vim.v.progpath, '--headless', '--clean',
+      '--cmd', 'set rtp^=' .. vim.fn.getcwd(),
+      '-c', string.format(
+        'lua require("quickfix-review").setup({storage_file=%q}); '
+          .. 'require("quickfix-review.store").add({filename=%q,lnum=1,text="x"})', file, abs),
+      '-c', 'qall!',
+    }):wait()
+    assert.equals(result.code, 0, 'child nvim exits cleanly: ' .. tostring(result.stderr))
+    local list = decode(read_bytes(file))
+    os.remove(file)
+    assert.length(list, 1, 'child saved its comment')
+    ids[i] = list[1].id
+    assert.truthy(is_id(ids[i]), 'child id is 16 hex chars: ' .. tostring(ids[i]))
+  end
+  assert.not_equals(ids[1], ids[2], 'ids differ across processes')
+end)
+
+assert.run_test('an empty object round-trips as {}', function()
+  local abs = vim.fn.fnamemodify(test_file, ':p')
+  seed_legacy(string.format(
+    '[{"id":"00000000000000aa","filename":%q,"lnum":1,"col":1,"text":"[NOTE] seeded","user_data":{}}]', abs))
+  assert.equals(type(qf.comments()[1].user_data), 'table', 'loads as a table')
+
+  vim.fn.cursor(3, 1)
+  qf.add_comment('NOTE') -- forces a save of the seeded comment
+  local bytes = read_bytes(storage_file)
+  assert.truthy(bytes:find('"user_data":{}', 1, true), 'seeded {} saved as {}: ' .. bytes)
+  assert.falsy(bytes:find('"user_data":[]', 1, true), 'not saved as []')
+
+  reset()
+  require('quickfix-review.store').add({ filename = abs, lnum = 2, text = 'x', user_data = vim.empty_dict() })
+  bytes = read_bytes(storage_file)
+  assert.truthy(bytes:find('"user_data":{}', 1, true), 'empty_dict saved as {}: ' .. bytes)
+  assert.falsy(bytes:find('[]', 1, true), 'no [] in the file')
+  qf = restart()
+  assert.equals(type(qf.comments()[1].user_data), 'table', 'reloads as a table')
+end)
+
+assert.run_test('a null in the comment list is rejected, not truncated', function()
+  local abs = vim.fn.fnamemodify(test_file, ':p')
+  local c1 = string.format('{"filename":%q,"lnum":1,"col":1,"text":"[NOTE] a"}', abs)
+  local c3 = string.format('{"filename":%q,"lnum":3,"col":1,"text":"[NOTE] b"}', abs)
+  local cases = {
+    ['middle null'] = '[' .. c1 .. ',null,' .. c3 .. ']',
+    ['two holes'] = '[' .. c1 .. ',null,' .. c3 .. ',null,' .. c1 .. ']',
+    ['leading null'] = '[null,' .. c1 .. ',' .. c3 .. ']',
+    ['top-level object'] = '{"a":1}',
+  }
+  for name, json in pairs(cases) do
+    local calls = capture_notify(function()
+      seed_legacy(json)
+      vim.fn.cursor(1, 1)
+      qf.add_comment('ISSUE')
+      qf.comments()
+    end)
+    assert.equals(read_bytes(storage_file), json, name .. ': file untouched')
+    assert.length(errors_mentioning(calls, storage_file), 1, name .. ': reported exactly once, with the path')
+  end
+  os.remove(storage_file)
+  qf = restart()
 end)
 
 -- Final cleanup

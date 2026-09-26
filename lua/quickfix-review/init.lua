@@ -434,6 +434,9 @@ function M.open_list()
   vim.cmd('copen')
 end
 
+-- Set while jump_comment's own :edit reads a file (see relocate_buffer)
+local own_jump = false
+
 -- Jump to the next (direction 1) or previous (direction -1) comment across
 -- all files, ordered by file then line, wrapping around at the ends
 function M.jump_comment(direction)
@@ -506,7 +509,12 @@ function M.jump_comment(direction)
   end
 
   if target.filename ~= file then
-    vim.cmd('edit ' .. vim.fn.fnameescape(target.filename))
+    -- The plugin's own navigation is never a quickfix jump: relocate_buffer
+    -- must not take this read for one heading for the selected entry
+    own_jump = true
+    local ok, err = pcall(vim.cmd, 'edit ' .. vim.fn.fnameescape(target.filename))
+    own_jump = false
+    if not ok then error(err, 0) end
   end
   -- The file may have shrunk since the comment was made
   local lnum = math.max(1, math.min(line_of[target.id], vim.api.nvim_buf_line_count(0)))
@@ -523,8 +531,13 @@ function M.jump_comment(direction)
   end)
 end
 
--- The open comment float, if any: { win = id, autocmd = id }
+-- The open comment float, if any: { win = id, autocmd = id, hold = { win, pos }? }
+-- `hold`: where the float was opened after finish_jump moved the cursor; the
+-- one CursorMoved that move causes, arriving there, doesn't close it
 local float_state
+
+-- Set while finish_jump's auto_show_check runs after it moved the cursor
+local hold_next_move = false
 
 -- Close the comment float (if still open) and remove its close handler
 local function close_float()
@@ -743,12 +756,31 @@ function M.view_comment()
 
   -- Close on cursor move or leaving the buffer. The handler lives in the
   -- QuickfixReviewFloat group and removes itself (both events) on close.
-  -- Closing the window wipes its buffer (bufhidden=wipe).
+  -- Closing the window wipes its buffer (bufhidden=wipe). The one
+  -- CursorMoved caused by finish_jump's own cursor move (dispatched by the
+  -- main loop after the float opened) is ignored, if the cursor is still
+  -- where the float opened.
   local float_group = vim.api.nvim_create_augroup('QuickfixReviewFloat', { clear = false })
   float_state = { win = win }
+  if hold_next_move then
+    float_state.hold = {
+      win = vim.api.nvim_get_current_win(), pos = vim.api.nvim_win_get_cursor(0),
+    }
+  end
   float_state.autocmd = vim.api.nvim_create_autocmd({ 'CursorMoved', 'BufLeave' }, {
     group = float_group,
-    callback = close_float,
+    callback = function(args)
+      local hold = float_state and float_state.hold
+      if hold and args.event == 'CursorMoved' then
+        float_state.hold = nil
+        local pos = vim.api.nvim_win_get_cursor(0)
+        if vim.api.nvim_get_current_win() == hold.win
+            and pos[1] == hold.pos[1] and pos[2] == hold.pos[2] then
+          return
+        end
+      end
+      close_float()
+    end,
   })
 end
 
@@ -1193,13 +1225,20 @@ local function finish_jump(bufnr, item, seen)
   if vim.api.nvim_get_current_buf() ~= bufnr or not store.is_current_view() then return end
   local info = vim.fn.getqflist({ id = 0, idx = 0, items = 0 })
   local now = info.items[info.idx]
+  local moved_cursor = false
   if now and now.bufnr == bufnr and vim.fn.line('.') == item.lnum then
+    local before = vim.api.nvim_win_get_cursor(0)
     pcall(vim.api.nvim_win_set_cursor, 0, { now.lnum, math.max(now.col - 1, 0) })
+    local after = vim.api.nvim_win_get_cursor(0)
+    moved_cursor = before[1] ~= after[1] or before[2] ~= after[2]
   end
   -- The navigation still counts, whichever of this and the jump's own
   -- scheduled check runs first
   last_seen = seen
+  -- The float opened here must survive the CursorMoved the move above causes
+  hold_next_move = moved_cursor
   pcall(auto_show_check)
+  hold_next_move = false
 end
 
 -- The file in `bufnr` was read or reloaded from disk (`event`): relocate its
@@ -1218,7 +1257,8 @@ local function relocate_buffer(bufnr, event)
   -- Relocation moves only this buffer's comments: redraw its signs now
   local name = utils.get_real_filepath(bufnr)
   if name ~= '' then draw_signs(bufnr, name, comments) end
-  local item = pending_jump(bufnr, fresh)
+  -- jump_comment's own :edit is never a quickfix jump (see own_jump)
+  local item = (not own_jump) and pending_jump(bufnr, fresh) or nil
   if item and not relocated and type(item.user_data) == 'table' then
     -- A change another Neovim logged, synced above, redraws the signs and so
     -- places this buffer's marks before relocation runs, which then reports

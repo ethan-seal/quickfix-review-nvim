@@ -50,6 +50,15 @@ local function navigate(cmd)
   vim.wait(100, function() return #floats() > 0 end)
 end
 
+-- Fire the CursorMoved the main loop dispatches after a relocated jump's
+-- finish_jump moved the cursor (navigate fired the jump's own one before
+-- finish_jump ran), then let scheduled callbacks run
+local function settle_jump()
+  vim.wait(50, function() return false end)
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  vim.wait(50, function() return false end)
+end
+
 -- Close any float and leave no list behind for later tests
 local function reset_nav()
   vim.api.nvim_exec_autocmds('CursorMoved', {})
@@ -492,6 +501,8 @@ assert.run_test('cnext into a file whose comment relocates on read shows it', fu
     vim.fn.writefile({ 'x', 'y', 'a', 'b', 'c', 'd', 'e' }, path)
     navigate('cc 1')
     navigate('cnext')
+    -- The CursorMoved caused by finish_jump's own cursor move
+    settle_jump()
     local idx = selected()
     assert.equals(idx, 2, 'on the second entry')
     assert.equals(vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':p'),
@@ -501,6 +512,10 @@ assert.run_test('cnext into a file whose comment relocates on read shows it', fu
     assert.length(open, 1, 'exactly one float open')
     local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(open[1]), 0, -1, false)
     assert.equals(lines[1], '[ISSUE] Test comment', 'float shows the moved comment')
+    -- A real cursor move still closes it
+    vim.fn.cursor(1, 1)
+    vim.api.nvim_exec_autocmds('CursorMoved', {})
+    assert.length(floats(), 0, 'float closed by a real move')
   end)
   pcall(reset_nav)
   pcall(vim.cmd, 'bwipeout! ' .. vim.fn.fnameescape(path))
@@ -748,6 +763,8 @@ assert.run_test('cnext into a shifted file after another Neovim logged: relocate
     local id = append_external(path)
     local jumped, jump_err = pcall(navigate, 'cnext')
     assert.truthy(jumped, 'cnext succeeded: ' .. tostring(jump_err))
+    -- The CursorMoved caused by finish_jump's own cursor move
+    settle_jump()
     assert.equals(selected(), 2, 'on the second entry')
     assert.equals(vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':p'),
       vim.fn.fnamemodify(path, ':p'), 'in the moved file')
@@ -760,6 +777,9 @@ assert.run_test('cnext into a shifted file after another Neovim logged: relocate
     assert.truthy(listed(id), 'external comment listed')
     local entry = vim.fn.getqflist()[2]
     assert.equals(entry.lnum, 6, 'entry refilled at the relocated line')
+    vim.fn.cursor(1, 1)
+    vim.api.nvim_exec_autocmds('CursorMoved', {})
+    assert.length(floats(), 0, 'float closed by a real move')
   end)
   pcall(reset_nav)
   pcall(vim.cmd, 'bwipeout! ' .. vim.fn.fnameescape(path))
@@ -823,6 +843,62 @@ end)
 
 assert.run_test(':cc N to the current N into a file whose comment relocates on read', function()
   jump_to_current_into_moved_file(function() navigate('cc 2') end)
+end)
+
+-- ]r into a file (wiped, then shifted on disk) holding the selected review
+-- list entry is the plugin's own navigation, not a quickfix jump to that
+-- entry: it lands on the comment it was heading for, with its float
+assert.run_test('jump_comment into a shifted file holding the selected entry', function()
+  local path = vim.fn.tempname() .. '-moved.txt'
+  vim.fn.writefile({ 'a', 'b', 'c', 'd', 'e' }, path)
+  local ok, err = pcall(function()
+    qf.clear_review()
+    vim.cmd('only')
+    vim.fn.cursor(1, 1)
+    qf.add_comment('NOTE')
+    local home = vim.api.nvim_get_current_buf()
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    local buf = vim.api.nvim_get_current_buf()
+    vim.fn.cursor(1, 1)
+    qf.add_comment('ISSUE')
+    vim.fn.cursor(3, 1)
+    qf.add_comment('SUGGESTION')
+    vim.api.nvim_set_current_buf(home)
+    qf.show_list()
+    navigate('cc 3')
+    local idx, item = selected()
+    assert.equals(idx, 3, 'entry 3 selected')
+    assert.equals(item.bufnr, buf, 'entry 3 is in the other file')
+    vim.api.nvim_set_current_buf(home)
+    vim.api.nvim_exec_autocmds('CursorMoved', {})
+    vim.wait(50, function() return false end)
+    assert.length(floats(), 0, 'float closed')
+    vim.cmd('bwipeout! ' .. buf)
+    -- Refill, so the entries name the file again rather than the wiped buffer
+    qf.show_list()
+    assert.equals(selected(), 3, 'entry 3 still selected')
+    -- Two lines inserted at the top while the file is not loaded: the next
+    -- comment is now on line 3, the selected entry's (stale) line
+    vim.fn.writefile({ 'x', 'y', 'a', 'b', 'c', 'd', 'e' }, path)
+    vim.fn.cursor(1, 1)
+    qf.jump_comment(1)
+    vim.api.nvim_exec_autocmds('CursorMoved', {})
+    vim.wait(100, function() return #floats() > 0 end)
+    vim.wait(50, function() return false end)
+    assert.equals(vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':p'),
+      vim.fn.fnamemodify(path, ':p'), 'in the moved file')
+    assert.equals(vim.fn.line('.'), 3, 'on the next comment, relocated')
+    local open = floats()
+    assert.length(open, 1, 'exactly one float open')
+    local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(open[1]), 0, -1, false)
+    assert.equals(lines[1], '[ISSUE] Test comment', 'float shows the next comment')
+    assert.equals(selected(), 3, 'selection unchanged')
+  end)
+  pcall(reset_nav)
+  pcall(vim.cmd, 'bwipeout! ' .. vim.fn.fnameescape(path))
+  os.remove(path)
+  qf.clear_review()
+  if not ok then error(err, 0) end
 end)
 
 qf.clear_review()

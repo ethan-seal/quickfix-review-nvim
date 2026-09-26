@@ -1085,7 +1085,10 @@ end
 -- for the first time (`fresh`: a jump to the entry already selected).
 -- A jump to the selected entry into a buffer that was :bunload-ed but not
 -- wiped is not a first read, so it isn't detected: its cursor stays on the
--- entry's old line.
+-- entry's old line. A buffer entered with `noautocmd edit` and reloaded before
+-- any write is taken for a first read. A first plain `:edit +N` of the file
+-- (goto_real_file's included) that lands on the selected entry's old line
+-- counts as a jump to it, and moves to its relocated line.
 local function pending_jump(bufnr, fresh)
   if not last_seen or not store.is_current_view() then return nil end
   local info = vim.fn.getqflist({ id = 0, idx = 0, items = 0 })
@@ -1124,7 +1127,9 @@ local function relocate_buffer(bufnr, event)
   if vim.bo[bufnr].buftype ~= '' or utils.is_special_buffer(bufnr) then return end
   local fresh = event == 'BufReadPost' and not read_once[bufnr]
   if event == 'BufReadPost' then read_once[bufnr] = true end
-  local comments = store.all()
+  -- A change another Neovim logged refills the list after the read (see
+  -- below), not during it
+  local comments = store.all({ defer_view = true })
   local relocated = track.relocate_buffer(bufnr, comments)
   -- Relocation moves only this buffer's comments: redraw its signs now
   local name = utils.get_real_filepath(bufnr)
@@ -1137,7 +1142,8 @@ local function relocate_buffer(bufnr, event)
     vim.schedule(function() finish_jump(bufnr, item, seen) end)
   else
     -- Never refill the list during a read: a quickfix jump may be reading
-    -- the file, and refilling would abort it with E925
+    -- the file, and refilling would abort it with E925 (the sync above
+    -- defers its own refill likewise)
     vim.schedule(function() store.refresh() end)
   end
 end
@@ -1257,8 +1263,9 @@ function M.setup(opts)
   })
 
   -- Pick up changes another Neovim logged when coming back to this one or
-  -- idling. Reading the review is a single stat when nothing was logged; a
-  -- change refreshes the list view and every buffer's signs (on_change).
+  -- idling. Reading the review is a stat and a header read when nothing was
+  -- logged; a change refreshes the list view and every buffer's signs
+  -- (on_change).
   vim.api.nvim_create_autocmd({ 'FocusGained', 'CursorHold' }, {
     group = augroup,
     callback = function() store.all() end,
@@ -1267,11 +1274,12 @@ function M.setup(opts)
   -- Read the review on entering any buffer, and draw signs for a file.
   -- Reading may pick up changes another Neovim logged (which redraws every
   -- buffer); otherwise only a buffer that changed since its signs were drawn
-  -- is redrawn.
+  -- is redrawn. A quickfix jump may be entering the buffer: the list is
+  -- refilled after it (refilling during it would abort it with E925).
   vim.api.nvim_create_autocmd('BufEnter', {
     group = augroup,
     callback = function(args)
-      local comments = store.all()
+      local comments = store.all({ defer_view = true })
       local file = utils.get_real_filepath(args.buf)
       if file == '' then return end
       if drawn_at[args.buf] ~= vim.api.nvim_buf_get_changedtick(args.buf) then
@@ -1299,11 +1307,21 @@ function M.setup(opts)
   for _, b in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(b) then read_once[b] = true end
   end
+  -- A new file is not read, but its buffer is there: a later :e! is a reload
+  vim.api.nvim_create_autocmd('BufNewFile', {
+    group = augroup,
+    callback = function(args) read_once[args.buf] = true end,
+  })
   -- Write the anchors of a saved file's comments back to the log. Only on
   -- a write: unsaved edits never change a stored anchor.
   vim.api.nvim_create_autocmd('BufWritePost', {
     group = augroup,
-    callback = function(args) write_back(args.buf, args.file) end,
+    callback = function(args)
+      -- The buffer matches the file now (:enew then :saveas, or a new
+      -- file): a later :e! is a reload, not a first read
+      read_once[args.buf] = true
+      write_back(args.buf, args.file)
+    end,
   })
   -- A colorscheme clears every highlight group: define the plugin's again
   vim.api.nvim_create_autocmd('ColorScheme', {

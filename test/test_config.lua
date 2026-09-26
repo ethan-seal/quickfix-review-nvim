@@ -218,6 +218,66 @@ assert.run_test('reloading a file loaded before setup does not move the cursor',
   if not ok then error(err, 0) end
 end)
 
+-- A file the plugin never saw read (`create` makes it the current buffer
+-- and writes it), selected, shifted on disk and reloaded: the reload is not
+-- a first read, so the cursor stays
+local function reload_created_file(create)
+  local qf = require('quickfix-review')
+  local path = vim.fn.tempname() .. '-new.txt'
+  local ok, err = pcall(function()
+    qf.setup({ storage_file = test_helper.storage_file })
+    test_helper.create_test_file('home 1\nhome 2\n')
+    vim.cmd('only')
+    qf.clear_review()
+    vim.fn.cursor(1, 1)
+    qf.add_comment('NOTE')
+    create(path)
+    assert.equals(vim.fn.filereadable(path), 1, 'written')
+    vim.fn.cursor(3, 1)
+    qf.add_comment('ISSUE')
+    qf.show_list()
+    local idx
+    for i, item in ipairs(vim.fn.getqflist()) do
+      if item.bufnr == vim.fn.bufnr(path) then idx = i end
+    end
+    assert.truthy(idx, 'entry for the file')
+    vim.cmd('cc ' .. idx)
+    vim.api.nvim_exec_autocmds('CursorMoved', {})
+    vim.wait(50, function() return false end)
+    assert.equals(vim.fn.line('.'), 3, 'on the entry')
+    -- Two lines inserted above the comment on disk, then reloaded
+    vim.fn.writefile({ 'x', 'y', 'line 1', 'line 2', 'line 3', 'line 4', 'line 5' }, path)
+    vim.cmd('silent edit!')
+    vim.wait(50, function() return false end)
+    assert.equals(vim.fn.line('.'), 3, 'cursor not moved by the plugin')
+  end)
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  vim.fn.setqflist({})
+  qf.clear_review()
+  test_helper.setup_test_environment()
+  pcall(vim.cmd, 'bwipeout! ' .. vim.fn.fnameescape(path))
+  vim.fn.delete(path)
+  if not ok then error(err, 0) end
+end
+
+local new_lines = { 'line 1', 'line 2', 'line 3', 'line 4', 'line 5' }
+
+assert.run_test('reloading a file created with BufNewFile and written does not move the cursor', function()
+  reload_created_file(function(path)
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, new_lines)
+    vim.cmd('silent write')
+  end)
+end)
+
+assert.run_test('reloading a file made with :enew and :saveas does not move the cursor', function()
+  reload_created_file(function(path)
+    vim.cmd('enew')
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, new_lines)
+    vim.cmd('silent saveas ' .. vim.fn.fnameescape(path))
+  end)
+end)
+
 -- Put the test configuration back for the files that run after this one
 test_helper.setup_test_environment()
 test_helper.cleanup_test_environment()

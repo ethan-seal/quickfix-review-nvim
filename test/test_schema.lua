@@ -264,11 +264,14 @@ assert.run_test('a v1 file is migrated to the log as v2 records, the original ke
     assert.equals(read_bytes(test_helper.log_path(path)), bytes, 'log not appended to')
 
     -- Another v1 write (e.g. an older tool) is not read once a log exists: it
-    -- is warned about once and left alone
+    -- is warned about once and left alone. It is looked for when the log
+    -- changes or the review is loaded, not on every read of an idle log:
+    -- restart to load it.
     local other = string.format('[{"filename":%q,"lnum":1,"text":"[NOTE] later"}]', abs)
     write_bytes(path, other)
     local later
     local calls = capture_notify(function()
+      qf = restart(path)
       later = qf.comments()
       qf.comments()
     end)

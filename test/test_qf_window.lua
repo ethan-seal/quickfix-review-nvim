@@ -481,6 +481,82 @@ assert.run_test('cnext into a file whose comment relocates on read shows it', fu
   if not ok then error(err, 0) end
 end)
 
+-- Another Neovim adds a comment on line 5 of `path` (listed after the rest)
+local function append_external(path)
+  local log_path = test_helper.log_path()
+  local c = vim.deepcopy(test_helper.saved(log_path)[2])
+  c.id = c.id .. '-external'
+  c.text = 'External comment'
+  c.lnum, c.end_lnum = 5, 5
+  if c.anchor then c.anchor.lnum, c.anchor.end_lnum = 5, 5 end
+  local log = require('quickfix-review.log')
+  assert.truthy(log.append(log_path, { log.event('add', { comment = c }) }), 'appended')
+  return c.id
+end
+
+local function listed(id)
+  for _, item in ipairs(vim.fn.getqflist()) do
+    if type(item.user_data) == 'table' and item.user_data.id == id then return true end
+  end
+  return false
+end
+
+-- :cnext into `path` (wiped and shifted on disk when `wipe`, else loaded
+-- and hidden) after another Neovim appended to the log: the sync the read or
+-- enter runs picks the append up, and refills the list after the jump
+local function cnext_after_external_append(wipe)
+  local path = vim.fn.tempname() .. '-moved.txt'
+  vim.fn.writefile({ 'a', 'b', 'c', 'd', 'e' }, path)
+  local ok, err = pcall(function()
+    qf.clear_review()
+    vim.cmd('only')
+    vim.fn.cursor(1, 1)
+    qf.add_comment('NOTE')
+    local home = vim.api.nvim_get_current_buf()
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    local buf = vim.api.nvim_get_current_buf()
+    vim.fn.cursor(4, 1)
+    qf.add_comment('ISSUE')
+    vim.api.nvim_set_current_buf(home)
+    if wipe then
+      vim.cmd('bwipeout! ' .. buf)
+      -- Two lines inserted above the comment while the file is not loaded
+      vim.fn.writefile({ 'x', 'y', 'a', 'b', 'c', 'd', 'e' }, path)
+    else
+      assert.truthy(vim.api.nvim_buf_is_loaded(buf), 'target still loaded')
+    end
+    qf.show_list()
+    navigate('cc 1')
+    local id = append_external(path)
+    local jumped, jump_err = pcall(navigate, 'cnext')
+    assert.truthy(jumped, 'cnext succeeded: ' .. tostring(jump_err))
+    vim.wait(100, function() return listed(id) end)
+    assert.equals(selected(), 2, 'on the second entry')
+    assert.equals(vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':p'),
+      vim.fn.fnamemodify(path, ':p'), 'in the target file')
+    assert.equals(vim.fn.line('.'), wipe and 6 or 4, 'on the entry')
+    local found = false
+    for _, c in ipairs(qf.comments()) do
+      if c.id == id then found = true end
+    end
+    assert.truthy(found, 'external comment read')
+    assert.truthy(listed(id), 'external comment listed')
+  end)
+  pcall(reset_nav)
+  pcall(vim.cmd, 'bwipeout! ' .. vim.fn.fnameescape(path))
+  os.remove(path)
+  qf.clear_review()
+  if not ok then error(err, 0) end
+end
+
+assert.run_test('cnext into a file read after another Neovim logged: no E925', function()
+  cnext_after_external_append(true)
+end)
+
+assert.run_test('cnext into a hidden file after another Neovim logged: no E925', function()
+  cnext_after_external_append(false)
+end)
+
 -- Jump to the entry already selected (entry 2, in a file wiped and then
 -- shifted on disk) with `jump`: no E925, and the cursor on the relocated line
 local function jump_to_current_into_moved_file(jump)

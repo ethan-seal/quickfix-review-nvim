@@ -284,6 +284,19 @@ local function refresh_view()
   on_refill(qf_id, before.idx, vim.fn.getqflist({ id = qf_id, idx = 0 }).idx)
 end
 
+-- refresh_view, once, after the current event: for a sync inside a buffer
+-- read or enter, where a quickfix jump may be running and a refill would
+-- abort it with E925. Coalesced: one pending refill at a time.
+local view_scheduled = false
+local function refresh_view_later()
+  if view_scheduled then return end
+  view_scheduled = true
+  vim.schedule(function()
+    view_scheduled = false
+    refresh_view()
+  end)
+end
+
 -- Where the review lives. Per project: log.jsonl (the review), state.json
 -- (its cache) and the lock dir `lock`, in the project's storage dir, next to
 -- where comments.json used to be. The project root is the git toplevel of the
@@ -438,8 +451,13 @@ local function seen_lines(loc)
   return log_seen.lines
 end
 
+-- The log (path:ino:size:mtime) comments.json was last checked against (see
+-- check_reappeared): a sync that finds the log unchanged skips that stat
+local reappeared_log_key
+
 local function reset(loc)
   log_seen = nil
+  reappeared_log_key = nil
   synced = fresh_sync(loc)
   reduced = reduce.new()
   unsaved = 0
@@ -999,17 +1017,22 @@ end
 
 -- Bring the comments up to date with the log (migrating or importing first
 -- when there is none). opts.full replays the whole log, ignoring the cache.
+-- opts.defer_view refills the quickfix view after the current event rather
+-- than now (see refresh_view_later); on_change still runs now.
 -- Returns: ok (boolean), err (string or nil)
 local function sync(opts)
   opts = opts or {}
   local loc = resolve()
   local changed = false
+  local function refresh()
+    if opts.defer_view then refresh_view_later() else refresh_view() end
+  end
   -- A review that can't be read after a switch (or once its log is gone)
   -- shows nothing, rather than the previous review's comments
   local function fail(err)
     if changed then
       comments = {}
-      refresh_view()
+      refresh()
       on_change(comments)
     end
     return refuse(err)
@@ -1045,7 +1068,15 @@ local function sync(opts)
     local ok, err, read_changed = read_log(loc, stat, opts)
     if not ok then return fail(err) end
     changed = changed or read_changed
-    check_reappeared(loc)
+    -- comments.json is looked at again only once the log changed (or after
+    -- a reset): a sync with nothing new costs no stat for it. One that
+    -- reappears while the log is idle is noticed at its next change.
+    local key = string.format('%s:%d:%d:%d.%d', loc.log, stat.ino, stat.size,
+      stat.mtime.sec, stat.mtime.nsec)
+    if key ~= reappeared_log_key then
+      check_reappeared(loc)
+      reappeared_log_key = key
+    end
     apply_retention(loc)
   end
   bad_notified = nil
@@ -1056,7 +1087,7 @@ local function sync(opts)
       if c then table.insert(list, c) end
     end
     comments = list
-    refresh_view()
+    refresh()
     on_change(comments)
   end
   if unsaved >= FLUSH_EVERY then flush() end
@@ -1224,8 +1255,11 @@ function M.refresh()
 end
 
 -- All comments, in creation order. Treat as read-only.
-function M.all()
-  sync()
+-- opts.defer_view: for callers inside a buffer read or enter, where a
+-- quickfix jump may be running: a change another Neovim logged refills the
+-- list after the event, as refilling during the jump would abort it (E925).
+function M.all(opts)
+  sync(opts and { defer_view = opts.defer_view } or nil)
   return comments
 end
 

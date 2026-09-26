@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-zbpk
 title: 'Jump detection edge cases: read_once gaps, mid-jump sync refill, sync stat cost'
-status: todo
+status: completed
 type: bug
 priority: low
 created_at: 2026-09-26T08:17:15Z
-updated_at: 2026-09-26T08:17:15Z
+updated_at: 2026-09-26T11:26:42Z
 ---
 
 Leftovers from l6ll/dsak/aazu. None are blockers.

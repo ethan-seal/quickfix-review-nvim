@@ -77,6 +77,8 @@ assert.run_test('a comment added by another Neovim shows on the next BufEnter', 
 
   vim.api.nvim_exec_autocmds('BufEnter', { buffer = file_buf })
   assert.truthy(has_sign_on_line(2), 'sign drawn after BufEnter')
+  -- The list is refilled after the enter (a quickfix jump may be under way)
+  vim.wait(100, function() return #vim.fn.getqflist({ id = view, items = 0 }).items > 0 end)
   local items = vim.fn.getqflist({ id = view, items = 0 }).items
   assert.length(items, 1, 'list view refreshed')
   assert.equals(items[1].lnum, 2, 'at its line')
@@ -145,6 +147,25 @@ assert.run_test(':ReviewDelete on a comment another Neovim deleted is a no-op', 
   assert.length(notified, 0, 'no error or warning')
   assert.length(test_helper.log_ops(log_file, 'delete'), 1, 'only the other one\'s delete is logged')
   assert.falsy(has_sign_on_line(2), 'its sign is gone')
+  reset()
+end)
+
+assert.run_test('a sync that finds nothing new stats only the log', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('NOTE')
+  qf.comments()
+  local stats = {}
+  local orig = vim.uv.fs_stat
+  vim.uv.fs_stat = function(path, ...)
+    table.insert(stats, path)
+    return orig(path, ...)
+  end
+  local ok, err = pcall(qf.comments)
+  vim.uv.fs_stat = orig
+  if not ok then error(err, 0) end
+  assert.length(stats, 1, 'one stat: ' .. table.concat(stats, ', '))
+  assert.equals(stats[1], log_file, 'of the log')
   reset()
 end)
 

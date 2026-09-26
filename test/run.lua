@@ -49,6 +49,9 @@ run_file('test/test_persistence.lua')
 -- Run multi-instance sync tests
 run_file('test/test_sync.lua')
 
+-- Run log rotation tests
+run_file('test/test_rotation.lua')
+
 -- Run storage schema and upgrade tests
 run_file('test/test_schema.lua')
 

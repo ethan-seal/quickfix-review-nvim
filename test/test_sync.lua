@@ -189,6 +189,40 @@ assert.run_test('a synced change keeps the selected entry and opens no window', 
   reset()
 end)
 
+assert.run_test('a rotation by another Neovim leaves comments, signs and trash as they were', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('NOTE')
+  vim.fn.cursor(3, 1)
+  qf.add_comment('ISSUE')
+  vim.fn.cursor(5, 1)
+  qf.add_comment('NOTE')
+  qf.delete_comment({ 3, 3 })
+  local store = require('quickfix-review.store')
+  local before = vim.tbl_map(function(c) return c.id end, qf.comments())
+  local trashed = vim.tbl_keys(store.trash())
+  local ino = vim.uv.fs_stat(log_file).ino
+
+  -- The other one rotates with its tiny limit, on a change that changes nothing
+  -- here (an edit to the same body is not logged, so edit to another and back)
+  other(string.format('require("quickfix-review.config").options.log_max_bytes = 1; '
+    .. 'assert(store.edit(%q, "tmp") == "edited")', before[1]))
+  other(string.format('assert(store.edit(%q, "Test comment") == "edited")', before[1]))
+  assert.truthy(#vim.fn.glob(test_helper.storage_file .. '.log.*.jsonl', true, true) >= 1, 'rotated')
+  assert.not_equals(vim.uv.fs_stat(log_file).ino, ino, 'a new log')
+
+  local _, notified = capture(function() vim.api.nvim_exec_autocmds('CursorHold', {}) end)
+  local errors = vim.tbl_filter(function(n) return n.level == vim.log.levels.ERROR end, notified)
+  assert.length(errors, 0, 'no error: ' .. vim.inspect(notified))
+  local after = vim.tbl_map(function(c) return c.id end, qf.comments())
+  assert.equals(table.concat(after, ','), table.concat(before, ','), 'same comments')
+  assert.equals(qf.comments()[1].body, 'Test comment', 'the latest body')
+  assert.truthy(has_sign_on_line(1) and has_sign_on_line(5), 'signs kept')
+  assert.falsy(has_sign_on_line(3), 'the deleted one has none')
+  assert.truthy(vim.deep_equal(vim.tbl_keys(store.trash()), trashed), 'same trash')
+  reset()
+end)
+
 assert.run_test('a log rewritten in place with another log_id is replayed from the start', function()
   reset()
   vim.fn.cursor(1, 1)

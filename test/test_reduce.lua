@@ -211,6 +211,73 @@ assert.run_test('unknown ops and malformed events change nothing', function()
   assert.equals(why[4], 'invalid', 'delete without an id')
 end)
 
+-- The state of `events`, round-tripped through JSON as a checkpoint is
+local function as_checkpoint(state)
+  local decoded = vim.json.decode(vim.json.encode({ op = 'checkpoint', eid = 'cp', ts = 9, state = state }),
+    { luanil = { object = true, array = true } })
+  return decoded
+end
+
+assert.run_test('a checkpoint of a replay replays to the same state', function()
+  local events = {
+    { op = 'header', log_id = 'x', v = 1 },
+    { op = 'add', comment = rec('a') },
+    { op = 'add', comment = rec('b') },
+    { op = 'add', comment = rec('c') },
+    { op = 'add', comment = rec('d') },
+    { op = 'delete', id = 'b', eid = 'e1', ts = 5 },
+    { op = 'clear', comments = { rec('c'), rec('d') }, eid = 'e2', ts = 6 },
+    { op = 'add', comment = rec('e') },
+    { op = 'update', id = 'a', set = { body = 'new' } },
+  }
+  local state = replay(events)
+  local again, why = replay({ { op = 'header', log_id = 'y', v = 1 }, as_checkpoint(state) })
+  assert.equals(why[2], false, 'applied')
+  assert.truthy(vim.deep_equal(again.comments, state.comments), 'same comments')
+  assert.truthy(vim.deep_equal(again.trash, state.trash), 'same trash')
+  assert.truthy(vim.deep_equal(again.removed, state.removed), 'same removals, in order')
+
+  -- Later events apply on top
+  local later = replay({
+    { op = 'header', log_id = 'y', v = 1 }, as_checkpoint(state),
+    { op = 'update', id = 'e', set = { body = 'E' } },
+    { op = 'delete', id = 'a', eid = 'e3' },
+    { op = 'restore', id = 'c', comment = rec('c') },
+    { op = 'add', comment = rec('b') }, -- in the trash: still a duplicate
+  })
+  assert.equals(ids(later), 'e,c', 'updated, deleted and restored on top')
+  assert.equals(reduce.get(later, 'e').body, 'E', 'update applied')
+  assert.truthy(later.trash.a and later.trash.b and later.trash.d, 'trash carried over')
+  assert.equals(later.trash.c, nil, 'restored out of the trash')
+end)
+
+assert.run_test('a checkpoint keeps records verbatim', function()
+  local r = rec('a')
+  r.extra = { nested = true }
+  r.legacy_text = 'old text'
+  r.anchor = { sha = 'abc123', lnum = 1, end_lnum = 1, lines = { 'x' } }
+  local state = replay({ { op = 'add', comment = r } })
+  local again = replay({ as_checkpoint(state) })
+  local got = again.comments[1]
+  assert.truthy(vim.deep_equal(got, r), 'record unchanged: ' .. vim.inspect(got))
+  assert.equals(got.pos, nil, 'no pos')
+end)
+
+assert.run_test('a malformed checkpoint is ignored and changes nothing', function()
+  local base = { { op = 'add', comment = rec('a') } }
+  for i, bad in ipairs({
+    { op = 'checkpoint' },
+    { op = 'checkpoint', state = { comments = {}, trash = {} } },
+    { op = 'checkpoint', state = { comments = { { body = 'no id' } }, trash = {}, removed = {} } },
+    { op = 'checkpoint', state = { comments = {}, trash = { x = rec('y') }, removed = {} } },
+    { op = 'checkpoint', state = { comments = {}, trash = {}, removed = { 'b' } } },
+  }) do
+    local state, why = replay(vim.list_extend(vim.deepcopy(base), { bad }))
+    assert.equals(why[2], 'invalid', 'case ' .. i .. ' invalid')
+    assert.equals(ids(state), 'a', 'case ' .. i .. ' unchanged')
+  end
+end)
+
 test_helper.cleanup_test_environment()
 
 return assert

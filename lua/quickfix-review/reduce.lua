@@ -18,6 +18,9 @@
 -- - delete and clear move comments to the trash; restore makes a trashed (or
 --   unknown) comment live again with the logged content, and is ignored for a
 --   live one.
+-- - checkpoint (the first event of a rotated log) replaces the whole state
+--   with its `state` ({ comments, trash, removed }); a malformed one is
+--   ignored.
 local M = {}
 
 function M.new()
@@ -127,6 +130,33 @@ end
 -- Apply one event to `state` (updated in place and returned)
 -- Returns: state, and why the event was ignored ('duplicate', 'unknown',
 -- 'live', 'invalid', 'unknown op'), or nil if it was applied
+-- The state of the log up to a rotation (see store.lua), which the new log
+-- starts with: replaces the whole state. Records are kept as logged.
+function handlers.checkpoint(state, ev)
+  local s = ev.state
+  if type(s) ~= 'table' or type(s.comments) ~= 'table' or type(s.trash) ~= 'table'
+      or type(s.removed) ~= 'table' then
+    return 'invalid'
+  end
+  for _, record in ipairs(s.comments) do
+    if not valid(record) then return 'invalid' end
+  end
+  for id, record in pairs(s.trash) do
+    if type(id) ~= 'string' or not valid(record) or record.id ~= id then return 'invalid' end
+  end
+  for _, e in ipairs(s.removed) do
+    if type(e) ~= 'table' or type(e.id) ~= 'string' then return 'invalid' end
+  end
+  local comments, trashed, removed = {}, {}, {}
+  for i, record in ipairs(s.comments) do comments[i] = record end
+  for id, record in pairs(s.trash) do trashed[id] = record end
+  for i, e in ipairs(s.removed) do
+    removed[i] = { id = e.id, op = e.op, eid = e.eid, ts = type(e.ts) == 'number' and e.ts or nil }
+  end
+  state.comments, state.trash, state.removed = comments, trashed, removed
+  return nil
+end
+
 function M.apply(state, ev)
   local handler = type(ev) == 'table' and handlers[ev.op]
   if not handler then return state, 'unknown op' end

@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-oyi9
 title: Append-only event log for comment storage
-status: todo
+status: completed
 type: epic
 priority: high
 created_at: 2026-09-26T04:39:13Z
-updated_at: 2026-09-26T04:57:50Z
+updated_at: 2026-09-26T10:58:50Z
 ---
 
 Epic: make comment storage append-only so no save/update/delete can lose data; the current state is a rebuildable cache of the log. User requirement: "data is never lost; if we overwrite something, we can recover".

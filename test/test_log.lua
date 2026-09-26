@@ -216,6 +216,34 @@ assert.run_test('a stale lock whose pid changed since it was judged is not broke
   assert.length(vim.fn.glob(dir .. '.stale-*', true, true), 0, 'nothing moved aside')
 end)
 
+assert.run_test('a stale lock that can never be broken times out rather than spinning', function()
+  local dir = vim.fn.tempname() .. '-lock'
+  local child = vim.system({ 'true' })
+  child:wait()
+  seed_lock(dir, child.pid)
+  -- Every rename (of the stale lock aside) fails; after LIMIT calls the real
+  -- one is back, so a regression breaks the lock instead of hanging the suite
+  local LIMIT = 1000000
+  local original_rename, calls = uv.fs_rename, 0
+  uv.fs_rename = function(a, b)
+    calls = calls + 1
+    if calls > LIMIT then return original_rename(a, b) end
+    return nil, 'EPERM: operation not permitted', 'EPERM'
+  end
+  local start = uv.hrtime()
+  local ran = false
+  local ok, taken, err = pcall(log.with_lock, dir, function() ran = true end)
+  local waited = (uv.hrtime() - start) / 1e6
+  uv.fs_rename = original_rename
+  vim.fn.delete(dir, 'rf')
+  assert.truthy(ok, 'no error raised: ' .. tostring(taken))
+  assert.falsy(taken, 'not taken')
+  assert.truthy(tostring(err):find('Timed out', 1, true), 'times out: ' .. tostring(err))
+  assert.falsy(ran, 'fn not run')
+  assert.truthy(calls <= LIMIT, 'gave up before the rename was restored (' .. calls .. ' calls)')
+  assert.truthy(waited < 3000, 'within about the wait, got ' .. waited .. 'ms')
+end)
+
 assert.run_test('a live lock is waited on, then times out; an old one is broken', function()
   local dir = vim.fn.tempname() .. '-lock'
   local holder = vim.system({ 'sleep', '30' })

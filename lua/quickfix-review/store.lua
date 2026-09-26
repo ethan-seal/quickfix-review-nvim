@@ -489,6 +489,12 @@ local function apply(events)
   for _, ev in ipairs(events) do
     if ev.op == 'import' and type(ev.source_sha256) == 'string' then
       synced.imports[ev.source_sha256] = true
+    elseif ev.op == 'checkpoint' and type(ev.imports) == 'table' then
+      -- The imports of the log it rotated, so a crashed migration is still
+      -- recognised (see check_reappeared)
+      for _, sha in ipairs(ev.imports) do
+        if type(sha) == 'string' then synced.imports[sha] = true end
+      end
     end
     local _, ignored = reduce.apply(reduced, ev)
     if ignored == 'duplicate' then
@@ -573,6 +579,13 @@ local function read_log(loc, stat, opts)
     end
   end
   local res, err = log.read(loc.log, base.offset, base.lines, seen_lines(loc))
+  -- The log was replaced (rotated, see rotate) between the stat and the
+  -- read: what was read (or failed to be) is another file than was stat'ed.
+  -- Read the new one instead, once.
+  local now = not opts.retried and uv.fs_stat(loc.log)
+  if now and now.ino ~= stat.ino and (not res or (res.ino and res.ino ~= stat.ino)) then
+    return read_log(loc, now, { full = opts.full, retried = true })
+  end
   if not res then return false, err end
   if base.offset == 0 then base.log_id = res.log_id end
 
@@ -813,6 +826,129 @@ local function check_reappeared(loc)
     .. ' (the log is the review) and is left alone', loc.path, loc.log), vim.log.levels.WARN)
 end
 
+-- Log rotation. A log grown past the log_max_bytes option is rotated by the
+-- change that grew it, under the lock: the log on disk (not this instance's
+-- memory) is replayed, a new log (a header and one checkpoint event holding
+-- that state, see reduce.lua) is written beside it, the old log is
+-- hard-linked (or copied) to log.<unix ms>.jsonl, and the new one renamed
+-- over log.jsonl. So log.jsonl is never missing, nor only a header, for a
+-- reader, which never takes the lock. Rotated logs are kept for
+-- :ReviewHistory, and deleted after log_retention_days if that is set: the
+-- checkpoint holds the trash, so nothing is lost with them.
+local DAY_MS = 24 * 60 * 60 * 1000
+
+local function now_ms()
+  local sec, usec = uv.gettimeofday()
+  return sec * 1000 + math.floor(usec / 1000)
+end
+
+-- A positive number option, or `default`
+local function positive(v, default)
+  if type(v) == 'number' and v > 0 then return v end
+  return default
+end
+
+-- log.jsonl (or <file>.log.jsonl) as rotated at `ms`: log.<ms>.jsonl
+local function rotated_name(loc, ms)
+  return (loc.log:gsub('%.jsonl$', '')) .. '.' .. string.format('%d', ms) .. '.jsonl'
+end
+
+-- The rotated logs of the review at `loc`, oldest first: { path, ms }...
+-- Only this review's: anchored on the log's own name, as several reviews
+-- (storage_file) may share a directory
+local function list_rotated(loc)
+  local dir = vim.fn.fnamemodify(loc.log, ':h')
+  local base = vim.fn.fnamemodify(loc.log, ':t'):gsub('%.jsonl$', '')
+  local pattern = '^' .. vim.pesc(base) .. '%.(%d+)%.jsonl$'
+  local out = {}
+  local handle = uv.fs_scandir(dir)
+  while handle do
+    local name = uv.fs_scandir_next(handle)
+    if not name then break end
+    local ms = name:match(pattern)
+    if ms then table.insert(out, { path = dir .. '/' .. name, ms = tonumber(ms) }) end
+  end
+  table.sort(out, function(a, b) return a.ms < b.ms end)
+  return out
+end
+
+-- The rotated logs of the review, oldest first
+function M.rotated_logs()
+  local out = {}
+  for i, r in ipairs(list_rotated(resolve())) do out[i] = r.path end
+  return out
+end
+
+-- Rotate the log at `loc` (see above). Call with the lock held. A failure
+-- leaves the log as it was and is only warned about: the change that
+-- triggered it is already in the log.
+-- Returns: true if the log was rotated
+local function rotate(loc)
+  local function warn(e)
+    vim.notify('quickfix-review: could not rotate ' .. loc.log .. ': ' .. tostring(e), vim.log.levels.WARN)
+    return false
+  end
+  local old = uv.fs_stat(loc.log)
+  if not old then return false end
+  local res, err = log.read(loc.log, 0, 0, seen_lines(loc))
+  if not res then return warn(err) end
+  local state, imports = reduce.new(), {}
+  for _, ev in ipairs(res.events) do
+    if ev.op == 'import' and type(ev.source_sha256) == 'string' then imports[ev.source_sha256] = true end
+    if ev.op == 'checkpoint' and type(ev.imports) == 'table' then
+      for _, sha in ipairs(ev.imports) do
+        if type(sha) == 'string' then imports[sha] = true end
+      end
+    end
+    reduce.apply(state, ev)
+  end
+  local checkpoint = log.event('checkpoint', { state = state, imports = vim.tbl_keys(imports) })
+
+  local mode = bit.band(old.mode, 511)
+  local tmp = loc.log .. '.rotating-' .. uv.os_getpid()
+  os.remove(tmp)
+  local wrote, werr = log.append(tmp, { log.new_header(), checkpoint }, mode)
+  if not wrote then
+    os.remove(tmp)
+    return warn(werr)
+  end
+  uv.fs_chmod(tmp, mode)
+
+  -- Never over an existing rotated log (two rotations in one millisecond)
+  local ms = now_ms()
+  while uv.fs_stat(rotated_name(loc, ms)) do ms = ms + 1 end
+  local rotated = rotated_name(loc, ms)
+  local kept, kerr = uv.fs_link(loc.log, rotated)
+  if not kept then kept, kerr = uv.fs_copyfile(loc.log, rotated, { excl = true }) end
+  if not kept then
+    os.remove(tmp)
+    os.remove(rotated)
+    return warn(kerr)
+  end
+  local renamed, rerr = uv.fs_rename(tmp, loc.log)
+  if not renamed then
+    os.remove(tmp)
+    os.remove(rotated)
+    return warn(rerr)
+  end
+  return true
+end
+
+-- Storage paths whose rotated logs have been checked for retention this session
+local retention_done = {}
+
+-- Delete the rotated logs older than log_retention_days (by the time in
+-- their name), once per review per session. Nothing else is touched.
+local function apply_retention(loc)
+  local days = positive(config.options.log_retention_days, nil)
+  if not days or retention_done[loc.log] then return end
+  retention_done[loc.log] = true
+  local cutoff = now_ms() - days * DAY_MS
+  for _, r in ipairs(list_rotated(loc)) do
+    if r.ms < cutoff then os.remove(r.path) end
+  end
+end
+
 -- Bring the comments up to date with the log (migrating or importing first
 -- when there is none). opts.full replays the whole log, ignoring the cache.
 -- Returns: ok (boolean), err (string or nil)
@@ -862,6 +998,7 @@ local function sync(opts)
     if not ok then return fail(err) end
     changed = changed or read_changed
     check_reappeared(loc)
+    apply_retention(loc)
   end
   bad_notified = nil
   if changed then
@@ -912,6 +1049,14 @@ local function mutate(build)
     local wrote, werr, landed = log.append(loc.log, events)
     -- Read back what was written: all of it, some or none
     sync()
+    local grown = uv.fs_stat(loc.log)
+    if wrote and grown and grown.size > positive(config.options.log_max_bytes, config.defaults.log_max_bytes)
+        and rotate(loc) then
+      -- The new log (another inode) is replayed from its checkpoint, and
+      -- the cache keyed to it
+      sync()
+      flush(true)
+    end
     if wrote then return res end
     landed = (landed or 0) - header
     if landed >= #events - header then

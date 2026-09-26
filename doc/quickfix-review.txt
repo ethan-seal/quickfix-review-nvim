@@ -69,6 +69,12 @@ options are optional; defaults are shown below.
       -- function(root) -> string. See |quickfix-review-storage|.
       storage_dir = nil,
 
+      -- Rotate the review log past this many bytes, and delete rotated
+      -- logs older than this many days (nil = keep them). See
+      -- |quickfix-review-rotation|.
+      log_max_bytes = 5 * 1024 * 1024,
+      log_retention_days = nil,
+
       -- Default export filename (nil = clipboard only)
       export_file = nil,
 
@@ -144,6 +150,19 @@ that can't be read is skipped with a warning naming its line number.
 `state.json` next to the log is a cache of the replay, written on exit and
 every 50 events. It is never needed: delete it and it is rebuilt from the
 log.
+
+                                                  *quickfix-review-rotation*
+Once the log grows past `log_max_bytes` (default 5 MB), the change that
+grew it rotates it: the log is replayed, a new `log.jsonl` starts with a
+header and one `checkpoint` event holding the whole review (live comments
+and the trash), and the old log is kept as `log.<unix ms>.jsonl`
+(`<storage_file>.log.<unix ms>.jsonl` with `storage_file`). |:ReviewHistory|
+reads the rotated logs too. They are kept forever unless
+`log_retention_days` is set: then rotated logs older than that (by the time
+in their name) are deleted when the review is first read in a session.
+Deleted comments stay restorable, as the trash is in the checkpoint. Only
+rotated logs are ever deleted. A version of this plugin from before
+rotation can't read a rotated log's checkpoint and shows the review empty.
 
 The project root is the git toplevel of Neovim's global working directory,
 or that directory itself outside git, with symlinks resolved. Each git

@@ -279,19 +279,44 @@ function M.restore_comment(id)
   end
 end
 
--- The unreadable lines of each log (by log_id) already warned about, so
--- :ReviewHistory warns about each once rather than on every call
+-- The unreadable lines of each log (by log_id, else path) already warned
+-- about, so :ReviewHistory warns about each once rather than on every call
 local history_seen = {}
 
--- The event history rows of comment `id`, or of the last 50 events
+-- The event history rows of comment `id`, or of the last 50 events. The
+-- rotated logs are read too, newest first, back only as far as needed: for
+-- the last 50, until there are 50 events; for a comment, until a log whose
+-- checkpoint doesn't know it (it didn't exist before that log).
 function M.history_rows(id)
   local log = require('quickfix-review.log')
-  local path = store.log_path()
-  local key = log.read_id(path) or path
-  history_seen[key] = history_seen[key] or {}
-  local res, err = log.read(path, 0, 0, history_seen[key])
+  local history = require('quickfix-review.history')
+  id = id ~= '' and id or nil
+  local function read(path)
+    local key = log.read_id(path) or path
+    history_seen[key] = history_seen[key] or {}
+    return log.read(path, 0, 0, history_seen[key])
+  end
+  local res, err = read(store.log_path())
   if not res then return nil, err end
-  return require('quickfix-review.history').rows(res.events, id ~= '' and id or nil)
+  local events, count = res.events, 0
+  local function counts(evs)
+    for _, ev in ipairs(evs) do
+      if ev.op ~= 'checkpoint' then count = count + 1 end
+    end
+  end
+  counts(events)
+  local older = store.rotated_logs()
+  for i = #older, 1, -1 do
+    local first = events[1]
+    if not (first and first.op == 'checkpoint') then break end
+    if id == nil and count >= history.LIMIT then break end
+    if id ~= nil and not history.checkpoint_knows(first, id) then break end
+    local r = read(older[i])
+    if not r then break end
+    counts(r.events)
+    events = vim.list_extend(vim.list_extend({}, r.events), events)
+  end
+  return history.rows(events, id)
 end
 
 -- Print the event history of comment `id`, or the last 50 events

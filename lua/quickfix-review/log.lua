@@ -102,8 +102,9 @@ end
 -- number. Bytes after the last \n are not consumed. Reading from 0, the
 -- first line must be a header. `seen`, a table the caller keeps, makes the
 -- warning once per line number: lines warned about are recorded in it.
--- Returns: { events, offset, lines, log_id (from 0 only) }, or nil and an
--- error when the file can't be read, is shorter than `from`, or has no header
+-- Returns: { events, offset, lines, log_id (from 0 only), ino (of the file
+-- read) }, or nil and an error when the file can't be read, is shorter than
+-- `from`, or has no header
 function M.read(path, from, lines, seen)
   from, lines = from or 0, lines or 0
   local fd, err = uv.fs_open(path, 'r', 0)
@@ -119,7 +120,7 @@ function M.read(path, from, lines, seen)
   uv.fs_close(fd)
   if not data then return nil, 'Could not read ' .. path .. ': ' .. tostring(rerr) end
 
-  local result = { events = {}, offset = from, lines = lines }
+  local result = { events = {}, offset = from, lines = lines, ino = stat and stat.ino }
   local pos = 1
   while true do
     local nl = data:find('\n', pos, true)
@@ -223,7 +224,10 @@ local function take(lockdir)
   if not wrote then
     -- Moved away by a breaker before the pid was written: try again
     if not uv.fs_stat(lockdir) then return 'lost' end
-    uv.fs_rmdir(lockdir) -- only if still empty, so never another's
+    -- rmdir only removes an empty dir, but in a race of three that may be
+    -- another taker's fresh lockdir (moved in after a breaker moved ours
+    -- away): that taker then reads no pid of its own, sees 'lost' and retries
+    uv.fs_rmdir(lockdir)
     return nil, 'Could not lock ' .. lockdir .. ': could not write its pid'
   end
   return read_pid(lockdir) == me and 'ok' or 'lost'
@@ -242,6 +246,11 @@ function M.with_lock(lockdir, fn)
     if got == 'busy' then is_stale, judged = stale(lockdir) end
     if is_stale then
       break_lock(lockdir, judged)
+      -- A lock that can't be broken (its rename keeps failing) is not
+      -- retried forever
+      if uv.hrtime() > deadline then
+        return false, 'Timed out waiting for the lock ' .. lockdir
+      end
     elseif uv.hrtime() > deadline then
       return false, 'Timed out waiting for the lock ' .. lockdir
     else

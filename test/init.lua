@@ -48,6 +48,11 @@ function M.remove_storage(file)
   end
   -- Torn logs moved aside, and stale locks broken by renaming them aside
   for _, p in ipairs(vim.fn.glob(M.log_path(file) .. '.torn-*', true, true)) do os.remove(p) end
+  -- Rotated logs (<file>.log.<ms>.jsonl), and a rotation's leftover temp file
+  for _, p in ipairs(vim.fn.glob(file .. '.log.*.jsonl', true, true)) do
+    if p:match('%.log%.%d+%.jsonl$') then os.remove(p) end
+  end
+  for _, p in ipairs(vim.fn.glob(M.log_path(file) .. '.rotating-*', true, true)) do os.remove(p) end
   for _, p in ipairs(vim.fn.glob(M.lock_path(file) .. '.stale-*', true, true)) do vim.fn.delete(p, 'rf') end
   vim.fn.delete(M.lock_path(file), 'rf')
   vim.fn.delete(file .. '.snapshots', 'rf')

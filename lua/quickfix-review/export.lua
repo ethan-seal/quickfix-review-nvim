@@ -44,8 +44,10 @@ function M.to_markdown(comments, config)
     if not ok then
       if not bad_format_reported then
         bad_format_reported = true
-        vim.notify('quickfix-review: export.item_format ' .. vim.inspect(item_format)
-          .. ' does not take (index, TYPE, file:line, text); using the default: ' .. line_str,
+        -- line_str holds the pcall error here, not a formatted line
+        vim.notify(string.format('quickfix-review: invalid export.item_format %s (%s); it must take'
+          .. ' (index, TYPE, file:line, text); using the default %s',
+          vim.inspect(item_format), tostring(line_str), vim.inspect(M.default_item_format)),
           vim.log.levels.WARN)
       end
       line_str = string.format(M.default_item_format, i, comment_type, line_ref, comment_text)

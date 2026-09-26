@@ -627,7 +627,7 @@ function M.delete_comment(range)
   end)
 
   if comments_deleted == nil then
-    vim.notify('quickfix-review: the storage file is unreadable; no comment was deleted',
+    vim.notify('quickfix-review: the review could not be changed; no comment was deleted',
       vim.log.levels.WARN)
   elseif comments_deleted > 0 then
     local display_file = vim.fn.fnamemodify(file, ':.')
@@ -774,7 +774,7 @@ function M.delete_comment_from_qf()
 
   local removed = store.remove(id)
   if removed == nil then
-    vim.notify('quickfix-review: the storage file is unreadable; the comment was not deleted',
+    vim.notify('quickfix-review: the review could not be changed; the comment was not deleted',
       vim.log.levels.WARN)
   elseif removed == 0 then
     print('Comment no longer exists')

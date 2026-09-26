@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: normal
 created_at: 2026-09-26T06:33:01Z
-updated_at: 2026-09-26T07:08:40Z
+updated_at: 2026-09-26T07:42:26Z
 ---
 
 Follow-ups from 0scv review:
@@ -22,3 +22,7 @@ Follow-ups from 0scv review:
 
 
 Note (j2ye): reduce.lua copies ev.ts into state.removed unchecked and init.lua show_trash does ts/1000 → error on a non-numeric ts from a hand-edited/foreign log line. Guard with type(ts)=="number" (as history.lua does). Also :ReviewHistory re-reads the whole log and re-warns about every bad line on each call — warn once per (log_id, line).
+
+
+
+Note (9ljx): partial-success appends. If fs_fsync/fs_close fails after a complete write, or a short write still lands whole event lines (log.lua ~84-87), sync() applies the landed events but mutate() returns nil (store.lua ~707-709). The user then sees 'not added'/'no comment was deleted' although the change applied. Fix: log.append should report which bytes/lines landed, and mutate should return success when the event is durable in the log, or else word the failure messages as 'may be incomplete'.

@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-9ljx
 title: store.update reports success after a failed write
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T05:40:56Z
-updated_at: 2026-09-26T06:33:01Z
+updated_at: 2026-09-26T07:42:26Z
 ---
 
 When `storage.save` fails (disk full, read-only dir), `store.update` (store.lua ~164-196) sends the ERROR notify and re-syncs, but still returns `fn`'s result. So `store.add` returns true and add_comment prints "ISSUE added" right after the error; `remove_if` returns a count although nothing was removed. Visible in test_persistence "a failed save leaves the file intact" output.

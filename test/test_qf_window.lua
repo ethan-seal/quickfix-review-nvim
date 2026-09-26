@@ -256,9 +256,9 @@ assert.run_test('dd with an unreadable storage file says so and deletes nothing'
 
   local warned = false
   for _, c in ipairs(calls) do
-    if c.level == vim.log.levels.WARN and c.msg:find('unreadable', 1, true) then warned = true end
+    if c.level == vim.log.levels.WARN and c.msg:find('the comment was not deleted', 1, true) then warned = true end
   end
-  assert.truthy(warned, 'warns that the storage file is unreadable')
+  assert.truthy(warned, 'warns that the comment was not deleted')
   for _, line in ipairs(printed) do
     assert.falsy(line:find('no longer exists', 1, true), 'does not claim the comment is gone')
   end

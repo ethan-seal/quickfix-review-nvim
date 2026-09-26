@@ -261,6 +261,112 @@ assert.run_test('a failed save leaves the file intact', function()
   if not ok then error(err, 0) end
 end)
 
+-- Run fn with print replaced by a recorder; returns the printed lines
+local function capture_print(fn)
+  local lines = {}
+  local original = _G.print
+  _G.print = function(...)
+    local parts = {}
+    for i = 1, select('#', ...) do parts[i] = tostring((select(i, ...))) end
+    table.insert(lines, table.concat(parts, ' '))
+  end
+  local ok, err = pcall(fn)
+  _G.print = original
+  if not ok then error(err, 0) end
+  return lines
+end
+
+local function any_mentions(list, text)
+  for _, s in ipairs(list) do
+    if (type(s) == 'table' and s.msg or s):find(text, 1, true) then return true end
+  end
+  return false
+end
+
+assert.run_test('an add into a read-only storage dir is not reported as added', function()
+  local uv = vim.uv or vim.loop
+  if uv.getuid and uv.getuid() == 0 then
+    print('  (skipped: running as root ignores directory permissions)')
+    return
+  end
+
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, 'p')
+  local path = dir .. '/review.json'
+
+  local ok, err = pcall(function()
+    qf = restart(path)
+    vim.fn.cursor(1, 1)
+    qf.add_comment('NOTE')
+    assert.length(qf.comments(), 1, 'seeded while writable')
+    vim.fn.setfperm(dir, 'r-xr-xr-x')
+
+    local store = require('quickfix-review.store')
+    local added, printed
+    local calls = capture_notify(function()
+      added = store.add({ filename = test_file, kind = 'note', body = 'direct', lnum = 2, end_lnum = 2 })
+      vim.fn.cursor(3, 1)
+      printed = capture_print(function() qf.add_comment('ISSUE') end)
+    end)
+
+    assert.equals(added, false, 'store.add returns false')
+    assert.falsy(any_mentions(printed, 'added'), 'no "added" message: ' .. vim.inspect(printed))
+    assert.truthy(#errors_mentioning(calls, dir) >= 1, 'error notified with the path')
+    assert.truthy(any_mentions(calls, 'ISSUE comment was not added'), 'add_comment warns instead')
+    assert.length(qf.comments(), 1, 'count unchanged')
+    assert.length(saved(path), 1, 'nothing written')
+  end)
+
+  vim.fn.setfperm(dir, 'rwxr-xr-x')
+  qf = restart()
+  vim.fn.delete(dir, 'rf')
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('a failed log append is reported as a failure by every change', function()
+  reset()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('ISSUE')
+  assert.length(qf.comments(), 1, 'seeded')
+
+  local store = require('quickfix-review.store')
+  local log = require('quickfix-review.log')
+  local original_append = log.append
+  log.append = function() return false, 'short write (0 of 10 bytes)' end
+
+  local ok, err = pcall(function()
+    local added, removed, updated, cleared, printed
+    local calls = capture_notify(function()
+      added = store.add({ filename = test_file, kind = 'note', body = 'direct', lnum = 4, end_lnum = 4 })
+      local c = qf.comments()[1]
+      updated = store.update({ { id = c.id, anchor = { sha = string.rep('a', 64), lnum = 5, end_lnum = 5 } } })
+      cleared = store.clear()
+      removed = store.remove(c.id)
+      printed = capture_print(function()
+        vim.fn.cursor(4, 1)
+        qf.add_comment('NOTE')
+        qf.delete_comment({ 2, 2 })
+      end)
+    end)
+
+    assert.equals(added, false, 'add returns false')
+    assert.equals(updated, nil, 'update returns nil')
+    assert.equals(cleared, nil, 'clear returns nil')
+    assert.equals(removed, nil, 'remove returns nil')
+    assert.falsy(any_mentions(printed, 'added'), 'no "added" message: ' .. vim.inspect(printed))
+    assert.falsy(any_mentions(printed, 'Deleted'), 'no "Deleted" message: ' .. vim.inspect(printed))
+    assert.truthy(#errors_mentioning(calls, 'short write') >= 1, 'the write error is notified')
+    assert.truthy(any_mentions(calls, 'no comment was deleted'), 'delete reports the failure')
+    local list = qf.comments()
+    assert.length(list, 1, 'comment still listed')
+    assert.equals(list[1].lnum, 2, 'not re-anchored')
+    assert.length(saved(), 1, 'log unchanged')
+  end)
+
+  log.append = original_append
+  if not ok then error(err, 0) end
+end)
+
 assert.run_test('dd in the quickfix view deletes that comment', function()
   reset()
   vim.fn.cursor(1, 1)
@@ -669,11 +775,15 @@ assert.run_test('export.item_format is applied, and a bad one falls back with a 
     local md
     local calls = capture_notify(function() md = export_markdown() end)
     assert.truthy(md:find('1. **[ISSUE]** `test_file.txt:3` - Test comment', 1, true), 'default format used')
-    local warned = 0
+    local warned = {}
     for _, c in ipairs(calls) do
-      if c.level == vim.log.levels.WARN and c.msg:find('item_format', 1, true) then warned = warned + 1 end
+      if c.level == vim.log.levels.WARN and c.msg:find('item_format', 1, true) then table.insert(warned, c.msg) end
     end
-    assert.equals(warned, 1, 'warned once')
+    assert.length(warned, 1, 'warned once')
+    local default = require('quickfix-review.export').default_item_format
+    assert.truthy(warned[1]:find('using the default ' .. vim.inspect(default), 1, true),
+      'names the default format: ' .. warned[1])
+    assert.falsy(warned[1]:find('1. **[ISSUE]**', 1, true), 'not a formatted line: ' .. warned[1])
   end)
   export_opts.item_format = original
   if not ok then error(err, 0) end

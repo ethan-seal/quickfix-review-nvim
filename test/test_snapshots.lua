@@ -189,18 +189,39 @@ assert.run_test('put rewrites a same-size snapshot with the wrong content', func
   assert.equals(read_bytes(path), 'good\n', 'the bytes on disk')
 end)
 
-assert.run_test('lines holding a NUL (or a CR CR) round-trip as one line each', function()
+assert.run_test('lines holding a NUL round-trip as one line each, trailing CRs stripped', function()
   use_dir()
   local lines = { 'a', 'x\ny', 'b\r\nc', 'z', 'cr\r\r', '\n' }
   local sha = snapshots.put(lines)
   snapshots._clear_cache()
-  same_lines(snapshots.get(sha), { 'a', 'x\ny', 'b\r\nc', 'z', 'cr\r', '\n' }, 'one line each (one CR stripped)')
+  same_lines(snapshots.get(sha), { 'a', 'x\ny', 'b\r\nc', 'z', 'cr', '\n' }, 'one line each (trailing CRs stripped)')
   assert.equals(snapshots.hash(lines), sha, 'hash matches put')
   assert.equals(snapshots.hash({ 'a', 'b\r' }), vim.fn.sha256('a\nb\n'), 'ordinary lines hash as before')
   -- NVIM 0.12 buffers give a NUL as "\0", readfile() as "\n": both hash as
   -- the escape stored before, "\r0"
   assert.equals(snapshots.hash({ 'x\0y' }), snapshots.hash({ 'x\ny' }), 'a NUL as "\\0" or "\\n" hashes alike')
   assert.equals(snapshots.hash({ 'x\ny' }), vim.fn.sha256('x\r0y\r\n'), 'the NUL escape is unchanged')
+end)
+
+assert.run_test('canonical is idempotent on what get returns', function()
+  use_dir()
+  for _, line in ipairs({ 'x\r', 'x\r\r', 'x\r\r\r', 'x\r1', 'a\0\r\r', 'a\nb\r\r', 'a\rb\r\r' }) do
+    local label = vim.inspect(line)
+    local sha = snapshots.put({ line })
+    snapshots._clear_cache()
+    local got = snapshots.get(sha)
+    assert.equals(snapshots.canonical(got), snapshots.canonical({ line }), 'canonical of ' .. label)
+    assert.equals(snapshots.hash(got), sha, 'hash of ' .. label)
+  end
+  -- A CR CR line stored in the old form, escaped as "x\r1\r", reads back as
+  -- the same canonical line as the live "x\r\r"
+  local old = 'x\r1\r\n'
+  local old_sha = vim.fn.sha256(old)
+  write_bytes(store.snapshots_dir() .. '/' .. old_sha, old)
+  snapshots._clear_cache()
+  local got = snapshots.get(old_sha)
+  assert.truthy(got, 'old snapshot read')
+  assert.equals(snapshots.canonical(got), snapshots.canonical({ 'x\r\r' }), 'old CR CR snapshot')
 end)
 
 -- GC: snapshots unreferenced by the review's logs and untouched for a day

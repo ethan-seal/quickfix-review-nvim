@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-jou7
 title: 'Tracking: canonical() not idempotent for CR CR lines; drop ignore_cr_at_eol'
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T16:43:09Z
-updated_at: 2026-09-26T16:43:09Z
+updated_at: 2026-09-26T17:08:08Z
 ---
 
 From review cycle 3 (details/repros: /tmp/claude-1001/-home-ethans-Programming-quickfix-review-nvim/cfc4ea53-3598-4975-b59b-e35c5f93f346/scratchpad/review3/fable-tracking.md).

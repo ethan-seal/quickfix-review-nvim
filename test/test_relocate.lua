@@ -317,6 +317,9 @@ local function check_eol(name, content, edit_cmd)
       qf.clear_review()
       vim.cmd(edit_cmd .. ' ' .. vim.fn.fnameescape(path))
       local buf = vim.api.nvim_get_current_buf()
+      local snapshots = require('quickfix-review.snapshots')
+      assert.equals(snapshots.hash(vim.api.nvim_buf_get_lines(buf, 0, -1, false)),
+        snapshots.hash(vim.fn.readfile(path)), 'buffer sha == disk sha')
       vim.fn.cursor(2, 1)
       qf.add_comment('NOTE')
       vim.cmd('silent edit!')
@@ -339,6 +342,8 @@ check_eol('a CRLF file read as unix (CRs in the buffer) is not outdated', 'a\r\n
 check_eol('a file without a final newline is not outdated', 'a\nb\nc', 'edit')
 check_eol('a CRLF file without a final newline is not outdated', 'a\r\nb\r\nc', 'edit')
 check_eol('a file with a NUL on the commented line is current loaded and from disk', 'a\nb\0x\nc\n', 'edit')
+check_eol('a CRLF file with a CR CR LF line is not outdated', 'a\r\nb\r\r\nc\r\n', 'edit')
+check_eol('a CRLF file with a CR CR LF line read as unix is not outdated', 'a\r\nb\r\r\nc\r\n', 'edit ++ff=unix')
 
 assert.run_test('opening a diff buffer with other lines never moves the comment', function()
   fresh()
@@ -678,6 +683,9 @@ end
 check_eol_write('a saved CRLF file is re-anchored once', 'a\r\nb\r\nc\r\n', 'edit')
 check_eol_write('a saved CRLF file read as unix is re-anchored once', 'a\r\nb\r\nc\r\n', 'edit ++ff=unix')
 check_eol_write('a saved file without a final newline is re-anchored once', 'a\nb\nc', 'edit')
+check_eol_write('a saved CRLF file with a CR CR LF line is re-anchored once', 'a\r\nb\r\r\nc\r\n', 'edit')
+check_eol_write('a saved CRLF file with a CR CR LF line read as unix is re-anchored once',
+  'a\r\nb\r\r\nc\r\n', 'edit ++ff=unix')
 
 local function outdated_hl(line)
   local s = signs_on(file_buf, line)

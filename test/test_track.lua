@@ -168,6 +168,10 @@ local function check_diff(label)
     same(track.diff({ 'a', 'b', 'c' }, { 'a', 'c' }), { { 2, 1, 1, 0 } }, 'delete middle')
     same(track.diff({ 'a', 'b', 'c' }, { 'a', 'x', 'c' }), { { 2, 1, 2, 1 } }, 'change')
     same(track.diff({ 'a\r', 'b\r', 'c' }, { 'a', 'b', 'c' }), {}, 'CR line endings make no difference')
+    local snapshots = require('quickfix-review.snapshots')
+    same(track.diff(snapshots.get(snapshots.put({ 'x\r\r' })), { 'x\r\r' }), {}, 'a stored CR CR line diffs clean')
+    assert.equals(#track.diff({ 'a\r\r' }, { 'a\r1' }), 1, 'CR CR vs "\\r1" differ')
+    assert.equals(#track.diff({ 'a\0' }, { 'a\r1' }), 1, 'an escaped line vs a plain one differ')
   end)
 end
 

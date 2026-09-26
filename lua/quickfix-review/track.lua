@@ -83,7 +83,6 @@ function M.diff(old, new)
   return diff(snapshots.canonical(old), snapshots.canonical(new), {
     result_type = 'indices',
     algorithm = 'histogram',
-    ignore_cr_at_eol = true,
   })
 end
 

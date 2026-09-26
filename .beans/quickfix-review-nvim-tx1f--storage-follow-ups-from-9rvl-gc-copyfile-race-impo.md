@@ -21,3 +21,5 @@ Leftovers from 9rvl (all should-fix, narrow).
 - [ ] Test: failed in-change import doesn't leave a header+event log that skips legacy import
 - [ ] Test: retry window expiring between snapshot put and add keeps both in one dir
 - [ ] scripts/test.sh passes
+
+Note (from jou7): track.lua:109 norm() and context.lua:132-140 slice() still strip only a single trailing CR (snapshots.canonical now strips all trailing CRs), so the search fallback can miss a CR CR line read from disk. Make them match canonical. Add a test.

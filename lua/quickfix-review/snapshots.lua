@@ -4,22 +4,23 @@
 -- <snapshots dir>/<sha> (see store.snapshots_dir: per project, resolved at
 -- every call so :cd switches it).
 --
--- Canonical form: the lines, each without a trailing CR, joined with "\n",
--- plus a final "\n" whatever the file's eol/fixeol. So a buffer's lines and
--- readfile() of the same file hash alike, and CRLF, LF and a missing final
--- newline share a sha. (readfile() drops a BOM and the CR before each NL,
--- but not the CR of a last line without a NL; a buffer with 'ff' unix keeps
--- every CR. Both are stripped here.)
+-- Canonical form: the lines, each without its trailing CRs, joined with
+-- "\n", plus a final "\n" whatever the file's eol/fixeol. So a buffer's lines
+-- and readfile() of the same file hash alike, and CRLF, LF and a missing
+-- final newline share a sha. (readfile() drops a BOM and every CR before a
+-- NL, but not the CRs of a last line without a NL; a buffer with 'ff' unix
+-- keeps every CR. All are stripped here.)
 --
 -- A line holding a NUL would split in two when read back, so the anchor's
 -- lnum no longer indexes the snapshot. readfile() gives a NUL as "\n", and so
 -- does nvim_buf_get_lines before NVIM 0.12; from 0.12 it gives "\0". Both are
 -- taken as "\n" first, so a buffer and the file on disk hash alike. Such a
 -- line is escaped: "\r" -> "\r1", "\n" -> "\r0",
--- plus a final "\r" marking it as escaped. So is a line that still ends in a
--- CR after the one stripped (a CR CR LF), to keep the marker unambiguous:
--- every other stored line ends in anything but a CR. Lines without either
--- are stored as they are, so their shas are unchanged.
+-- plus a final "\r" marking it as escaped. With trailing CRs stripped, no
+-- other stored line ends in a CR, so the marker is unambiguous and canonical
+-- is idempotent on what get returns. Other lines are stored as they are, so
+-- their shas are unchanged. (Snapshots stored when a CR CR line was escaped,
+-- as "x\r1\r", still read back as "x\r", which canonical takes as "x".)
 local M = {}
 
 local storage = require('quickfix-review.storage')
@@ -38,8 +39,8 @@ local warned = {}
 local function canonical(lines)
   local out = {}
   for i, line in ipairs(lines) do
-    line = line:gsub('%z', '\n'):gsub('\r$', '')
-    if line:find('\n', 1, true) or line:sub(-1) == '\r' then
+    line = line:gsub('%z', '\n'):gsub('\r+$', '')
+    if line:find('\n', 1, true) then
       line = line:gsub('\r', '\r1'):gsub('\n', '\r0') .. '\r'
     end
     out[i] = line

@@ -404,7 +404,16 @@ function M.jump_comment(direction)
   -- The file may have shrunk since the comment was made
   local lnum = math.max(1, math.min(line_of[target.id], vim.api.nvim_buf_line_count(0)))
   vim.api.nvim_win_set_cursor(0, { lnum, 0 })
-  M.view_comment()
+  -- Open the float once the jump has settled: the main loop dispatches the
+  -- jump's CursorMoved after this returns, which would close a float opened
+  -- now. Skip it if the cursor has gone elsewhere by then.
+  local win, buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
+  vim.schedule(function()
+    if vim.api.nvim_get_current_win() == win and vim.api.nvim_get_current_buf() == buf
+      and vim.fn.line('.') == lnum then
+      M.view_comment()
+    end
+  end)
 end
 
 -- The open comment float, if any: { win = id, autocmd = id }
@@ -416,6 +425,30 @@ local function close_float()
   pcall(vim.api.nvim_win_close, float_state.win, true)
   pcall(vim.api.nvim_del_autocmd, float_state.autocmd)
   float_state = nil
+end
+
+-- The review list entry last seen by auto_show_check, whether or not a float
+-- opened for it: { id =, idx = }. Only a change of entry (quickfix
+-- navigation) may open the float, never plain cursor movement onto it.
+local last_seen
+
+-- Show the float if the cursor has just landed on a new entry of the review
+-- quickfix list (:cnext, :cprev, :cc, :cfirst, :clast). Runs scheduled, after
+-- the navigation's events, so everything is re-checked here.
+local function auto_show_check()
+  if not config.options.auto_show then return end
+  if not store.is_current_view() then return end
+  if vim.fn.win_gettype() ~= '' or vim.bo.buftype == 'quickfix' then return end
+  local info = vim.fn.getqflist({ id = 0, idx = 0 })
+  local changed = not last_seen or last_seen.id ~= info.id or last_seen.idx ~= info.idx
+  last_seen = { id = info.id, idx = info.idx }
+  if not changed then return end
+  local item = (vim.fn.getqflist({ id = 0, items = 0 }).items or {})[info.idx]
+  if not item or item.bufnr ~= vim.api.nvim_get_current_buf()
+    or item.lnum ~= vim.fn.line('.') then
+    return
+  end
+  M.view_comment()
 end
 
 -- Show every comment whose range covers the current line, in line order
@@ -808,12 +841,16 @@ function M.setup(opts)
     callback = function() store.flush() end,
   })
 
-  -- Auto-show floating comment after navigating the review's quickfix list
-  vim.api.nvim_create_autocmd('QuickFixCmdPost', {
+  -- Auto-show the comment float when navigating the review's quickfix list.
+  -- QuickFixCmdPost only fires for list-building commands (:make, :grep), not
+  -- :cnext/:cc, so watch where the cursor lands instead: CursorMoved for a
+  -- jump within the buffer, BufEnter for one into another buffer. The check
+  -- is scheduled so it runs after the jump's own CursorMoved, which would
+  -- otherwise close the float straight away.
+  vim.api.nvim_create_autocmd({ 'CursorMoved', 'BufEnter' }, {
     group = augroup,
-    pattern = { 'cnext', 'cprev', 'cc', 'cfirst', 'clast' },
     callback = function()
-      if store.is_current_view() then M.view_comment() end
+      vim.schedule(function() pcall(auto_show_check) end)
     end,
   })
 

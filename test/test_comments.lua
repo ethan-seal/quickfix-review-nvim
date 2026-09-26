@@ -256,6 +256,7 @@ assert.run_test('jump to a comment past the end of the file lands on the last li
   store.add({ filename = abs, lnum = 50, end_lnum = 50, text = '[NOTE] beyond the end' })
   vim.fn.cursor(1, 1)
   local ok, err = pcall(qf.jump_comment, 1)
+  vim.wait(50, function() return false end)
   assert.truthy(ok, 'jump does not error: ' .. tostring(err))
   assert.equals(vim.api.nvim_get_current_buf(), file_buf, 'same buffer')
   assert.equals(vim.fn.line('.'), 10, 'clamped to line 10')
@@ -275,12 +276,14 @@ assert.run_test('jump treats a comment made through a symlink as this file', fun
     local lines = {}
     for _ = 1, 3 do
       qf.jump_comment(1)
+      vim.wait(50, function() return false end)
       vim.api.nvim_exec_autocmds('CursorMoved', {})
       assert.equals(vim.api.nvim_get_current_buf(), file_buf, 'stays in the file buffer')
       table.insert(lines, vim.fn.line('.'))
     end
     assert.equals(table.concat(lines, ','), '3,8,3', 'next visits L3, L8, then wraps to L3')
     qf.jump_comment(-1)
+    vim.wait(50, function() return false end)
     vim.api.nvim_exec_autocmds('CursorMoved', {})
     assert.equals(vim.fn.line('.'), 8, 'previous from L3 wraps to L8')
   end)

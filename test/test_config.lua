@@ -88,6 +88,36 @@ assert.run_test('options hold the defaults before setup()', function()
   assert.equals(fresh.options.keymaps.add_issue, '<leader>ci', 'type keymaps derived')
   assert.equals(fresh.options.storage_file, nil, 'no storage_file by default')
   assert.equals(fresh.options.storage_dir, nil, 'default storage_dir')
+  assert.equals(fresh.options.auto_show, true, 'auto_show on by default')
+end)
+
+assert.run_test('auto_show = false: navigating the review list opens no float', function()
+  local qf = require('quickfix-review')
+  local ok, err = pcall(function()
+    qf.setup({ storage_file = test_helper.storage_file, auto_show = false })
+    test_helper.create_test_file('line 1\nline 2\nline 3\n')
+    vim.cmd('only')
+    qf.clear_review()
+    vim.fn.cursor(1, 1)
+    qf.add_comment('NOTE')
+    vim.fn.cursor(3, 1)
+    qf.add_comment('NOTE')
+    qf.show_list()
+    for _, cmd in ipairs({ 'cc 1', 'cnext' }) do
+      vim.cmd(cmd)
+      vim.api.nvim_exec_autocmds('CursorMoved', {})
+      vim.wait(50, function() return false end)
+    end
+    assert.equals(vim.fn.line('.'), 3, 'cnext moved')
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      assert.equals(vim.api.nvim_win_get_config(win).relative, '', 'no float open')
+    end
+  end)
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  vim.fn.setqflist({})
+  qf.clear_review()
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
 end)
 
 -- Put the test configuration back for the files that run after this one

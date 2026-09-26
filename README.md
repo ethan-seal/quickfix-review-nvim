@@ -102,6 +102,10 @@ require('quickfix-review').setup({
   -- changes on disk (setting it to true shows a one-time notice)
   prompt_on_file_change = false,
 
+  -- Show the comment float when :cnext/:cprev/:cc/:cfirst/:clast lands
+  -- on an entry of the review quickfix list
+  auto_show = true,
+
   -- Comment types: replaces all defaults if provided (see Custom comment types)
   -- comment_types = { ... },
 

@@ -32,6 +32,81 @@ local function close_lists()
   vim.cmd('only')
 end
 
+-- The floating windows open now
+local function floats()
+  local found = {}
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_config(win).relative ~= '' then table.insert(found, win) end
+  end
+  return found
+end
+
+-- Run a quickfix navigation command the way the main loop would: the
+-- command, then its CursorMoved (headless Neovim never fires it), then let
+-- scheduled callbacks run
+local function navigate(cmd)
+  vim.cmd(cmd)
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  vim.wait(100, function() return #floats() > 0 end)
+end
+
+-- Close any float and leave no list behind for later tests
+local function reset_nav()
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  close_lists()
+  vim.fn.setqflist({})
+end
+
+assert.run_test('cc 1 then cnext shows exactly one float with comment 2', function()
+  add_two_comments()
+  qf.show_list()
+  assert.equals(vim.fn.win_gettype(), '', 'a normal window is current')
+  navigate('cc 1')
+  assert.equals(vim.fn.line('.'), 1, 'on the first comment')
+  navigate('cnext')
+  assert.equals(vim.fn.line('.'), 3, 'cnext moved to the second comment')
+  local open = floats()
+  assert.length(open, 1, 'exactly one float open')
+  local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(open[1]), 0, -1, false)
+  assert.equals(lines[1], '[ISSUE] Test comment', 'float shows comment 2')
+  reset_nav()
+  qf.clear_review()
+end)
+
+assert.run_test('moving the cursor onto the current entry opens no float', function()
+  add_two_comments()
+  qf.show_list()
+  assert.equals(vim.fn.win_gettype(), '', 'a normal window is current')
+  local idx = vim.fn.getqflist({ id = 0, idx = 0 }).idx
+  local entry = vim.fn.getqflist({ id = 0, items = 0 }).items[idx]
+  assert.equals(entry.lnum, 1, 'current entry is on line 1')
+  -- Off the entry: the check records the current idx as seen
+  vim.api.nvim_win_set_cursor(0, { 2, 0 })
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  vim.wait(100, function() return #floats() > 0 end)
+  -- Plain cursor motion onto the entry is not quickfix navigation
+  vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  vim.wait(100, function() return #floats() > 0 end)
+  assert.length(floats(), 0, 'no float open')
+  reset_nav()
+  qf.clear_review()
+end)
+
+assert.run_test('navigating a non-review quickfix list opens no float', function()
+  add_two_comments()
+  vim.fn.setqflist({}, ' ', { title = 'grep', items = {
+    { filename = test_file, lnum = 1, text = 'hit 1' },
+    { filename = test_file, lnum = 3, text = 'hit 3' },
+  } })
+  navigate('cc 1')
+  navigate('cnext')
+  assert.equals(vim.fn.line('.'), 3, 'cnext moved')
+  assert.length(floats(), 0, 'no float open')
+  reset_nav()
+  qf.clear_review()
+end)
+
 assert.run_test('dd in a location list window does not delete a comment', function()
   add_two_comments()
   qf.show_list()
@@ -222,6 +297,24 @@ assert.run_test(':ReviewTrash lists deleted comments, newest first, in a list of
   assert.equals(after.title, 'Review trash', 'trash list still current')
   assert.length(after.items, #list.items, 'trash list not overwritten')
   close_lists()
+  qf.clear_review()
+end)
+
+assert.run_test('navigating Review trash opens no float', function()
+  add_two_comments()
+  qf.delete_comment({ 1, 1 })
+  qf.delete_comment({ 3, 3 })
+  -- Live comments on the trash rows' lines, so only the list decides
+  vim.fn.cursor(1, 1)
+  qf.add_comment('NOTE')
+  vim.fn.cursor(3, 1)
+  qf.add_comment('NOTE')
+  qf.show_trash()
+  assert.equals(vim.fn.getqflist({ title = 0 }).title, 'Review trash', 'trash list current')
+  navigate('cc 1')
+  navigate('cnext')
+  assert.length(floats(), 0, 'no float open')
+  reset_nav()
   qf.clear_review()
 end)
 

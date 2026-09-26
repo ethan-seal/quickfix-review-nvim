@@ -77,6 +77,10 @@ options are optional; defaults are shown below.
       -- true shows a one-time notice.
       prompt_on_file_change = false,
 
+      -- Show the comment float when :cnext/:cprev/:cc/:cfirst/:clast
+      -- lands on an entry of the review quickfix list
+      auto_show = true,
+
       -- Comment types: replaces defaults if provided (see comment_types section)
       -- comment_types = { ... },
 
@@ -344,6 +348,9 @@ The quickfix list is only a view: `<leader>co` and |:ReviewLoad| publish
 the review as a new quickfix list, which then follows changes to the
 review. Replacing the quickfix list (LSP references, |:grep|) doesn't
 touch the review, and `:cnext`/`:cprev` work as usual on the view.
+Landing on a review entry with `:cnext`, `:cprev`, `:cc`, `:cfirst` or
+`:clast` shows its comment float (set `auto_show = false` to turn this off).
+Other quickfix lists, and the |:ReviewTrash| list, never show it.
 
 Deleting comments:~
 

@@ -26,7 +26,7 @@ assert.run_test('setup() twice keeps the same QuickfixReview autocmds', function
 end)
 
 assert.run_test('setup() leaves no ungrouped plugin autocmds', function()
-  for _, event in ipairs({ 'BufEnter', 'QuickFixCmdPost', 'FileChangedShellPost', 'FileType', 'DirChanged' }) do
+  for _, event in ipairs({ 'BufEnter', 'CursorMoved', 'FileChangedShellPost', 'FileType', 'DirChanged' }) do
     assert.length(ungrouped(event), 0, 'ungrouped ' .. event .. ' handlers')
   end
 end)
@@ -65,6 +65,23 @@ local function only_float_lines()
   assert.length(open, 1, 'floating windows open')
   return vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(open[1]), 0, -1, false)
 end
+
+assert.run_test('jump_comment leaves the float open', function()
+  qf.clear_review()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('NOTE')
+  vim.fn.cursor(1, 1)
+  qf.jump_comment(1)
+  -- Stands in for the CursorMoved the main loop dispatches after the jump
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  vim.wait(100, function() return #floats() > 0 end)
+  assert.equals(vim.fn.line('.'), 2, 'jumped to the comment')
+  local lines = only_float_lines()
+  assert.equals(lines[1], '[NOTE] Test comment', 'float shows the comment')
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  assert.length(floats(), 0, 'float closed by the next move')
+  qf.clear_review()
+end)
 
 assert.run_test('three consecutive views leave no buffers, floats or handlers behind', function()
   qf.clear_review()

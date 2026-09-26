@@ -40,6 +40,10 @@ M.defaults = {
   -- disk (see track.lua). Setting it to true shows a one-time notice.
   prompt_on_file_change = false,
 
+  -- Open the comment float when :cnext/:cprev/:cc/:cfirst/:clast lands on
+  -- an entry of the review quickfix list
+  auto_show = true,
+
   -- Comment types: if provided, replaces defaults entirely
   -- Use additional_comment_types to add to defaults instead
   comment_types = nil,

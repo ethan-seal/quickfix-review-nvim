@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-iyuw
 title: Auto-show on quickfix navigation never fires
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-09-26T04:31:20Z
-updated_at: 2026-09-26T04:57:49Z
+updated_at: 2026-09-26T07:20:29Z
 blocked_by:
     - quickfix-review-nvim-nep3
     - quickfix-review-nvim-l6ht

@@ -251,6 +251,9 @@ A pattern that doesn't accept those four values falls back to the default with a
 | `:ReviewView` | View comment at cursor |
 | `:ReviewExport` | Export to markdown and clipboard |
 | `:ReviewClear` | Clear all comments (asks first; `:ReviewClear!` doesn't) |
+| `:ReviewTrash` | List deleted and cleared comments, newest first, in a quickfix list titled "Review trash" |
+| `:ReviewRestore [id]` | Restore a deleted comment; with no id, the last one deleted, or every comment of the last `:ReviewClear` (asks first) |
+| `:ReviewHistory [id]` | Show the logged history of one comment, or the last 50 events |
 | `:ReviewSave` | Write the `state.json` cache (every change is already in the log as it is made) |
 | `:ReviewLoad` | Replay the review's log from disk and show it in the quickfix list |
 | `:ReviewSummary` | Show comment summary |

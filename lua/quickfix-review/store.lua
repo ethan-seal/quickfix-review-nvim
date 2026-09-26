@@ -433,13 +433,15 @@ local function load_cache(loc, stat, base)
   if not ok or type(doc) ~= 'table' or type(doc.state) ~= 'table' then return nil end
   local st = doc.state
   if type(doc.log_id) ~= 'string' or type(doc.offset) ~= 'number' or type(doc.lines) ~= 'number'
-      or doc.offset > stat.size or not is_list(st.comments) or type(st.trash) ~= 'table' then
+      or doc.offset > stat.size or not is_list(st.comments) or type(st.trash) ~= 'table'
+      -- A cache from before `removed` existed is replayed from the log
+      or not is_list(st.removed) then
     return nil
   end
   if log.read_id(loc.log) ~= doc.log_id then return nil end
   base.log_id, base.offset, base.lines = doc.log_id, doc.offset, doc.lines
   for _, sha in ipairs(is_list(doc.imports) and doc.imports or {}) do base.imports[sha] = true end
-  return { comments = st.comments, trash = st.trash }
+  return { comments = st.comments, trash = st.trash, removed = st.removed }
 end
 
 -- Bring `reduced` up to date with the log: read its tail, or replay it (from
@@ -738,6 +740,62 @@ function M.trash()
     out[id] = view_of(r) or r
   end
   return out
+end
+
+-- The deleted comments, newest removal first: { id, op ('delete' or
+-- 'clear'), ts (unix ms, or nil), comment (its view, or the raw record) }
+function M.trash_list()
+  sync()
+  local out = {}
+  for i = #reduced.removed, 1, -1 do
+    local e = reduced.removed[i]
+    local r = reduced.trash[e.id]
+    if r then
+      table.insert(out, { id = e.id, op = e.op, ts = e.ts, comment = view_of(r) or r })
+    end
+  end
+  return out
+end
+
+-- The most recent removal: { op = 'delete', ids = { id } } for a delete, or
+-- { op = 'clear', ids = {...} } holding every comment of the last clear still
+-- in the trash; nil when the trash is empty
+function M.last_removal()
+  sync()
+  local last = reduced.removed[#reduced.removed]
+  if not last then return nil end
+  if last.op ~= 'clear' or last.eid == nil then return { op = last.op, ids = { last.id } } end
+  local ids = {}
+  for _, e in ipairs(reduced.removed) do
+    if e.eid == last.eid and reduced.trash[e.id] then table.insert(ids, e.id) end
+  end
+  return { op = 'clear', ids = ids }
+end
+
+-- Make deleted comments live again: one restore event, holding the logged
+-- record, per id in the trash, all in one append. An id that is live, or
+-- in neither the review nor the trash, is skipped (nothing is logged for it).
+-- Returns: { restored = n, live = { id... }, unknown = { id... } }, or nil
+-- if the change was refused
+function M.restore(ids)
+  return mutate(function()
+    local events, res, seen = {}, { restored = 0, live = {}, unknown = {} }, {}
+    for _, id in ipairs(ids) do
+      local r = reduced.trash[id]
+      if seen[id] then
+        -- listed twice: restored (or reported) once
+      elseif reduce.get(reduced, id) then
+        table.insert(res.live, id)
+      elseif not r then
+        table.insert(res.unknown, id)
+      else
+        table.insert(events, log.event('restore', { id = id, comment = r }))
+      end
+      seen[id] = true
+    end
+    res.restored = #events
+    return events, res
+  end)
 end
 
 -- Remove every comment for which pred(comment) is true: one delete event,

@@ -6,10 +6,14 @@
 :ReviewDelete	quickfix-review.txt	/*:ReviewDelete*
 :ReviewExport	quickfix-review.txt	/*:ReviewExport*
 :ReviewGoto	quickfix-review.txt	/*:ReviewGoto*
+:ReviewHistory	quickfix-review.txt	/*:ReviewHistory*
 :ReviewLoad	quickfix-review.txt	/*:ReviewLoad*
+:ReviewRestore	quickfix-review.txt	/*:ReviewRestore*
 :ReviewSave	quickfix-review.txt	/*:ReviewSave*
 :ReviewSummary	quickfix-review.txt	/*:ReviewSummary*
+:ReviewTrash	quickfix-review.txt	/*:ReviewTrash*
 :ReviewView	quickfix-review.txt	/*:ReviewView*
+QuickfixReviewOutdated	quickfix-review.txt	/*QuickfixReviewOutdated*
 quickfix-review-commands	quickfix-review.txt	/*quickfix-review-commands*
 quickfix-review-comment-types	quickfix-review.txt	/*quickfix-review-comment-types*
 quickfix-review-configuration	quickfix-review.txt	/*quickfix-review-configuration*
@@ -22,6 +26,7 @@ quickfix-review-introduction	quickfix-review.txt	/*quickfix-review-introduction*
 quickfix-review-keymaps	quickfix-review.txt	/*quickfix-review-keymaps*
 quickfix-review-log	quickfix-review.txt	/*quickfix-review-log*
 quickfix-review-migration	quickfix-review.txt	/*quickfix-review-migration*
+quickfix-review-outdated	quickfix-review.txt	/*quickfix-review-outdated*
 quickfix-review-signs	quickfix-review.txt	/*quickfix-review-signs*
 quickfix-review-snapshots	quickfix-review.txt	/*quickfix-review-snapshots*
 quickfix-review-storage	quickfix-review.txt	/*quickfix-review-storage*

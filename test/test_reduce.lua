@@ -143,6 +143,52 @@ assert.run_test('import adds each comment, skipping live and trashed ids', funct
   assert.equals(why[4], 'duplicate', 'duplicates reported')
 end)
 
+local function removed(state)
+  local out = {}
+  for i, e in ipairs(state.removed) do out[i] = e.id .. ':' .. e.op .. ':' .. tostring(e.eid) end
+  return table.concat(out, ',')
+end
+
+assert.run_test('removed lists trashed ids in the order they were removed', function()
+  local state = replay({
+    { op = 'add', comment = rec('a') },
+    { op = 'add', comment = rec('b') },
+    { op = 'delete', id = 'a', eid = 'e1', ts = 10 },
+    { op = 'delete', id = 'b', eid = 'e2', ts = 20 },
+  })
+  assert.equals(removed(state), 'a:delete:e1,b:delete:e2', 'in file order')
+  assert.equals(state.removed[2].ts, 20, 'ts kept')
+end)
+
+assert.run_test('the comments of one clear share its eid', function()
+  local events = {
+    { op = 'add', comment = rec('a') },
+    { op = 'add', comment = rec('b') },
+    { op = 'add', comment = rec('c') },
+    { op = 'clear', comments = { rec('a'), rec('b') }, eid = 'c1' },
+    { op = 'delete', id = 'c', eid = 'd1' },
+  }
+  local state = replay(events)
+  assert.equals(removed(state), 'a:clear:c1,b:clear:c1,c:delete:d1', 'delete after the clear is last')
+  reduce.apply(state, { op = 'restore', id = 'c', comment = rec('c'), eid = 'r1' })
+  assert.equals(removed(state), 'a:clear:c1,b:clear:c1', 'restore drops the entry; the clear is last again')
+  -- Replaying gives the same list
+  table.insert(events, { op = 'restore', id = 'c', comment = rec('c'), eid = 'r1' })
+  assert.equals(removed(replay(events)), removed(state), 'deterministic')
+end)
+
+assert.run_test('a restored comment has no removed entry; ignored events add none', function()
+  local state = replay({
+    { op = 'add', comment = rec('a') },
+    { op = 'delete', id = 'a', eid = 'e1' },
+    { op = 'restore', id = 'a', comment = rec('a') },
+    { op = 'delete', id = 'zz', eid = 'e2' },
+    { op = 'clear', comments = { rec('yy') }, eid = 'e3' },
+  })
+  assert.equals(removed(state), '', 'nothing removed')
+  assert.equals(state.trash.a, nil, 'not in the trash')
+end)
+
 assert.run_test('unknown ops and malformed events change nothing', function()
   local state, why = replay({
     { op = 'add', comment = rec('a') },

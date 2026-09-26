@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: normal
 created_at: 2026-09-26T06:33:01Z
-updated_at: 2026-09-26T06:33:01Z
+updated_at: 2026-09-26T07:08:40Z
 ---
 
 Follow-ups from 0scv review:
@@ -18,3 +18,7 @@ Follow-ups from 0scv review:
 - [ ] Test: log.jsonl containing only a torn header + comments.json → next load migrates, comments present, torn log kept aside
 - [ ] Test: read-only dir with comments.json → comments listed, add refused with ERROR
 - [ ] Test: log replaced by a different log of >= size → state matches the new log
+
+
+
+Note (j2ye): reduce.lua copies ev.ts into state.removed unchecked and init.lua show_trash does ts/1000 → error on a non-numeric ts from a hand-edited/foreign log line. Guard with type(ts)=="number" (as history.lua does). Also :ReviewHistory re-reads the whole log and re-warns about every bad line on each call — warn once per (log_id, line).

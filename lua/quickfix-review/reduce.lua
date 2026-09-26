@@ -2,10 +2,13 @@
 -- into the review's state. No I/O and no notifications, so replaying a log
 -- always gives the same state.
 --
--- State: { comments = { record... }, trash = { [id] = record } }. `comments`
--- are the live comments in the order they were added; `trash` holds every
--- deleted comment, so it can be restored. Records are comment records in the
--- storage format (storage.serialise), as they appear in the log.
+-- State: { comments = { record... }, trash = { [id] = record },
+-- removed = { { id, op, eid, ts }... } }. `comments` are the live comments in
+-- the order they were added; `trash` holds every deleted comment, so it can
+-- be restored. `removed` lists the trashed ids in the (file) order they were
+-- removed, with the removing event's op ('delete' or 'clear'), eid and ts:
+-- the comments of one clear share its eid. Records are comment records in
+-- the storage format (storage.serialise), as they appear in the log.
 --
 -- Rules:
 -- - add (and each comment of an import) of an id that is live or in the
@@ -18,7 +21,7 @@
 local M = {}
 
 function M.new()
-  return { comments = {}, trash = {} }
+  return { comments = {}, trash = {}, removed = {} }
 end
 
 local function valid(record)
@@ -39,11 +42,20 @@ local function add(state, record)
   return nil
 end
 
-local function trash(state, id)
+-- Drop id's entry from state.removed
+local function unremove(state, id)
+  for i = #state.removed, 1, -1 do
+    if state.removed[i].id == id then table.remove(state.removed, i) end
+  end
+end
+
+-- Move a live comment to the trash, recording the removing event `ev`
+local function trash(state, id, ev)
   local i, c = find(state, id)
   if not i then return 'unknown' end
   table.remove(state.comments, i)
   state.trash[id] = c
+  table.insert(state.removed, { id = id, op = ev.op, eid = ev.eid, ts = ev.ts })
   return nil
 end
 
@@ -88,7 +100,7 @@ end
 
 function handlers.delete(state, ev)
   if type(ev.id) ~= 'string' then return 'invalid' end
-  return trash(state, ev.id)
+  return trash(state, ev.id, ev)
 end
 
 -- Only the comments the clear lists are trashed, so a comment added by
@@ -96,7 +108,7 @@ end
 function handlers.clear(state, ev)
   if type(ev.comments) ~= 'table' then return 'invalid' end
   for _, record in ipairs(ev.comments) do
-    if valid(record) then trash(state, record.id) end
+    if valid(record) then trash(state, record.id, ev) end
   end
   return nil
 end
@@ -106,6 +118,7 @@ function handlers.restore(state, ev)
   local id = ev.comment.id
   if find(state, id) then return 'live' end
   state.trash[id] = nil
+  unremove(state, id)
   table.insert(state.comments, ev.comment)
   return nil
 end

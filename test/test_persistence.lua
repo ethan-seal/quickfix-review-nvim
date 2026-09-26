@@ -703,6 +703,81 @@ assert.run_test('an export that cannot be written fails with a message', functio
   if not ok then error(err, 0) end
 end)
 
+assert.run_test('a state.json without `removed` (older cache) is replayed from the log', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('ISSUE')
+  vim.fn.cursor(3, 1)
+  qf.add_comment('NOTE')
+  local store = require('quickfix-review.store')
+  local target = qf.comments()[2].id
+  qf.delete_comment({ 3, 3 })
+  qf = restart() -- writes the cache
+  local doc = vim.json.decode(read_bytes(test_helper.state_path()))
+  assert.truthy(type(doc.state.removed) == 'table', 'the cache holds removed')
+  doc.state.removed = nil
+  local fh = io.open(test_helper.state_path(), 'wb')
+  fh:write(vim.json.encode(doc))
+  fh:close()
+  qf = restart(nil, { no_flush = true })
+  store = require('quickfix-review.store')
+  local last = store.last_removal()
+  assert.truthy(last ~= nil, 'a removal is known')
+  assert.equals(last.op, 'delete', 'a delete')
+  assert.equals(table.concat(last.ids, ','), target, 'the deleted comment')
+  -- And a current cache is used as is, with the same result
+  qf = restart()
+  store = require('quickfix-review.store')
+  assert.equals(table.concat(store.last_removal().ids, ','), target, 'same after a cached restart')
+end)
+
+assert.run_test('history of one comment shows add, update, delete in order', function()
+  reset()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('ISSUE')
+  local id = qf.comments()[1].id
+  vim.fn.cursor(4, 1)
+  qf.add_comment('NOTE') -- another comment, not in this history
+  local log = require('quickfix-review.log')
+  assert.truthy(log.append(log_file, {
+    log.event('update', { id = id, set = { body = 'new' }, prev = { body = 'old' } }),
+  }), 'update appended')
+  qf.delete_comment({ 2, 2 })
+  local rows = qf.history_rows(id)
+  local ops = {}
+  for i, r in ipairs(rows) do ops[i] = r.op end
+  assert.equals(table.concat(ops, ','), 'add,update,delete', 'ops in order')
+  assert.truthy(rows[2].text:find('body: old -> new', 1, true), 'update shows prev -> set: ' .. rows[2].text)
+  assert.equals(rows[1].kind, 'issue', 'kind shown')
+  assert.truthy(rows[1].text:find('test_file.txt:2', 1, true), 'file:line shown: ' .. rows[1].text)
+  assert.truthy(rows[1].text:find(id, 1, true), 'id shown')
+  -- An update without prev shows only the new value
+  local plain = require('quickfix-review.history').rows({
+    { op = 'add', comment = { id = 'x', kind = 'note', filename = '/f', lnum = 1 }, ts = 0 },
+    { op = 'update', id = 'x', set = { body = 'b' }, ts = 0 },
+  }, 'x')
+  assert.truthy(plain[2].text:find('body: b', 1, true), 'no prev: ' .. plain[2].text)
+  vim.cmd('ReviewHistory ' .. id) -- prints without error
+  qf.clear_review()
+end)
+
+assert.run_test('history without an id is the last 50 events', function()
+  local events = {}
+  for i = 1, 60 do
+    table.insert(events, { op = 'add', comment = { id = 'c' .. i, kind = 'note', filename = '/f', lnum = i }, ts = i })
+  end
+  local rows = require('quickfix-review.history').rows(events)
+  assert.length(rows, 50, 'capped at 50')
+  assert.equals(rows[1].id, 'c11', 'the last 50')
+  assert.equals(rows[50].id, 'c60', 'newest last')
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('ISSUE')
+  assert.truthy(#qf.history_rows() > 0, 'rows from the log')
+  vim.cmd('ReviewHistory')
+  qf.clear_review()
+end)
+
 -- Final cleanup
 test_helper.cleanup_test_environment()
 

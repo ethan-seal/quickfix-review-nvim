@@ -31,6 +31,26 @@ vim.api.nvim_create_user_command('ReviewClear', function(o)
   require('quickfix-review').clear_review({ confirm = not o.bang })
 end, { bang = true, desc = 'Clear all review comments (asks first; ! skips the question)' })
 
+vim.api.nvim_create_user_command('ReviewTrash', function()
+  require('quickfix-review').show_trash()
+end, { desc = 'List deleted review comments (newest first) in a quickfix list' })
+
+vim.api.nvim_create_user_command('ReviewRestore', function(o)
+  require('quickfix-review').restore_comment(o.args)
+end, {
+  nargs = '?',
+  complete = function(lead) return require('quickfix-review').complete_trash_ids(lead) end,
+  desc = 'Restore a deleted comment (default: the last deletion or clear)',
+})
+
+vim.api.nvim_create_user_command('ReviewHistory', function(o)
+  require('quickfix-review').history(o.args)
+end, {
+  nargs = '?',
+  complete = function(lead) return require('quickfix-review').complete_ids(lead) end,
+  desc = 'Show the event history of a comment, or the last 50 events',
+})
+
 vim.api.nvim_create_user_command('ReviewSave', function()
   require('quickfix-review').save_review()
 end, { desc = 'Save review to disk' })

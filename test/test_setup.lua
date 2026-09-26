@@ -126,6 +126,10 @@ assert.run_test('commands work before setup()', function()
     assert.truthy(eok, ':ReviewExport does not error: ' .. tostring(eerr))
     assert.truthy(clipboard and clipboard:find('Comment types: ISSUE', 1, true), 'export has the default legend')
     assert.truthy(clipboard:find('**[QUESTION]**', 1, true), 'export has the comment')
+    for _, cmd in ipairs({ 'ReviewTrash', 'ReviewHistory' }) do
+      local cok, cerr = pcall(vim.cmd, cmd)
+      assert.truthy(cok, ':' .. cmd .. ' does not error: ' .. tostring(cerr))
+    end
   end)
   vim.fn.setreg = original_setreg
   os.remove(storage_file)

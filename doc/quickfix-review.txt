@@ -383,6 +383,34 @@ press `dd` to delete the comment under cursor.
                                                             *:ReviewClear*
 :ReviewClear[!]         Clear all review comments and signs. Asks for
                         confirmation first (default No); with ! it does not.
+                        Cleared comments can be brought back with
+                        |:ReviewRestore|.
+
+                                                            *:ReviewTrash*
+:ReviewTrash            List the deleted and cleared comments, newest
+                        first, in a quickfix list of its own titled
+                        "Review trash" (the review's list is left alone).
+                        Each row shows when and how (delete or clear) the
+                        comment was removed, its kind, the first line of
+                        its body and its id.
+
+                                                          *:ReviewRestore*
+:ReviewRestore [id]     Restore the deleted comment {id}, with the same id
+                        and content (completes over the ids in the trash).
+                        Without an id, restore the most recently deleted
+                        comment, or, if the last removal was a
+                        |:ReviewClear|, every comment it cleared (asking
+                        first, default No, when that is more than one).
+                        Restoring a comment that is already in the review
+                        only says so. A restore is appended to the log
+                        like any other change.
+
+                                                          *:ReviewHistory*
+:ReviewHistory [id]     Show the logged events of comment {id} in order
+                        (completes over live and deleted ids), or, without
+                        an id, the last 50 events of the review: time,
+                        op, kind, file:line, and for an update the fields
+                        it changed.
 
                                                              *:ReviewSave*
 :ReviewSave             Write the review's `state.json` cache. Every

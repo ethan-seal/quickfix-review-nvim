@@ -194,6 +194,37 @@ assert.run_test('dd with an unreadable storage file says so and deletes nothing'
   close_lists()
 end)
 
+assert.run_test(':ReviewTrash lists deleted comments, newest first, in a list of its own', function()
+  add_two_comments()
+  qf.show_list()
+  local review_title = vim.fn.getqflist({ title = 0 }).title
+  local ids = {}
+  for i, c in ipairs(qf.comments()) do ids[i] = c.id end
+  qf.delete_comment({ 1, 1 })
+  qf.delete_comment({ 3, 3 })
+  local live = vim.deepcopy(qf.comments())
+
+  qf.show_trash()
+  local list = vim.fn.getqflist({ title = 0, items = 0 })
+  assert.equals(list.title, 'Review trash', 'titled')
+  assert.truthy(list.title ~= review_title, 'not the review title')
+  assert.equals(list.items[1].user_data.id, ids[2], 'newest deletion first')
+  assert.equals(list.items[2].user_data.id, ids[1], 'then the older one')
+  assert.equals(list.items[1].lnum, 3, 'at its line')
+  assert.truthy(list.items[1].text:find('ISSUE', 1, true) and list.items[1].text:find(ids[2], 1, true),
+    'kind and id shown: ' .. list.items[1].text)
+  assert.truthy(vim.deep_equal(qf.comments(), live), 'the review is unchanged')
+
+  -- A change to the review refreshes its own list, not the trash list
+  vim.fn.cursor(2, 1)
+  qf.add_comment('NOTE')
+  local after = vim.fn.getqflist({ title = 0, items = 0 })
+  assert.equals(after.title, 'Review trash', 'trash list still current')
+  assert.length(after.items, #list.items, 'trash list not overwritten')
+  close_lists()
+  qf.clear_review()
+end)
+
 qf.clear_review()
 test_helper.cleanup_test_environment()
 

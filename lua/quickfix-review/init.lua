@@ -201,6 +201,115 @@ function M.clear_review(opts)
   end
 end
 
+local TRASH_TITLE = 'Review trash'
+
+local function first_line(s)
+  return (tostring(s or ''):match('^[^\n]*'))
+end
+
+-- Show the deleted comments, newest first, in a quickfix list of their own
+-- (titled "Review trash"; the review's list is left alone). Each row carries
+-- the comment's id in user_data.
+function M.show_trash()
+  local list = store.trash_list()
+  if #list == 0 then
+    print('The review trash is empty')
+    return
+  end
+  local items = {}
+  for _, t in ipairs(list) do
+    local c = t.comment
+    -- Where it was: its anchor, not store.range(), which would place a
+    -- tracking mark for a comment that is not live
+    local lnum = tonumber(type(c.anchor) == 'table' and c.anchor.lnum or c.lnum) or 1
+    local time = t.ts and os.date('%Y-%m-%d %H:%M', math.floor(t.ts / 1000)) or '?'
+    table.insert(items, {
+      filename = c.filename,
+      lnum = lnum,
+      col = 1,
+      text = string.format('%s %s %s: %s [%s]', time, t.op, tostring(c.kind or 'note'):upper(),
+        first_line(c.body), t.id),
+      user_data = { id = t.id },
+    })
+  end
+  vim.fn.setqflist({}, ' ', { title = TRASH_TITLE, items = items })
+end
+
+-- Restore deleted comments. With an id, that comment; without one, the most
+-- recently deleted comment, or every comment of the last :ReviewClear if
+-- that was the last removal (asking first when it is more than one).
+function M.restore_comment(id)
+  local ids
+  if id and id ~= '' then
+    ids = { id }
+  else
+    local last = store.last_removal()
+    if not last then
+      print('Nothing to restore: the review trash is empty')
+      return
+    end
+    ids = last.ids
+    if #ids > 1 and vim.fn.confirm(string.format('Restore %d comments from the last clear?', #ids),
+        '&Yes\n&No', 2) ~= 1 then
+      return
+    end
+  end
+  local res = store.restore(ids)
+  if not res then return end
+  if res.restored > 0 then
+    print(string.format('Restored %d comment(s)', res.restored))
+  elseif res.live[1] then
+    print('Comment ' .. res.live[1] .. ' is already live')
+  elseif res.unknown[1] then
+    print('No deleted comment ' .. res.unknown[1])
+  end
+end
+
+-- The event history rows of comment `id`, or of the last 50 events
+function M.history_rows(id)
+  local res, err = require('quickfix-review.log').read(store.log_path(), 0, 0)
+  if not res then return nil, err end
+  return require('quickfix-review.history').rows(res.events, id ~= '' and id or nil)
+end
+
+-- Print the event history of comment `id`, or the last 50 events
+function M.history(id)
+  local rows, err = M.history_rows(id)
+  if not rows then
+    print((vim.uv or vim.loop).fs_stat(store.log_path()) and tostring(err) or 'No review history yet')
+    return
+  end
+  if #rows == 0 then
+    print(id and id ~= '' and ('No history for ' .. id) or 'No review history yet')
+    return
+  end
+  local chunks = {}
+  for i, row in ipairs(rows) do
+    chunks[i] = { row.text .. (i < #rows and '\n' or '') }
+  end
+  vim.api.nvim_echo(chunks, true, {})
+end
+
+-- Completion for :ReviewRestore: the ids in the trash, matching `lead`
+function M.complete_trash_ids(lead)
+  local out = {}
+  for id in pairs(store.trash()) do
+    if id:sub(1, #lead) == lead then table.insert(out, id) end
+  end
+  table.sort(out)
+  return out
+end
+
+-- Completion for :ReviewHistory: live and deleted ids, matching `lead`
+function M.complete_ids(lead)
+  local out = M.complete_trash_ids(lead)
+  for _, c in ipairs(store.all()) do
+    if c.id:sub(1, #lead) == lead then table.insert(out, c.id) end
+  end
+  table.sort(out)
+  return out
+end
+
 -- All review comments, in creation order. Treat as read-only.
 function M.comments()
   return store.all()

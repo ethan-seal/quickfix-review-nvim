@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-j2ye
 title: :ReviewTrash, :ReviewRestore, :ReviewHistory
-status: todo
+status: completed
 type: feature
 priority: normal
 created_at: 2026-09-26T04:57:59Z
-updated_at: 2026-09-26T04:57:59Z
+updated_at: 2026-09-26T07:08:40Z
 parent: quickfix-review-nvim-oyi9
 blocked_by:
     - quickfix-review-nvim-0scv

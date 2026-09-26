@@ -16,6 +16,7 @@ package.loaded['quickfix-review.export'] = nil
 package.loaded['quickfix-review.snapshots'] = nil
 package.loaded['quickfix-review.context'] = nil
 package.loaded['quickfix-review.track'] = nil
+package.loaded['quickfix-review.history'] = nil
 
 -- Load the plugin
 local quickfix_review = require('quickfix-review')

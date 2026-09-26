@@ -296,6 +296,39 @@ assert.run_test('deleting and clearing comments removes their tracking extmarks'
   assert.equals(marks(), 0, 'no tracking extmarks after clear_review')
 end)
 
+assert.run_test('restored comments get their tracking extmarks back', function()
+  fresh()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('NOTE')
+  vim.fn.cursor(4, 1)
+  qf.add_comment('NOTE')
+  local function marks()
+    return #vim.api.nvim_buf_get_extmarks(file_buf, track.ns(), 0, -1, {})
+  end
+  assert.equals(marks(), 2, 'one tracking extmark per comment')
+  vim.fn.cursor(2, 1)
+  qf.delete_comment()
+  assert.equals(marks(), 1, 'deleted comment has no extmark')
+  qf.restore_comment()
+  assert.equals(marks(), 2, 'restored after delete')
+  qf.clear_review()
+  assert.equals(marks(), 0, 'none after clear')
+  local original = vim.fn.confirm
+  vim.fn.confirm = function() return 1 end
+  local ok, err = pcall(qf.restore_comment)
+  vim.fn.confirm = original
+  if not ok then error(err, 0) end
+  assert.equals(marks(), 2, 'restored after clear')
+  -- Restored comments follow edits like any other
+  vim.api.nvim_buf_set_lines(file_buf, 0, 0, false, { 'new top' })
+  local lines = {}
+  for i, c in ipairs(qf.comments()) do lines[i] = (store.range(c)) end
+  table.sort(lines)
+  assert.equals(table.concat(lines, ','), '3,5', 'tracked after an insert above')
+  vim.cmd('silent edit!')
+  qf.clear_review()
+end)
+
 rewrite(TEN)
 test_helper.cleanup_test_environment()
 

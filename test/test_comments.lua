@@ -351,6 +351,140 @@ assert.run_test(':ReviewClear! clears without asking', function()
   assert.length(qf.comments(), 0, 'cleared')
 end)
 
+-- Run fn with print replaced by a recorder; returns the printed lines
+local function capture_print(fn)
+  local lines = {}
+  local original = print
+  _G.print = function(...) table.insert(lines, table.concat(vim.tbl_map(tostring, { ... }), ' ')) end
+  local ok, err = pcall(fn)
+  _G.print = original
+  if not ok then error(err, 0) end
+  return lines
+end
+
+local function restores()
+  return #test_helper.log_ops(test_helper.log_path(), 'restore')
+end
+
+assert.run_test(':ReviewRestore brings back the last deleted comment', function()
+  qf.clear_review()
+  qf.add_comment('ISSUE', { 2, 2 })
+  qf.add_comment('NOTE', { 5, 5 })
+  local before = vim.deepcopy(qf.comments()[2])
+  qf.delete_comment({ 5, 5 })
+  assert.length(qf.comments(), 1, 'deleted')
+  local n = restores()
+  local out = capture_print(function() vim.cmd('ReviewRestore') end)
+  assert.equals(restores(), n + 1, 'one restore event')
+  local list = qf.comments()
+  assert.length(list, 2, 'back')
+  assert.equals(list[2].id, before.id, 'same id')
+  assert.equals(list[2].body, before.body, 'same body')
+  assert.equals(list[2].kind, before.kind, 'same kind')
+  assert.equals(list[2].lnum, 5, 'same line')
+  assert.truthy(out[1] and out[1]:find('Restored 1', 1, true), 'reported: ' .. tostring(out[1]))
+  qf.clear_review()
+end)
+
+assert.run_test(':ReviewRestore after :ReviewClear asks and restores all of it', function()
+  qf.clear_review()
+  qf.add_comment('ISSUE', { 1, 1 })
+  qf.add_comment('NOTE', { 3, 3 })
+  qf.add_comment('PRAISE', { 5, 5 })
+  local ids = {}
+  for i, c in ipairs(qf.comments()) do ids[i] = c.id end
+  review_clear('ReviewClear', 1)
+  assert.length(qf.comments(), 0, 'cleared')
+
+  local n = restores()
+  local prompt
+  local original = vim.fn.confirm
+  vim.fn.confirm = function(msg) prompt = msg return 2 end
+  local ok, err = pcall(vim.cmd, 'ReviewRestore')
+  vim.fn.confirm = original
+  if not ok then error(err, 0) end
+  assert.truthy(prompt and prompt:find('3', 1, true), 'asked with the count: ' .. tostring(prompt))
+  assert.equals(restores(), n, 'No: nothing logged')
+  assert.length(qf.comments(), 0, 'No: nothing restored')
+
+  assert.equals(review_clear('ReviewRestore', 1), 1, 'asked once')
+  assert.equals(restores(), n + 3, 'three restore events')
+  local back = {}
+  for i, c in ipairs(qf.comments()) do back[i] = c.id end
+  table.sort(ids)
+  table.sort(back)
+  assert.equals(table.concat(back, ','), table.concat(ids, ','), 'the same ids are back')
+  qf.clear_review()
+end)
+
+assert.run_test('restoring a clear is one append under one lock', function()
+  qf.clear_review()
+  qf.add_comment('ISSUE', { 1, 1 })
+  qf.add_comment('NOTE', { 3, 3 })
+  qf.add_comment('PRAISE', { 5, 5 })
+  qf.clear_review()
+  local log = require('quickfix-review.log')
+  local append, with_lock = log.append, log.with_lock
+  local appends, locks, sizes = 0, 0, {}
+  log.append = function(path, events, mode)
+    appends = appends + 1
+    table.insert(sizes, #events)
+    return append(path, events, mode)
+  end
+  log.with_lock = function(...)
+    locks = locks + 1
+    return with_lock(...)
+  end
+  local ok, err = pcall(review_clear, 'ReviewRestore', 1)
+  log.append, log.with_lock = append, with_lock
+  if not ok then error(err, 0) end
+  assert.equals(appends, 1, 'one append')
+  assert.equals(sizes[1], 3, 'holding three events')
+  assert.equals(locks, 1, 'one lock')
+  assert.length(qf.comments(), 3, 'all back')
+  qf.clear_review()
+end)
+
+assert.run_test(':ReviewRestore of a live id says so and logs nothing', function()
+  qf.clear_review()
+  qf.add_comment('ISSUE', { 2, 2 })
+  local id = qf.comments()[1].id
+  local n = restores()
+  local out = capture_print(function() vim.cmd('ReviewRestore ' .. id) end)
+  assert.equals(restores(), n, 'no restore event')
+  assert.length(qf.comments(), 1, 'unchanged')
+  assert.truthy(out[1] and out[1]:find(id, 1, true) and out[1]:find('live', 1, true),
+    'message names the id: ' .. tostring(out[1]))
+  out = capture_print(function() vim.cmd('ReviewRestore 0000nosuchid0000') end)
+  assert.equals(restores(), n, 'unknown id: no restore event')
+  assert.truthy(out[1] and out[1]:find('0000nosuchid0000', 1, true), 'unknown id named: ' .. tostring(out[1]))
+  qf.clear_review()
+end)
+
+assert.run_test(':ReviewRestore <id> restores that comment; completion lists the trash', function()
+  qf.clear_review()
+  qf.add_comment('ISSUE', { 2, 2 })
+  qf.add_comment('NOTE', { 4, 4 })
+  local first = qf.comments()[1].id
+  local second = qf.comments()[2].id
+  qf.delete_comment({ 2, 2 })
+  qf.delete_comment({ 4, 4 })
+  local completions = vim.fn.getcompletion('ReviewRestore ', 'cmdline')
+  assert.truthy(vim.tbl_contains(completions, first) and vim.tbl_contains(completions, second),
+    'trash ids completed')
+  local narrowed = vim.fn.getcompletion('ReviewRestore ' .. first:sub(1, 6), 'cmdline')
+  assert.truthy(vim.tbl_contains(narrowed, first), 'prefix keeps the match')
+  vim.cmd('ReviewRestore ' .. first)
+  local list = qf.comments()
+  assert.length(list, 1, 'one back')
+  assert.equals(list[1].id, first, 'the named one')
+  assert.falsy(vim.tbl_contains(vim.fn.getcompletion('ReviewRestore ', 'cmdline'), first),
+    'restored id no longer completed')
+  assert.truthy(vim.tbl_contains(vim.fn.getcompletion('ReviewHistory ', 'cmdline'), first),
+    'history completes live ids')
+  qf.clear_review()
+end)
+
 local function same(actual, expected, msg)
   assert.truthy(vim.deep_equal(actual, expected),
     string.format('%s: expected %s, got %s', msg, vim.inspect(expected), vim.inspect(actual)))

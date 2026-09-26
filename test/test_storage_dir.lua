@@ -482,6 +482,132 @@ storage_test('an explicit storage_file behaves as before: one file, no dirs, no 
   os.remove(file)
 end)
 
+-- vim.system replaced by one whose `git rev-parse` fails like a git killed
+-- by its timeout while `state.fail` is set; restored afterwards
+local function with_failing_git(fn)
+  local original = vim.system
+  local state = { fail = true }
+  vim.system = function(cmd, opts)
+    if state.fail and vim.tbl_contains(cmd, 'rev-parse') then
+      return { wait = function() return { code = 124, signal = 15, stdout = '', stderr = '' } end }
+    end
+    return original(cmd, opts)
+  end
+  local ok, err = pcall(fn, state)
+  vim.system = original
+  if not ok then error(err, 0) end
+end
+
+storage_test('a failed git rev-parse is retried: the review ends up in the root\'s dir', function()
+  local data = fresh_data()
+  local a = make_repo('tau')
+  local sub = a .. '/sub'
+  vim.fn.mkdir(sub, 'p')
+  cd(sub)
+  local expected = data .. '/nvim/quickfix-review/' .. vim.fn.fnamemodify(a, ':t') .. '-'
+    .. vim.fn.sha256(a):sub(1, 12)
+  with_failing_git(function(git)
+    local calls = capture_notify(function() restart() end)
+    local _, store = mods()
+    local dir
+    calls = vim.list_extend(calls, capture_notify(function() dir = store.dir() end))
+    assert.truthy(dir ~= expected, 'falls back to the cwd while git fails')
+    local warns = mentioning(calls, 'git rev-parse failed in ' .. sub)
+    assert.length(warns, 1, 'warned once about the fallback')
+    assert.equals(warns[1].level, vim.log.levels.WARN, 'at WARN level')
+
+    git.fail = false
+    store._set_retry_ns(0)
+    assert.equals(store.dir(), expected, 'the root\'s dir once git answers')
+    assert.equals(store.root(), a, 'project root')
+  end)
+end)
+
+storage_test('a cwd outside git is not warned about', function()
+  local dir = vim.fn.tempname() .. '-nogit'
+  vim.fn.mkdir(dir, 'p')
+  cd(dir)
+  local calls = capture_notify(function()
+    restart()
+    local _, store = mods()
+    store.all()
+  end)
+  assert.length(mentioning(calls, 'rev-parse'), 0, 'no warning')
+  local _, store = mods()
+  assert.equals(store.root(), vim.uv.fs_realpath(dir), 'the cwd is the root')
+end)
+
+storage_test('storage_file set to the legacy global file leaves it in place for per-project import', function()
+  local a, file_a = make_repo('upsilon')
+  local b = make_repo('phi')
+  local config = mods()
+  local legacy = seed_legacy(a, b, false)
+  local bytes = read_bytes(legacy)
+  cd(a)
+  local calls = capture_notify(function()
+    restart({ storage_file = config.legacy_storage_file() })
+    local _, store = mods()
+    assert.length(store.all(), 3, 'the explicit review holds every comment')
+  end)
+  assert.equals(read_bytes(legacy), bytes, 'the legacy file is left in place')
+  assert.equals(vim.fn.filereadable(legacy .. '.pre-log.bak'), 0, 'not renamed to .pre-log.bak')
+
+  -- A change and a sync: comments.json next to the log is looked at again
+  calls = capture_notify(function()
+    note(file_a, 'explicit note')
+    vim.api.nvim_exec_autocmds('CursorHold', {})
+    local _, store = mods()
+    store.all()
+  end)
+  assert.equals(read_bytes(legacy), bytes, 'still in place after a sync')
+  assert.length(mentioning(calls, 'reappeared'), 0, 'no "reappeared" warning')
+
+  capture_notify(function() restart() end)
+  local _, store = mods()
+  local list = store.all()
+  assert.length(list, 1, 'a imports its comment once storage_file is removed')
+  assert.equals(list[1].body, 'from a', 'its own comment')
+  cd(b)
+  list = store.all()
+  assert.length(list, 1, 'b imports its comment')
+  assert.equals(list[1].body, 'from b', 'its own comment')
+end)
+
+storage_test('a legacy file renamed to .pre-log.bak by an older version is still imported', function()
+  local a = make_repo('chi')
+  local b = make_repo('psi')
+  local legacy = seed_legacy(a, b, false)
+  assert.truthy(vim.uv.fs_rename(legacy, legacy .. '.pre-log.bak'), 'renamed as the old code did')
+  cd(a)
+  local calls = capture_notify(function() restart() end)
+  local _, store = mods()
+  local list = store.all()
+  assert.length(list, 1, 'imported from the .pre-log.bak')
+  assert.equals(list[1].body, 'from a', 'its own comment')
+  assert.length(mentioning(calls, 'imported 1 comments from ' .. legacy .. '.pre-log.bak'), 1, 'names the source')
+end)
+
+storage_test('a legacy record with only a bufnr is not imported onto an open buffer', function()
+  local a, file_a = make_repo('omega')
+  local config = mods()
+  local legacy = config.legacy_storage_file()
+  vim.fn.mkdir(vim.fn.fnamemodify(legacy, ':h'), 'p')
+  -- A buffer under repo a, whose number the old record happens to name
+  local buf = vim.fn.bufadd(file_a)
+  vim.fn.bufload(buf)
+  local content = vim.json.encode({ { bufnr = buf, lnum = 1, col = 1, text = '[NOTE] orphan' } })
+  vim.fn.writefile({ content }, legacy)
+  cd(a)
+  local calls = capture_notify(function() restart() end)
+  local _, store = mods()
+  assert.length(store.all(), 0, 'not attached to the open buffer\'s file')
+  local warns = mentioning(calls, 'not importing 1 comment')
+  assert.length(warns, 1, 'warned about the dropped record')
+  assert.equals(warns[1].level, vim.log.levels.WARN, 'at WARN level')
+  assert.equals(read_bytes(legacy), content .. '\n', 'legacy file unchanged')
+  vim.cmd('bwipeout! ' .. buf)
+end)
+
 -- Put the test configuration back for the files that run after this one
 cd(original_cwd)
 vim.env.XDG_DATA_HOME = original_data_home

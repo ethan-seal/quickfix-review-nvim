@@ -507,6 +507,32 @@ assert.run_test('a record with a bad lnum is dropped with a warning, the origina
   end)
 end)
 
+assert.run_test('a v1 record with only a bufnr is not attached to whatever buffer has that number now', function()
+  -- A listed buffer whose number an old session's record might name
+  local buf = vim.fn.bufadd(abs)
+  vim.fn.bufload(buf)
+  local c = upgrade_one({ bufnr = buf, lnum = 1, text = '[NOTE] a' })
+  assert.equals(c.filename, nil, 'no file taken from the current session')
+
+  local json = vim.json.encode({
+    { bufnr = buf, lnum = 1, col = 1, text = '[NOTE] orphan' },
+    { filename = abs, lnum = 2, col = 1, text = '[ISSUE] kept' },
+  })
+  with_file(json, function(file)
+    local list
+    local calls = capture_notify(function()
+      qf = restart(file)
+      list = qf.comments()
+    end)
+    assert.length(list, 1, 'only the record with a file loads')
+    assert.equals(list[1].body, 'kept', 'the right one')
+    local warns = warnings(calls)
+    assert.length(warns, 1, 'one warning')
+    assert.truthy(warns[1].msg:find('dropped 1', 1, true), 'names the dropped count')
+    assert.equals(read_bytes(file .. '.pre-log.bak'), json, 'original kept byte for byte')
+  end)
+end)
+
 -- Every path that drops records keeps the original bytes: migration renames
 -- the file to .pre-log.bak (above), and the legacy global import only reads
 -- its file. There is no separate repair rewrite that needs its own backup.

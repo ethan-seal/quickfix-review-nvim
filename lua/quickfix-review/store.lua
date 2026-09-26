@@ -313,7 +313,43 @@ end
 -- <file>.state.json, <file>.lock, <file>.snapshots), so two storage_file
 -- values never share a log. The path is used as given, not resolved: migrating renames the file,
 -- which would change a resolved path.
+--
+-- A git that fails or times out is not a "not a repo" answer: the last root
+-- git gave for this cwd is used, else the cwd itself with a warning, and the
+-- memo is only kept for RETRY_NS, so git is asked again (and the review
+-- moves to the real root once it answers; sync sees the changed log).
 local resolved = {}
+-- The last root git gave, per cwd
+local good_roots = {}
+-- cwds warned about falling back to the cwd while git keeps failing
+local fallback_warned = {}
+local RETRY_NS = 5e9
+
+-- Test hook: how long a fallback root is kept before git is asked again
+-- (a fallback memoized now is kept no longer than that either)
+function M._set_retry_ns(ns)
+  RETRY_NS = ns
+  if resolved.retry_at then resolved.retry_at = math.min(resolved.retry_at, uv.hrtime() + ns) end
+end
+
+-- The project root of `cwd`: its git toplevel, else the cwd itself
+-- Returns: root, retryable (true when git failed and the answer is a guess)
+local function project_root(cwd)
+  local top, transient = utils.git_toplevel(cwd)
+  if top then
+    good_roots[cwd], fallback_warned[cwd] = top, nil
+    return top, false
+  end
+  if not transient then return cwd, false end
+  local guess = good_roots[cwd] or cwd
+  if not fallback_warned[cwd] then
+    fallback_warned[cwd] = true
+    vim.notify(string.format('quickfix-review: git rev-parse failed in %s; using %s.'
+      .. ' Comments may be stored under a different directory until git answers', cwd, guess),
+      vim.log.levels.WARN)
+  end
+  return guess, true
+end
 
 local function resolve()
   local explicit = config.options.storage_file
@@ -326,9 +362,13 @@ local function resolve()
   end
   local cwd = vim.fn.getcwd(-1, -1)
   local opt = config.options.storage_dir
-  if resolved.cwd == cwd and resolved.opt == opt then return resolved end
+  if resolved.cwd == cwd and resolved.opt == opt
+      and (not resolved.retry_at or uv.hrtime() < resolved.retry_at) then
+    return resolved
+  end
 
-  local root = utils.realpath(utils.git_toplevel(cwd) or cwd)
+  local top, retry = project_root(cwd)
+  local root = utils.realpath(top)
   local dir
   -- A fixed string dir is one review shared by every project
   local shared = nil
@@ -347,6 +387,7 @@ local function resolve()
     cwd = cwd, opt = opt, root = root, dir = dir, shared = shared, path = dir .. '/comments.json',
     log = dir .. '/log.jsonl', state = dir .. '/state.json', lock = dir .. '/lock',
     snapshots = dir .. '/snapshots',
+    retry_at = retry and uv.hrtime() + RETRY_NS or nil,
   }
   return resolved
 end
@@ -573,6 +614,8 @@ local function load_cache(loc, stat, base)
     return nil
   end
   if log.read_id(loc.log) ~= doc.log_id then return nil end
+  -- A log rewritten in place may keep its log_id: an offset mid-line is stale
+  if not log.at_line_start(loc.log, doc.offset) then return nil end
   base.log_id, base.offset, base.lines = doc.log_id, doc.offset, doc.lines
   for _, sha in ipairs(is_list(doc.imports) and doc.imports or {}) do base.imports[sha] = true end
   return { comments = st.comments, trash = st.trash, removed = st.removed }
@@ -588,6 +631,9 @@ local function read_log(loc, stat, opts)
   -- (rewritten in place rather than renamed over): a different (or no)
   -- header log_id means replay it from the start
   if not full and log.read_id(loc.log) ~= synced.log_id then full = true end
+  -- ... and one rewritten in place under the same header is caught when the
+  -- offset read to no longer follows a \n
+  if not full and not log.at_line_start(loc.log, synced.offset) then full = true end
   if not full and stat.size == synced.offset then return true, nil, false end
 
   local base, state = synced, reduced
@@ -659,6 +705,13 @@ local function serialise_all(records)
   return out
 end
 
+-- An explicit storage_file that is the legacy global file (the old
+-- default): that file is also every project's legacy import source, so it
+-- is never renamed away, or a later per-project review would import nothing
+local function is_legacy_global(loc)
+  return loc.explicit == true and utils.files_match(loc.path, config.legacy_storage_file())
+end
+
 -- Move comments.json into a new log: under the lock, write the header and an
 -- import of its comments (with the sha256 of its bytes) in one fsync'ed
 -- append, then rename it to comments.json.pre-log.bak, which keeps the
@@ -683,6 +736,9 @@ local function migrate(loc)
       vim.notify(string.format('quickfix-review: migrated %s into %s, but it may not be durable: %s',
         loc.path, loc.log, tostring(werr)), vim.log.levels.WARN)
     end
+    -- The legacy global file stays in place: it is still the per-project
+    -- import source (see import_legacy); the log's import sha256 marks it done
+    if is_legacy_global(loc) then return true end
     local renamed, rerr = uv.fs_rename(loc.path, loc.path .. MIGRATED)
     if not renamed then
       vim.notify(string.format('quickfix-review: migrated %s into %s but could not rename it: %s',
@@ -702,13 +758,18 @@ local import_tried = {}
 -- storage_file) into a new log, as an import event. The legacy file is only
 -- read, never upgraded, backed up or rewritten. The log is written even when
 -- nothing matches, so the import happens once per project, across restarts:
--- a log is the "already imported" marker.
+-- a log is the "already imported" marker. When the legacy file is missing,
+-- its .pre-log.bak is read instead: older versions renamed the legacy file
+-- away when storage_file pointed at it, leaving only that copy.
 local function import_legacy(loc)
   if import_tried[loc.log] then return end
   import_tried[loc.log] = true
 
   local legacy = config.legacy_storage_file()
-  if vim.fn.filereadable(legacy) == 0 then return end
+  if vim.fn.filereadable(legacy) == 0 then
+    legacy = legacy .. MIGRATED
+    if vim.fn.filereadable(legacy) == 0 then return end
+  end
   if utils.files_match(legacy, loc.path) or utils.files_match(legacy, loc.log) then return end
 
   local raw = read_bytes(legacy)
@@ -718,15 +779,20 @@ local function import_legacy(loc)
     return
   end
 
-  local imported, seen = {}, {}
+  local imported, seen, dropped = {}, {}, 0
   for _, item in ipairs(list) do
     local c = type(item) == 'table' and normalize(item) or nil
+    if not c then dropped = dropped + 1 end
     -- A shared dir is every project's review: import everything
     if c and (loc.shared or utils.is_under(c.filename, loc.root)) then
       if seen[c.id] then c.id = new_id() end
       seen[c.id] = true
       table.insert(imported, storage.serialise(c))
     end
+  end
+  if dropped > 0 then
+    vim.notify(string.format('quickfix-review: not importing %d comment(s) from %s: invalid line number'
+      .. ' or no file name (the file is unchanged)', dropped, legacy), vim.log.levels.WARN)
   end
 
   local got, ok, werr = locked(loc, function()
@@ -833,6 +899,8 @@ local reappeared_seen = {}
 -- finished now, or something wrote it after the migration (an external tool,
 -- an older plugin). That one is not read, and not deleted: warn once.
 local function check_reappeared(loc)
+  -- The legacy global file is left in place by design (see migrate)
+  if is_legacy_global(loc) then return end
   local st = uv.fs_stat(loc.path)
   if not st then return end
   local key = string.format('%s:%d:%d.%d', loc.path, st.size, st.mtime.sec, st.mtime.nsec)

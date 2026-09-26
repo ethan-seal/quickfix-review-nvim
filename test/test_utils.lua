@@ -98,6 +98,55 @@ assert.run_test('git_toplevel returns nil outside git', function()
   assert.equals(result, nil, 'no toplevel outside git')
 end)
 
+-- vim.system replaced by one that counts calls and, while `fail` is set,
+-- answers like a git killed by its timeout
+local function with_counted_git(fn)
+  local original = vim.system
+  local state = { calls = 0, fail = false }
+  vim.system = function(cmd, opts)
+    state.calls = state.calls + 1
+    if state.fail then
+      return { wait = function() return { code = 124, signal = 15, stdout = '', stderr = '' } end }
+    end
+    return original(cmd, opts)
+  end
+  local ok, err = pcall(fn, state)
+  vim.system = original
+  if not ok then error(err, 0) end
+end
+
+assert.run_test('git_toplevel does not cache a failed or timed-out git', function()
+  -- A dir not asked about yet, inside the repo
+  local sub = repo_root .. '/test'
+  with_counted_git(function(git)
+    git.fail = true
+    local root, transient = utils.git_toplevel(sub)
+    assert.equals(root, nil, 'no root while git fails')
+    assert.equals(transient, true, 'reported as transient')
+    git.fail = false
+    root, transient = utils.git_toplevel(sub)
+    assert.equals(root, repo_root, 'asked again once git answers')
+    assert.equals(transient, false, 'a definitive answer')
+    local calls = git.calls
+    assert.equals(utils.git_toplevel(sub), repo_root, 'cached')
+    assert.equals(git.calls, calls, 'a cached root spawns no git')
+  end)
+end)
+
+assert.run_test('git_toplevel caches "not a git repo" without a transient flag', function()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, 'p')
+  with_counted_git(function(git)
+    local root, transient = utils.git_toplevel(dir)
+    assert.equals(root, nil, 'no toplevel outside git')
+    assert.equals(transient, false, 'a definitive answer')
+    local calls = git.calls
+    utils.git_toplevel(dir)
+    assert.equals(git.calls, calls, 'the miss is cached')
+  end)
+  vim.fn.delete(dir, 'rf')
+end)
+
 assert.run_test('get_real_filepath resolves diffview names (single slash)', function()
   local result = real_path_for_name('diffview://' .. repo_root .. '/.git/abc123/lua/quickfix-review/utils.lua')
   assert.equals(result, expected_real, 'diffview single-slash form')

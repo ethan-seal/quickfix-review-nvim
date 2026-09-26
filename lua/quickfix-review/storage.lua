@@ -104,15 +104,12 @@ end
 local function v1_comment(item)
   local kind, body, response = M.parse_text(type(item.text) == 'string' and item.text or '')
 
-  -- Very old saves were raw getqflist() items that may have only a bufnr
-  local filename = item.filename
-  if (type(filename) ~= 'string' or filename == '') and type(item.bufnr) == 'number' and item.bufnr ~= 0 then
-    filename = vim.fn.bufname(item.bufnr)
-  end
-
   return {
     id = item.id,
-    filename = filename,
+    -- Very old saves were raw getqflist() items that may have only a bufnr.
+    -- That bufnr is from another session and names an unrelated buffer now,
+    -- so such a record has no file (and is dropped, with a warning).
+    filename = item.filename,
     kind = kind or 'note',
     body = body,
     response = response,
@@ -163,45 +160,11 @@ local function serialise(c)
   return out
 end
 
--- Save comments to file (an empty list is saved too, so clearing persists)
--- Returns: success (boolean), message (string)
-function M.save(comments, filepath)
-  local records = {}
-  for i, c in ipairs(comments) do
-    records[i] = serialise(c)
-  end
-  local ok, encoded = pcall(vim.json.encode, { version = M.VERSION, comments = records })
-  if not ok then
-    return false, 'Failed to encode comments as JSON'
-  end
-
-  local wrote, err = M.atomic_write(filepath, encoded)
-  if not wrote then
-    return false, 'Could not write ' .. filepath .. ': ' .. (err or 'unknown error')
-  end
-
-  return true, string.format('Review saved to %s (%d comments)', filepath, #comments)
-end
-
 M.serialise = serialise
 
--- Load comments from file, upgrading an older schema in memory (the file is
--- left alone; the caller decides whether to rewrite it). A missing or empty
--- file is an empty review.
--- Returns: comments (table or nil), err (string or nil), upgraded (boolean)
-function M.load(filepath)
-  local f = io.open(filepath, 'r')
-  if not f then
-    return {}, nil, false
-  end
-
-  local content = f:read('*all')
-  f:close()
-  return M.parse(content, filepath)
-end
-
--- Decode the contents of a storage file (as M.load does), so a caller that
--- needs the raw bytes too reads the file only once
+-- Decode the contents of a storage file (a comments.json, of any schema
+-- version), upgrading an older schema in memory. Empty content is an empty
+-- review.
 -- Returns: comments (table or nil), err (string or nil), upgraded (boolean)
 function M.parse(content, filepath)
   if not content or vim.trim(content) == '' then

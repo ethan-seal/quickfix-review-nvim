@@ -244,6 +244,27 @@ assert.run_test('a stale lock that can never be broken times out rather than spi
   assert.truthy(waited < 3000, 'within about the wait, got ' .. waited .. 'ms')
 end)
 
+assert.run_test('a holder whose lock was broken meanwhile leaves the new holder\'s lock', function()
+  local dir = vim.fn.tempname() .. '-lock'
+  local holder = vim.system({ 'sleep', '30' })
+  local ok, taken = pcall(log.with_lock, dir, function()
+    -- Judged stale while held: broken (moved aside) and taken by another
+    -- process before this one is done
+    assert.truthy(os.rename(dir, dir .. '.gone'), 'moved aside')
+    seed_lock(dir, holder.pid)
+  end)
+  local left = vim.fn.isdirectory(dir)
+  local fh = io.open(dir .. '/pid', 'r')
+  local pid = fh and tonumber(fh:read('*l'))
+  if fh then fh:close() end
+  holder:kill(9)
+  vim.fn.delete(dir, 'rf')
+  vim.fn.delete(dir .. '.gone', 'rf')
+  assert.truthy(ok, 'no error raised: ' .. tostring(taken))
+  assert.equals(left, 1, 'the other holder\'s lock is left')
+  assert.equals(pid, holder.pid, 'with its pid')
+end)
+
 assert.run_test('a live lock is waited on, then times out; an old one is broken', function()
   local dir = vim.fn.tempname() .. '-lock'
   local holder = vim.system({ 'sleep', '30' })

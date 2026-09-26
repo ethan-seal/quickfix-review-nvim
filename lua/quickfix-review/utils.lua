@@ -239,12 +239,22 @@ end
 -- git toplevel per directory; false marks "not in a git repo" so misses are cached too
 local toplevel_cache = {}
 
+-- Whether a finished `git rev-parse` gave a definitive answer: a root (0) or
+-- "not a git repo" (128, git's fatal exit). A timeout, a signal, a spawn
+-- error or any other exit is transient and must not be cached.
+local function definitive(ok, result)
+  return ok and result ~= nil and (result.signal or 0) == 0
+    and (result.code == 0 or result.code == 128)
+end
+
 -- Return the git toplevel containing `dir` (a file path uses its directory),
--- or nil outside git. Results are cached per argument for the session.
+-- or nil outside git. Definitive answers are cached per argument for the
+-- session; a failed or timed-out git is not, so it is asked again next time.
+-- Returns: root (or nil), transient (true when git gave no definitive answer)
 function M.git_toplevel(dir)
-  if not dir or dir == '' then return nil end
+  if not dir or dir == '' then return nil, false end
   local cached = toplevel_cache[dir]
-  if cached ~= nil then return cached or nil end
+  if cached ~= nil then return cached or nil, false end
 
   local query = dir
   if vim.fn.isdirectory(query) == 0 then
@@ -260,8 +270,9 @@ function M.git_toplevel(dir)
     if trimmed ~= '' then root = trimmed end
   end
 
+  if not definitive(ok, result) then return nil, true end
   toplevel_cache[dir] = root
-  return root or nil
+  return root or nil, false
 end
 
 -- Resolve `rel` against the repo containing `root` (or cwd when root is nil)
@@ -276,7 +287,8 @@ local function resolve_repo_path(root, rel)
   return base .. '/' .. rel
 end
 
--- work tree per git dir; false marks "could not resolve" so misses are cached too
+-- work tree per git dir; false marks "could not resolve" so misses are cached
+-- too (but not when git failed transiently: that is asked again next time)
 local worktree_cache = {}
 
 -- The work tree a git dir belongs to. Diff plugins name buffers after the git
@@ -287,11 +299,15 @@ local function worktree_of(gitdir)
   if cached ~= nil then return cached or nil end
 
   local tree = false
+  local transient = false
   local prefix = gitdir:match('^(.-)/%.git$')
   if prefix then
     -- The main repo's own .git: its parent (resolved as before)
     -- (an empty prefix resolves against the cwd, which is not cached here)
-    tree = prefix ~= '' and (M.git_toplevel(prefix) or prefix) or false
+    if prefix ~= '' then
+      local top, failed = M.git_toplevel(prefix)
+      tree, transient = top or prefix, failed
+    end
   elseif vim.fn.filereadable(gitdir .. '/gitdir') == 1 then
     -- Linked worktree: <gitdir>/gitdir holds the path of <worktree>/.git
     local ok, lines = pcall(vim.fn.readfile, gitdir .. '/gitdir', '', 1)
@@ -307,13 +323,14 @@ local function worktree_of(gitdir)
       local trimmed = vim.trim(result.stdout)
       if trimmed ~= '' then tree = trimmed end
     end
+    transient = not definitive(ok, result)
   end
   if not tree then
     -- Last resort: the directory holding the first .git
     tree = gitdir:match('^(.-)/%.git/') or false
   end
 
-  worktree_cache[gitdir] = tree
+  if not transient then worktree_cache[gitdir] = tree end
   return tree or nil
 end
 

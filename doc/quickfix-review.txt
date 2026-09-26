@@ -176,7 +176,11 @@ worktree has its own toplevel, so each worktree has its own review. After
 re-read from that project's directory; the quickfix view and signs follow.
 If that review can't be read, the list is emptied and the review is not
 modified until it is fixed. |:lcd| and |:tcd| don't switch projects. The root is looked up once per directory per session, so
-`git init` in an open directory takes effect after a restart.
+`git init` in an open directory takes effect after a restart. Only a
+definite answer from git is kept: if `git rev-parse` fails or times out,
+you get a warning, the last root git gave for that directory (else the
+directory itself) is used meanwhile, and git is asked again a few seconds
+later.
 
                                                   *quickfix-review-storage_dir*
 `storage_dir` may be a function, called with the resolved root, returning
@@ -250,7 +254,10 @@ Older versions still kept every project's comments in one global file,
 `stdpath('data')/quickfix-review.json`. The first time a project with
 neither a log nor a `comments.json` is opened, the comments in that file
 whose path is inside the project are imported ("imported N comments from
-..."). The global file is only read, never changed. The import happens
+..."). The global file is only read, never changed. If it is missing but
+`quickfix-review.json.pre-log.bak` exists (left by an older version used
+with `storage_file` pointing at the global file), that copy is read
+instead. The import happens
 once per project: once its log exists, even with nothing imported, nothing
 is imported again.
 
@@ -260,7 +267,10 @@ project, as before: no storage directory, no switching on |:cd|, and no
 import from the global file. Its log and cache sit next to the path given:
 `<storage_file>.log.jsonl` and `<storage_file>.state.json` (and a
 `<storage_file>.lock` directory while writing). An existing file at that
-path is migrated to the log and renamed to `<storage_file>.pre-log.bak`. If you copied the old full configuration example, remove its
+path is migrated to the log and renamed to `<storage_file>.pre-log.bak`,
+except the global file `stdpath('data')/quickfix-review.json` itself: it is
+left in place, so per-project reviews can still import from it once
+`storage_file` is removed. If you copied the old full configuration example, remove its
 `storage_file` line to get per-project reviews.
 
                                                 *quickfix-review-comment-types*

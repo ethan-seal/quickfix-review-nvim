@@ -104,6 +104,19 @@ function M.append(path, events, mode)
   return true, nil, #events
 end
 
+-- Whether byte `offset` of the file at `path` starts a line: it is 0, or
+-- the byte before it is a \n. A tail offset that does not is stale (the log
+-- was rewritten in place), so the log must be replayed from the start. A
+-- file that can't be read answers false.
+function M.at_line_start(path, offset)
+  if offset <= 0 then return true end
+  local fd = uv.fs_open(path, 'r', 0)
+  if not fd then return false end
+  local byte = uv.fs_read(fd, 1, offset - 1)
+  uv.fs_close(fd)
+  return byte == '\n'
+end
+
 -- Read the complete lines of the log at `path` from byte `from` (default 0,
 -- the start of a line; `lines` is how many lines precede it, for messages).
 -- Every line that fails to decode is skipped with a warning naming its line
@@ -220,6 +233,14 @@ local function unlock(lockdir)
   uv.fs_rmdir(lockdir)
 end
 
+-- Release a lock this process took: only while it still names this process.
+-- One broken as stale meanwhile (see break_lock) may be another holder's
+-- now, which is left alone. The check and the removal are not atomic, which
+-- narrows, but does not close, that window.
+local function release(lockdir)
+  if read_pid(lockdir) == uv.os_getpid() then unlock(lockdir) end
+end
+
 -- Break a stale lock: rename it aside, then remove it. Of two processes
 -- that both judged it stale, only one rename succeeds, so the other never
 -- removes a lock taken since. `judged` is the pid stale() judged it by: the
@@ -283,7 +304,7 @@ function M.with_lock(lockdir, fn)
     end
   end
   local results = { pcall(fn) }
-  unlock(lockdir)
+  release(lockdir)
   if not results[1] then error(results[2], 0) end
   return true, unpack(results, 2, table.maxn(results))
 end

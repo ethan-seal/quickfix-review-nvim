@@ -323,6 +323,46 @@ assert.run_test('a log rewritten in place to the same size with another log_id i
   reset()
 end)
 
+assert.run_test('a log rewritten in place under the same header, leaving the offset mid-line, is replayed', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('NOTE')
+  vim.fn.cursor(2, 1)
+  qf.add_comment('NOTE')
+  assert.length(qf.comments(), 2, 'two comments')
+  local fh = io.open(log_file, 'rb')
+  local old = fh:read('*a')
+  fh:close()
+
+  -- Same header (and log_id), same inode; the first event's body grows, so
+  -- the old end of the log now falls inside the second event, and a third
+  -- event makes the file longer than what was read
+  local lines = vim.split(old, '\n', { plain = true, trimempty = true })
+  assert.length(lines, 3, 'header and two events')
+  local grown = lines[2]:gsub('"body":"([^"]*)"', function(b) return '"body":"' .. b .. 'grown"' end, 1)
+  local third = vim.json.decode(lines[3])
+  third.eid = third.eid .. 'x'
+  third.comment.id = string.rep('f', #third.comment.id)
+  third.comment.body = 'third'
+  local new = table.concat({ lines[1], grown, lines[3], vim.json.encode(third) }, '\n') .. '\n'
+  assert.truthy(#new > #old, 'longer than before')
+  assert.truthy(new:sub(#old, #old) ~= '\n', 'the old offset is mid-line now')
+  fh = io.open(log_file, 'r+b')
+  fh:write(new)
+  fh:close()
+
+  local _, notified = capture(function() vim.api.nvim_exec_autocmds('CursorHold', {}) end)
+  local list = qf.comments()
+  local replayed = test_helper.saved(log_file)
+  assert.length(list, #replayed, 'as many comments as a replay')
+  for n, c in ipairs(list) do
+    assert.equals(c.body, replayed[n].body, 'comment ' .. n .. ' as replayed')
+  end
+  assert.truthy(list[1].body:match('grown$'), 'the rewritten first comment: ' .. list[1].body)
+  assert.length(notified, 0, 'no unreadable-line warning from a mid-line read')
+  reset()
+end)
+
 local FIVE = { 'line 1', 'line 2', 'line 3', 'line 4', 'line 5' }
 
 local function outdated_sign_on_line(lnum)

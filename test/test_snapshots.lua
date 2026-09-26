@@ -177,6 +177,100 @@ assert.run_test('a dir that cannot be created: put returns nil and a message', f
   os.remove(blocker)
 end)
 
+assert.run_test('put rewrites a same-size snapshot with the wrong content', function()
+  use_dir()
+  local sha = snapshots.put({ 'good' })
+  local path = store.snapshots_dir() .. '/' .. sha
+  write_bytes(path, 'gooX\n')
+  snapshots._clear_cache()
+  assert.equals(snapshots.put({ 'good' }), sha, 'same sha')
+  snapshots._clear_cache()
+  same_lines(snapshots.get(sha), { 'good' }, 'repaired')
+  assert.equals(read_bytes(path), 'good\n', 'the bytes on disk')
+end)
+
+assert.run_test('lines holding a NUL (or a CR CR) round-trip as one line each', function()
+  use_dir()
+  local lines = { 'a', 'x\ny', 'b\r\nc', 'z', 'cr\r\r', '\n' }
+  local sha = snapshots.put(lines)
+  snapshots._clear_cache()
+  same_lines(snapshots.get(sha), { 'a', 'x\ny', 'b\r\nc', 'z', 'cr\r', '\n' }, 'one line each (one CR stripped)')
+  assert.equals(snapshots.hash(lines), sha, 'hash matches put')
+  assert.equals(snapshots.hash({ 'a', 'b\r' }), vim.fn.sha256('a\nb\n'), 'ordinary lines hash as before')
+end)
+
+-- GC: snapshots unreferenced by the review's logs and untouched for a day
+local DAY_AGO = os.time() - 25 * 3600
+
+local function backdate(sha)
+  vim.uv.fs_utime(store.snapshots_dir() .. '/' .. sha, DAY_AGO, DAY_AGO)
+end
+
+local function exists(sha)
+  return vim.uv.fs_stat(store.snapshots_dir() .. '/' .. sha) ~= nil
+end
+
+-- A comment anchored to a new snapshot of `lines`; returns its id and sha
+local function anchored(lines, body)
+  local sha = snapshots.put(lines)
+  assert.truthy(sha, "snapshot written")
+  assert.truthy(store.add({
+    filename = vim.fn.tempname(), lnum = 1, kind = 'note', body = body or 'x',
+    anchor = { sha = sha, lnum = 1, end_lnum = 1 },
+  }), 'added')
+  local id
+  for _, c in ipairs(store.all()) do
+    if c.anchor and c.anchor.sha == sha then id = c.id end
+  end
+  return id, sha
+end
+
+assert.run_test('gc: unreferenced old deleted; fresh, live and trash kept', function()
+  use_dir()
+  local _, live = anchored({ 'live' })
+  local trashed_id, trashed = anchored({ 'trashed' })
+  assert.equals(store.remove(trashed_id), 1, 'moved to the trash')
+  local old = snapshots.put({ 'old' })
+  local fresh = snapshots.put({ 'fresh' })
+  local tmp = store.snapshots_dir() .. '/' .. old .. '.tmp.123'
+  write_bytes(tmp, 'x')
+  vim.uv.fs_utime(tmp, DAY_AGO, DAY_AGO)
+  for _, sha in ipairs({ live, trashed, old }) do backdate(sha) end
+
+  assert.equals(store.gc_snapshots(), 1, 'one deleted')
+  assert.falsy(exists(old), 'unreferenced old snapshot deleted')
+  assert.truthy(exists(fresh), 'unreferenced fresh snapshot kept')
+  assert.truthy(exists(live), 'a live comment\'s kept')
+  assert.truthy(exists(trashed), 'a trash entry\'s kept')
+  assert.truthy(vim.uv.fs_stat(tmp), 'a non-sha file kept')
+end)
+
+assert.run_test('gc: a sha in a torn log line still counts; a newer log stops it', function()
+  use_dir()
+  anchored({ 'something' })
+  local torn = snapshots.put({ 'torn' })
+  local old = snapshots.put({ 'old' })
+  backdate(torn)
+  backdate(old)
+  local fh = io.open(store.log_path(), 'ab')
+  fh:write('{"op":"add","comment":{"anchor":{"sha":"' .. torn:upper() .. '"')
+  fh:close()
+  assert.equals(store.gc_snapshots(), 1, 'one deleted')
+  assert.truthy(exists(torn), 'named only by a torn line: kept')
+  assert.falsy(exists(old), 'the unreferenced one deleted')
+
+  use_dir()
+  local sha = snapshots.put({ 'future' })
+  backdate(sha)
+  vim.fn.mkdir(vim.fn.fnamemodify(store.log_path(), ':h'), 'p')
+  write_bytes(store.log_path(), '{"op":"header","log_id":"abc","v":99}\n')
+  assert.equals(store.gc_snapshots(), 0, 'nothing deleted')
+  assert.truthy(exists(sha), 'kept')
+
+  use_dir()
+  assert.equals(store.gc_snapshots(), 0, 'no snapshots dir: nothing to do')
+end)
+
 config.options.storage_file = original_file
 config.options.storage_dir = original_dir
 snapshots._clear_cache()

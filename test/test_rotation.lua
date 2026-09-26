@@ -497,6 +497,46 @@ assert.run_test('a stray .rotating file of a dead process is removed at rotation
   os.remove(live)
 end)
 
+assert.run_test('rotation collects unreferenced old snapshots, keeping ones rotated logs name', function()
+  reset()
+  local store = require('quickfix-review.store')
+  local snapshots = require('quickfix-review.snapshots')
+  local day_ago = os.time() - 25 * 3600
+  local snap_dir = storage_file .. '.snapshots'
+  local function path(sha) return snap_dir .. '/' .. sha end
+
+  local trashed = snapshots.put({ 'trashed' })
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 't',
+    anchor = { sha = trashed, lnum = 1, end_lnum = 1 } }), 'added')
+  assert.equals(store.remove(store.all()[1].id), 1, 'deleted')
+  -- Named only by a torn record, which stays in the rotated log alone
+  local torn = snapshots.put({ 'torn' })
+  local fh = io.open(log_file, 'ab')
+  fh:write('{"op":"add","comment":{"anchor":{"sha":"' .. torn .. '"')
+  fh:close()
+  local old = snapshots.put({ 'old' })
+  for _, sha in ipairs({ trashed, torn, old }) do uv.fs_utime(path(sha), day_ago, day_ago) end
+
+  -- Another storage_file review's snapshots, in the same directory
+  local other = vim.fn.tempname() .. '-other.json'
+  vim.fn.mkdir(other .. '.snapshots', 'p')
+  local foreign = other .. '.snapshots/' .. string.rep('a', 64)
+  vim.fn.writefile({ 'x' }, foreign)
+  uv.fs_utime(foreign, day_ago, day_ago)
+
+  capture_notify(function()
+    qf, store = restart({ log_max_bytes = 1 })
+    add_at(2) -- rotates, then collects
+    assert.length(rotated(), 1, 'rotated')
+    assert.truthy(vim.wait(2000, function() return not uv.fs_stat(path(old)) end, 10), 'unreferenced old deleted')
+  end)
+  assert.truthy(uv.fs_stat(path(trashed)), 'a trash entry\'s kept')
+  assert.truthy(uv.fs_stat(path(torn)), 'named only by the rotated log: kept')
+  assert.truthy(uv.fs_stat(foreign), 'another review\'s untouched')
+  assert.equals(store.gc_snapshots(), 0, 'nothing more to collect')
+  vim.fn.delete(other .. '.snapshots', 'rf')
+end)
+
 assert.run_test('a log from a newer version is refused, not shown empty', function()
   local log = require('quickfix-review.log')
   assert.equals(log.VERSION, 2, 'the log format is v2')

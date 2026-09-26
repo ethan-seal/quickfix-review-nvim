@@ -174,6 +174,14 @@ function M.read_id(path)
   return ok and is_header(ev) and not too_new(ev) and ev.log_id or nil
 end
 
+-- Whether `data` (a log's bytes) starts with a header this version reads
+function M.readable_header(data)
+  local line = data:match('^([^\n]*)\n')
+  if not line then return false end
+  local ok, ev = pcall(vim.json.decode, line)
+  return ok and is_header(ev) and not too_new(ev)
+end
+
 -- Whether process `pid` may be alive: only a definite ESRCH says it is not
 function M.pid_alive(pid)
   local alive, _, name = uv.kill(pid, 0)

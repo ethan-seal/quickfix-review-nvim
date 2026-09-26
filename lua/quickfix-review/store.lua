@@ -1077,6 +1077,84 @@ local function readonly_error(loc)
   return string.format('%s is not writable: %s is shown read-only; the change was not saved', loc.dir, loc.path)
 end
 
+-- Snapshot garbage collection. A snapshot is in use while any event of the
+-- review's retained logs (the current one and the rotated ones) names it:
+-- every comment's and trash entry's anchor comes from those events (the
+-- checkpoint a rotated-to log starts with carries both). Each snapshots dir
+-- belongs to one log, in every storage mode.
+--
+-- References are every 64-hex run in the logs' bytes, not decoded events: a
+-- torn record stays an undecodable line forever, and an event shape this
+-- version doesn't know may still name snapshots, so neither may let its
+-- snapshots go. A log that can't be read, or whose header isn't one this
+-- version reads, stops the GC.
+--
+-- Snapshots are written (snapshots.put) before the event naming them is
+-- appended, outside the lock, so an unreferenced snapshot may be another
+-- Neovim's about to be referenced: only those untouched for GC_GRACE are
+-- deleted (put touches an existing one). The lock keeps the set of logs
+-- stable against a concurrent rotation.
+local GC_GRACE = 24 * 3600
+local SHA_RUN = '%f[%x]' .. ('%x'):rep(64) .. '%f[^%x]'
+
+local function gc(loc)
+  if readonly_error(loc) then return 0 end
+  local dir_stat = uv.fs_stat(loc.snapshots)
+  if not dir_stat or dir_stat.type ~= 'directory' or not uv.fs_stat(loc.log) then return 0 end
+  local function abort(msg)
+    vim.notify('quickfix-review: not collecting snapshots: ' .. msg, vim.log.levels.DEBUG)
+    return 0
+  end
+
+  local got, removed = locked(loc, function()
+    local refs = {}
+    local logs = { loc.log }
+    for _, r in ipairs(list_rotated(loc)) do table.insert(logs, r.path) end
+    for _, path in ipairs(logs) do
+      local data = read_bytes(path)
+      if not data then return abort('could not read ' .. path) end
+      if not log.readable_header(data) then return abort(path .. ' has no header this version reads') end
+      for sha in data:gmatch(SHA_RUN) do refs[sha:lower()] = true end
+    end
+
+    local count = 0
+    local handle = uv.fs_scandir(loc.snapshots)
+    while handle do
+      local name, kind = uv.fs_scandir_next(handle)
+      if not name then break end
+      if (kind == 'file' or kind == nil) and #name == 64 and name:match('^[0-9a-f]+$') and not refs[name] then
+        -- Stat'ed right before the unlink, narrowing the window for a
+        -- concurrent put's touch
+        local path = loc.snapshots .. '/' .. name
+        local st = uv.fs_stat(path)
+        if st and st.type == 'file' and os.time() - st.mtime.sec > GC_GRACE and os.remove(path) then
+          count = count + 1
+        end
+      end
+    end
+    return count
+  end)
+  if not got then return abort(tostring(removed)) end
+  return removed or 0
+end
+
+-- Delete the review's unreferenced snapshots older than a day (see gc).
+-- Returns: how many were deleted
+function M.gc_snapshots()
+  return gc(resolve())
+end
+
+-- Collect the snapshots of the review once this session, 5s after startup
+-- (not in the test suite, which sets vim.g._quickfix_review_no_startup_gc)
+function M.schedule_startup_gc()
+  if vim.g._quickfix_review_startup_gc or vim.g._quickfix_review_no_startup_gc then return end
+  vim.g._quickfix_review_startup_gc = true
+  vim.defer_fn(function()
+    local ok, err = pcall(M.gc_snapshots)
+    if not ok then vim.notify('quickfix-review: snapshot GC failed: ' .. tostring(err), vim.log.levels.DEBUG) end
+  end, 5000)
+end
+
 local function mutate(build)
   local loc = resolve()
   -- Before locking: the lock can't be taken in a dir that is not writable
@@ -1103,6 +1181,8 @@ local function mutate(build)
       -- the cache keyed to it
       sync()
       flush(true)
+      -- Outside this change: it reads every retained log, and takes the lock
+      vim.schedule(function() gc(loc) end)
     end
     if wrote then return res end
     landed = (landed or 0) - header

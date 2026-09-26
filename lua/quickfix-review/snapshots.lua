@@ -10,6 +10,14 @@
 -- newline share a sha. (readfile() drops a BOM and the CR before each NL,
 -- but not the CR of a last line without a NL; a buffer with 'ff' unix keeps
 -- every CR. Both are stripped here.)
+--
+-- A line holding a NUL (which nvim_buf_get_lines and readfile() give as
+-- "\n") would split in two when read back, so the anchor's lnum no longer
+-- indexes the snapshot. Such a line is escaped: "\r" -> "\r1", "\n" -> "\r0",
+-- plus a final "\r" marking it as escaped. So is a line that still ends in a
+-- CR after the one stripped (a CR CR LF), to keep the marker unambiguous:
+-- every other stored line ends in anything but a CR. Lines without either
+-- are stored as they are, so their shas are unchanged.
 local M = {}
 
 local storage = require('quickfix-review.storage')
@@ -28,7 +36,11 @@ local warned = {}
 local function canonical(lines)
   local out = {}
   for i, line in ipairs(lines) do
-    out[i] = (line:gsub('\r$', ''))
+    line = line:gsub('\r$', '')
+    if line:find('\n', 1, true) or line:sub(-1) == '\r' then
+      line = line:gsub('\r', '\r1'):gsub('\n', '\r0') .. '\r'
+    end
+    out[i] = line
   end
   return table.concat(out, '\n') .. '\n'
 end
@@ -60,9 +72,26 @@ function M.hash(lines)
   return vim.fn.sha256(canonical(lines))
 end
 
--- Store `lines` and return their sha. An existing snapshot is kept and its
--- mtime touched (so a future pruning pass sees it in use); one whose size is
--- wrong is rewritten.
+local UNESCAPE = { ['0'] = '\n', ['1'] = '\r' }
+
+-- A stored line back as the line it was (see canonical)
+local function unescape(line)
+  if line:sub(-1) ~= '\r' then return line end
+  return (line:sub(1, -2):gsub('\r([01])', UNESCAPE))
+end
+
+local function read_file(path)
+  local fh = io.open(path, 'rb')
+  if not fh then return nil end
+  local content = fh:read('*a')
+  fh:close()
+  return content
+end
+
+-- Store `lines` and return their sha. An existing snapshot with the right
+-- content is kept and its mtime touched: store.gc_snapshots deletes only
+-- unreferenced snapshots untouched for a day, so this keeps one that another
+-- Neovim is about to reference alive. One whose content is wrong is rewritten.
 -- Returns: sha (string) or nil, err (string or nil)
 function M.put(lines)
   local content = canonical(lines)
@@ -71,7 +100,7 @@ function M.put(lines)
   local path = dir .. '/' .. sha
 
   local stat = uv.fs_stat(path)
-  if stat and stat.type == 'file' and stat.size == #content then
+  if stat and stat.type == 'file' and stat.size == #content and read_file(path) == content then
     local now = os.time()
     uv.fs_utime(path, now, now)
     return sha, nil
@@ -101,10 +130,8 @@ function M.get(sha)
   local hit = cache_get(path)
   if hit then return vim.list_extend({}, hit) end
 
-  local fh = io.open(path, 'rb')
-  if not fh then return nil end
-  local content = fh:read('*a')
-  fh:close()
+  local content = read_file(path)
+  if not content then return nil end
 
   if content:sub(-1) ~= '\n' or vim.fn.sha256(content) ~= sha:lower() then
     if not warned[path] then
@@ -116,6 +143,7 @@ function M.get(sha)
   end
 
   local lines = vim.split(content:sub(1, -2), '\n', { plain = true })
+  for i, line in ipairs(lines) do lines[i] = unescape(line) end
   cache_put(path, lines)
   return vim.list_extend({}, lines)
 end

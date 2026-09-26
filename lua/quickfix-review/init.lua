@@ -1225,6 +1225,8 @@ function M.setup(opts)
   store.set_on_change(refresh_all_signs)
   store.set_on_refill(refill_seen)
   refresh_all_signs(store.all())
+  -- Unreferenced old snapshots are collected once a session, in the background
+  store.schedule_startup_gc()
 
   -- The project follows the global cwd: after :cd, re-read the review from the
   -- new project's storage dir (the list view and signs refresh on change).

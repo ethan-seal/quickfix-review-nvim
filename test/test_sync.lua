@@ -356,6 +356,31 @@ assert.run_test('an anchor update from another Neovim clears the outdated state 
   if not ok then error(err, 0) end
 end)
 
+assert.run_test('a snapshot another Neovim wrote, before its event is appended, survives GC here', function()
+  reset()
+  local store = require('quickfix-review.store')
+  local snapshots = require('quickfix-review.snapshots')
+  other_add(1) -- the review's log exists
+  local lines = { 'written by the other one', 'no event yet' }
+  other(string.format('assert(require("quickfix-review.snapshots").put(%s))', vim.inspect(lines)))
+  local path = store.snapshots_dir() .. '/' .. snapshots.hash(lines)
+  assert.truthy(vim.uv.fs_stat(path), 'written')
+  store.gc_snapshots()
+  assert.truthy(vim.uv.fs_stat(path), 'fresh: kept')
+
+  -- An old one the other Neovim puts again (about to reference it) is touched
+  local day_ago = os.time() - 25 * 3600
+  vim.uv.fs_utime(path, day_ago, day_ago)
+  other(string.format('assert(require("quickfix-review.snapshots").put(%s))', vim.inspect(lines)))
+  store.gc_snapshots()
+  assert.truthy(vim.uv.fs_stat(path), 'touched by the put: kept')
+
+  -- Untouched, it goes
+  vim.uv.fs_utime(path, day_ago, day_ago)
+  assert.equals(store.gc_snapshots(), 1, 'collected once old')
+  assert.falsy(vim.uv.fs_stat(path), 'deleted')
+end)
+
 test_helper.cleanup_test_environment()
 
 return assert

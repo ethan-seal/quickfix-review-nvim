@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-ukmq
 title: Snapshot garbage collection
-status: todo
+status: completed
 type: task
 priority: low
 created_at: 2026-09-26T04:57:59Z
-updated_at: 2026-09-26T06:43:25Z
+updated_at: 2026-09-26T11:18:38Z
 parent: quickfix-review-nvim-8oi5
 blocked_by:
     - quickfix-review-nvim-uv21

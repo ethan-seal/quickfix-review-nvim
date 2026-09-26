@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-8oi5
 title: Track comment lines across edits (git-style line mapping)
-status: todo
+status: completed
 type: epic
 priority: high
 created_at: 2026-09-26T04:31:20Z
-updated_at: 2026-09-26T04:57:50Z
+updated_at: 2026-09-26T11:18:38Z
 ---
 
 Epic: comments follow code edits, git-style. Today the stored lnum never changes: extmarks follow edits in-session, but every BufEnter/add/delete clears the namespace and re-places from the stale stored lnum (verified: comment at L5, insert 2 lines above, BufEnter snaps it back to L5). View/delete/export also use stale lines.

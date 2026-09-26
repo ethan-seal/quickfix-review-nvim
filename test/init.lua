@@ -18,6 +18,10 @@ package.loaded['quickfix-review.context'] = nil
 package.loaded['quickfix-review.track'] = nil
 package.loaded['quickfix-review.history'] = nil
 
+-- The 5s startup snapshot GC must never fire mid-suite (tests backdate
+-- snapshots); store.gc_snapshots is called directly instead
+vim.g._quickfix_review_no_startup_gc = true
+
 -- Load the plugin
 local quickfix_review = require('quickfix-review')
 

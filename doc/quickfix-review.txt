@@ -193,6 +193,13 @@ whose content no longer matches its name is ignored with a warning. Files
 in an encoding other than UTF-8 may give noisy results. With
 |quickfix-review-storage_file| the directory is `<storage_file>.snapshots`.
 
+A snapshot no longer named by the review's event logs (the current log and
+the rotated ones kept, so also by no comment or trash entry) is deleted
+once it has gone untouched for 24 hours. This runs in the background 5
+seconds after startup (for the review of the current directory) and after
+a log rotation. A log that can't be read, or was written by a newer
+version, stops it.
+
                                                   *quickfix-review-outdated*
                                                      *QuickfixReviewOutdated*
 When the code changes:~

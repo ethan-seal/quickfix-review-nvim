@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: low
 created_at: 2026-09-26T07:58:17Z
-updated_at: 2026-09-26T07:58:17Z
+updated_at: 2026-09-26T08:26:28Z
 parent: quickfix-review-nvim-8oi5
 ---
 
@@ -18,3 +18,7 @@ Follow-ups from ck1d (utils.range_in, track from_mark invalid branch):
 ## Done when
 - [ ] Test: view_comment in a fugitive buffer holding the snapshot shows no 'outdated' header for a comment that is outdated in the working file
 - [ ] Test: :%!cat then check signs without calling store.refresh() → signs present
+
+
+
+Note (ls0v): a range write to the buffer's own file, e.g. ':1,5w!' on an unmodified buffer, passes both write_back guards (own file, not modified). It could then anchor to content the file no longer has. Skip write_back when the write was a range write: compare the written file's line count with the buffer, or check the '[ and '] marks after the write.

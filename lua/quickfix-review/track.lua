@@ -16,7 +16,9 @@
 -- FileChangedShellPost; each comment then gets a tracking extmark (namespace
 -- quickfix-review-track, never cleared wholesale) that follows in-session
 -- edits and becomes invalid when its whole range is deleted. Files not
--- loaded are relocated from disk, cached by (path, size, mtime). Diff
+-- loaded are relocated from disk, cached by (path, size, mtime). Both
+-- caches are keyed by the comment's anchor too, so a changed anchor (a
+-- re-anchor, or another instance's synced update) is relocated afresh. Diff
 -- buffers (fugitive, diffview, codediff) hold an old revision and are never
 -- relocated from.
 local M = {}
@@ -87,6 +89,15 @@ end
 
 local function make_pos(sha, lnum, end_lnum, state)
   return { sha = sha, lnum = lnum, end_lnum = end_lnum, state = state }
+end
+
+-- What a comment's pos is computed from: its anchor's sha and lines. A
+-- cached pos (a tracking extmark's, or an unloaded file's) is reused only
+-- while this is unchanged, so an anchor changed by :ReviewReanchor, a save,
+-- or another instance's synced update is relocated afresh.
+local function anchor_key(c)
+  local a = c.anchor or c
+  return tostring(a.sha) .. ':' .. tostring(a.lnum) .. ':' .. tostring(a.end_lnum or a.lnum)
 end
 
 -- How far from the anchor's line the fallback search looks
@@ -200,13 +211,15 @@ function M.ns()
   return ns
 end
 
--- Per comment id: { buf, name, mark, pos }, its tracking extmark in a loaded
--- buffer and the pos of its last relocation there
+-- Per comment id: { buf, name, mark, pos, key }, its tracking extmark in a
+-- loaded buffer, the pos of its last relocation there, and the anchor_key
+-- it was relocated from
 local marks = {}
 -- Per buffer: { tick, lines, sha } of its content at changedtick `tick`
 local contents = {}
--- Per file path: { size, sec, nsec, ino, used, lines, sha, pos = { id -> pos } }
--- of an unloaded file, as last read. At most FILES_MAX are kept; the least
+-- Per file path: { size, sec, nsec, ino, used, lines, sha,
+-- pos = { id -> { key, pos } } } of an unloaded file, as last read, each
+-- comment's pos with the anchor_key it was relocated from. At most FILES_MAX are kept; the least
 -- recently used (lowest `used`) is dropped to make room.
 local files = {}
 local FILES_MAX = 32
@@ -319,7 +332,9 @@ local function place(c, buf)
   elseif m then M.forget(c.id) end
   local ok, mark = pcall(vim.api.nvim_buf_set_extmark, buf, M.ns(), pos.lnum - 1, 0, opts)
   if ok then
-    marks[c.id] = { buf = buf, name = vim.api.nvim_buf_get_name(buf), mark = mark, pos = pos }
+    marks[c.id] = {
+      buf = buf, name = vim.api.nvim_buf_get_name(buf), mark = mark, pos = pos, key = anchor_key(c),
+    }
   else
     marks[c.id] = nil
   end
@@ -327,11 +342,13 @@ local function place(c, buf)
 end
 
 -- The position of a tracked comment from its extmark, or nil when it has
--- none (or its buffer was unloaded or renamed)
+-- none (or its buffer was unloaded or renamed, or its anchor changed since
+-- the extmark was placed)
 local function from_mark(c)
   local m = marks[c.id]
   if not m then return nil end
-  if not vim.api.nvim_buf_is_loaded(m.buf) or vim.api.nvim_buf_get_name(m.buf) ~= m.name then
+  if not vim.api.nvim_buf_is_loaded(m.buf) or vim.api.nvim_buf_get_name(m.buf) ~= m.name
+      or m.key ~= anchor_key(c) then
     M.forget(c.id)
     return nil
   end
@@ -373,7 +390,8 @@ local function from_mark(c)
   return make_pos(base.sha, lnum, end_lnum, state)
 end
 
--- The pos of `c` in its file on disk, cached by (path, size, mtime, inode).
+-- The pos of `c` in its file on disk, cached by (path, size, mtime, inode)
+-- and the comment's anchor.
 -- A missing file makes a comment with a snapshot outdated.
 local function from_disk(c)
   local path = c.filename
@@ -396,11 +414,11 @@ local function from_disk(c)
   end
   files_clock = files_clock + 1
   f.used = files_clock
-  local pos = f.pos[c.id]
-  if not pos then
-    pos = M.relocate(c, f.lines, f.sha)
-    f.pos[c.id] = pos
-  end
+  local key = anchor_key(c)
+  local cached = f.pos[c.id]
+  if cached and cached.key == key then return cached.pos end
+  local pos = M.relocate(c, f.lines, f.sha)
+  f.pos[c.id] = { key = key, pos = pos }
   return pos
 end
 

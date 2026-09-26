@@ -867,6 +867,26 @@ assert.run_test('history of one comment shows add, update, delete in order', fun
     { op = 'update', id = 'x', set = { body = 'b' }, ts = 0 },
   }, 'x')
   assert.truthy(plain[2].text:find('body: b', 1, true), 'no prev: ' .. plain[2].text)
+  -- An anchor update reads as its lines and abbreviated sha, without the
+  -- lnum/end_lnum it also sets
+  local anchored = require('quickfix-review.history').rows({
+    { op = 'add', comment = { id = 'x', kind = 'note', filename = '/f', lnum = 5 }, ts = 0 },
+    { op = 'update', id = 'x', ts = 0,
+      set = { anchor = { sha = 'abcdef123456', lnum = 7, end_lnum = 9, lines = { 'a', 'b', 'c' } },
+              lnum = 7, end_lnum = 9 },
+      prev = { anchor = { sha = '1234567890ab', lnum = 5, end_lnum = 5, lines = { 'x' } },
+               lnum = 5, end_lnum = 5 } },
+  }, 'x')
+  local text = anchored[2].text
+  assert.truthy(text:find('anchor: L5-5 (1234567) -> L7-9 (abcdef1)', 1, true), 'anchor shown: ' .. text)
+  assert.falsy(text:find('{', 1, true), 'no inspect braces: ' .. text)
+  assert.falsy(text:find('...', 1, true), 'not truncated: ' .. text)
+  assert.falsy(text:find('lnum:', 1, true), 'lnum not listed separately: ' .. text)
+  -- An anchor with no snapshot says so
+  local legacy = require('quickfix-review.history').rows({
+    { op = 'update', id = 'y', ts = 0, set = { anchor = { lnum = 3, end_lnum = 4 }, lnum = 3, end_lnum = 4 } },
+  }, 'y')
+  assert.truthy(legacy[1].text:find('anchor: L3-4 (no snapshot)', 1, true), 'no sha: ' .. legacy[1].text)
   vim.cmd('ReviewHistory ' .. id) -- prints without error
   qf.clear_review()
 end)

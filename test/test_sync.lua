@@ -199,6 +199,81 @@ assert.run_test('a log rewritten in place with another log_id is replayed from t
   reset()
 end)
 
+local FIVE = { 'line 1', 'line 2', 'line 3', 'line 4', 'line 5' }
+
+local function outdated_sign_on_line(lnum)
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(file_buf, utils.get_ns_id(),
+      { lnum - 1, 0 }, { lnum - 1, -1 }, { details = true })) do
+    if m[4].sign_hl_group == utils.OUTDATED_HL then return true end
+  end
+  return false
+end
+
+-- The other Neovim opens the test file and re-anchors the comment on line 2
+local function other_reanchor()
+  other(string.format('vim.cmd("edit " .. vim.fn.fnameescape(%q)); vim.fn.cursor(2, 1); '
+    .. 'require("quickfix-review").reanchor(); '
+    .. 'assert(store.pos(store.all()[1]).state == "current", "re-anchored there")', abs))
+end
+
+assert.run_test('an anchor update from another Neovim clears the outdated state here', function()
+  reset()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('ISSUE')
+  local lines = vim.deepcopy(FIVE)
+  lines[2] = 'line 2 rewritten'
+  local ok, err = pcall(function()
+    vim.fn.writefile(lines, abs)
+    vim.cmd('silent edit!')
+    assert.equals(require('quickfix-review.store').pos(qf.comments()[1]).state, 'outdated', 'outdated first')
+    assert.truthy(outdated_sign_on_line(2), 'outdated sign first')
+
+    other_reanchor()
+    vim.api.nvim_exec_autocmds('CursorHold', {})
+    local c = qf.comments()[1]
+    assert.equals(c.anchor.lnum, 2, 'synced anchor')
+    assert.equals(require('quickfix-review.store').pos(c).state, 'current', 'current after the sync')
+    assert.truthy(has_sign_on_line(2), 'sign on line 2')
+    assert.falsy(outdated_sign_on_line(2), 'sign no longer outdated')
+  end)
+  vim.fn.writefile(FIVE, abs)
+  vim.api.nvim_set_current_buf(file_buf)
+  vim.cmd('silent edit!')
+  reset()
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('an anchor update from another Neovim clears the outdated state of an unloaded file', function()
+  reset()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('ISSUE')
+  local store = require('quickfix-review.store')
+  local lines = vim.deepcopy(FIVE)
+  lines[2] = 'line 2 rewritten'
+  -- Named, so :edit below doesn't reuse it for the file
+  local scratch = vim.api.nvim_create_buf(true, true)
+  vim.api.nvim_buf_set_name(scratch, 'sync-scratch')
+  local ok, err = pcall(function()
+    vim.api.nvim_set_current_buf(scratch)
+    vim.cmd('bwipeout ' .. file_buf)
+    vim.fn.writefile(lines, abs)
+    -- Relocated from disk: caches the outdated pos for this file's content
+    assert.equals(store.pos(qf.comments()[1]).state, 'outdated', 'outdated from disk first')
+
+    other_reanchor()
+    vim.api.nvim_exec_autocmds('CursorHold', {})
+    local c = qf.comments()[1]
+    assert.equals(store.pos(c).state, 'current', 'current from disk after the sync')
+    assert.equals((store.range(c)), 2, 'line 2')
+  end)
+  vim.fn.writefile(FIVE, abs)
+  vim.cmd('edit ' .. vim.fn.fnameescape(abs))
+  file_buf = vim.api.nvim_get_current_buf()
+  vim.cmd('bwipeout! ' .. scratch)
+  reset()
+  if not ok then error(err, 0) end
+end)
+
 test_helper.cleanup_test_environment()
 
 return assert

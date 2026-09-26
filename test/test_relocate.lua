@@ -694,6 +694,88 @@ assert.run_test(':ReviewReanchor with nothing outdated logs nothing', function()
   assert.truthy(msgs[2] and msgs[2]:find('no comment', 1, true), 'says there is no comment')
 end)
 
+-- Run `fn(path, buf)` on a temp file holding TEN, loaded as the current
+-- buffer in a fresh review; the file and its buffer are removed after
+local function with_temp_file(fn)
+  local path = vim.fn.fnamemodify(vim.fn.tempname() .. '-tmp.txt', ':p')
+  vim.fn.writefile(TEN, path)
+  local extra = {}
+  local ok, err = pcall(function()
+    qf.clear_review()
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    fn(path, vim.api.nvim_get_current_buf(), extra)
+  end)
+  vim.api.nvim_set_current_buf(file_buf)
+  for _, p in ipairs({ path, unpack(extra) }) do
+    local b = vim.fn.bufnr(p)
+    if b > 0 then vim.cmd('bwipeout! ' .. b) end
+    os.remove(p)
+  end
+  qf.clear_review()
+  if not ok then error(err, 0) end
+end
+
+assert.run_test(':ReviewReanchor, then :bd with no save: current at the new line from disk', function()
+  with_temp_file(function(path, buf)
+    vim.fn.cursor(5, 1)
+    qf.add_comment('ISSUE')
+    vim.api.nvim_set_current_buf(file_buf)
+    vim.cmd('bwipeout ' .. buf)
+    local lines = vim.deepcopy(TEN)
+    lines[5] = 'line 5 rewritten'
+    vim.fn.writefile(lines, path)
+    -- Relocated from disk: caches the outdated pos for this file's content
+    assert.equals(store.pos(qf.comments()[1]).state, 'outdated', 'outdated from disk')
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    buf = vim.api.nvim_get_current_buf()
+    vim.fn.cursor(5, 1)
+    vim.cmd('ReviewReanchor')
+    assert.equals(store.pos(qf.comments()[1]).state, 'current', 'current once re-anchored')
+    vim.api.nvim_set_current_buf(file_buf)
+    vim.cmd('bdelete ' .. buf) -- unloaded, not saved (it had no edits)
+
+    local c = qf.comments()[1]
+    assert.equals(store.pos(c).state, 'current', 'current from disk after :bd')
+    assert.equals((store.range(c)), 5, 'line 5 from disk after :bd')
+
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    c = qf.comments()[1]
+    assert.equals(store.pos(c).state, 'current', 'current after reopening')
+    assert.equals((store.range(c)), 5, 'line 5 after reopening')
+  end)
+end)
+
+assert.run_test(':saveas does not write anchors for the new file', function()
+  with_temp_file(function(_, buf, extra)
+    vim.fn.cursor(5, 1)
+    qf.add_comment('ISSUE')
+    local anchor = vim.deepcopy(qf.comments()[1].anchor)
+    local logged = log_size()
+    vim.api.nvim_buf_set_lines(buf, 0, 0, false, { 'top' })
+    local other = vim.fn.fnamemodify(vim.fn.tempname() .. '-saveas.txt', ':p')
+    table.insert(extra, other)
+    vim.cmd('silent saveas ' .. vim.fn.fnameescape(other))
+    assert.equals(vim.api.nvim_buf_get_name(buf), other, 'buffer renamed')
+    assert.equals(log_size(), logged, 'nothing logged')
+    assert.truthy(vim.deep_equal(qf.comments()[1].anchor, anchor), 'anchor unchanged')
+  end)
+end)
+
+assert.run_test(':w !cmd does not write anchors', function()
+  with_temp_file(function(path, buf)
+    vim.fn.cursor(5, 1)
+    qf.add_comment('ISSUE')
+    local anchor = vim.deepcopy(qf.comments()[1].anchor)
+    local logged = log_size()
+    vim.api.nvim_buf_set_lines(buf, 0, 0, false, { 'top' })
+    vim.cmd('silent w !cat >/dev/null')
+    assert.equals(log_size(), logged, 'nothing logged')
+    assert.truthy(vim.deep_equal(qf.comments()[1].anchor, anchor), 'anchor unchanged')
+    assert.equals(#vim.fn.readfile(path), 10, 'file untouched')
+  end)
+end)
+
 assert.run_test('the unloaded-file cache keeps at most 32 files', function()
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, 'p')

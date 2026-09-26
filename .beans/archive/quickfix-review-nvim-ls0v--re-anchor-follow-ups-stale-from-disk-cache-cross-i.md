@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-ls0v
 title: 'Re-anchor follow-ups: stale from_disk cache, cross-instance sticky state'
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T07:36:01Z
-updated_at: 2026-09-26T07:58:17Z
+updated_at: 2026-09-26T08:26:28Z
 parent: quickfix-review-nvim-8oi5
 ---
 

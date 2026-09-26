@@ -490,13 +490,29 @@ function M.reanchor()
   local file = vim.api.nvim_buf_get_name(bufnr)
   local line = vim.fn.line('.')
   local changes, found = {}, 0
+  -- The buffer's content, read and snapshotted once for every comment
+  -- re-anchored; false once the snapshot failed (warned about once)
+  local pre
   for _, c in ipairs(store.all()) do
     local lnum, end_lnum = store.range(c)
     if lnum <= line and end_lnum >= line and utils.files_match(c.filename, file) then
       found = found + 1
-      if store.is_outdated(c) then
-        local a = context.anchor(lnum, end_lnum, bufnr)
-        if a.sha then table.insert(changes, { id = c.id, anchor = a }) end
+      if store.is_outdated(c) and pre ~= false then
+        if pre == nil then
+          local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+          local sha, err = require('quickfix-review.snapshots').put(lines)
+          if sha then
+            pre = { lines = lines, sha = sha }
+          else
+            vim.notify('quickfix-review: snapshot not saved, comments not re-anchored: '
+              .. tostring(err), vim.log.levels.WARN)
+            pre = false
+          end
+        end
+        if pre then
+          local a = context.anchor(lnum, end_lnum, bufnr, pre)
+          table.insert(changes, { id = c.id, anchor = a })
+        end
       end
     end
   end
@@ -979,21 +995,22 @@ local function write_back(bufnr, file)
   local relocated = track.relocate_buffer(bufnr, snapshotted)
 
   local changes = {}
-  local saved = false
+  -- The saved content, read and snapshotted once for every comment anchored
+  local pre
   for _, c in ipairs(mine) do
     local p = store.pos(c)
     if p and p.state ~= 'outdated' and moved(c) then
-      if not saved then
-        local sha, err = require('quickfix-review.snapshots').put(
-          vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+      if not pre then
+        local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+        local sha, err = require('quickfix-review.snapshots').put(lines)
         if not sha then
           vim.notify('quickfix-review: snapshot not saved, comment anchors not updated: '
             .. tostring(err), vim.log.levels.WARN)
           break
         end
-        saved = true
+        pre = { lines = lines, sha = sha }
       end
-      local a = context.anchor(p.lnum, p.end_lnum, bufnr)
+      local a = context.anchor(p.lnum, p.end_lnum, bufnr, pre)
       if a.sha then table.insert(changes, { id = c.id, anchor = a }) end
     end
   end

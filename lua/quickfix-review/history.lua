@@ -35,17 +35,38 @@ local function where(r)
   return vim.fn.fnamemodify(r.filename, ':.') .. ':' .. tostring(lnum or '?')
 end
 
+-- An anchor as "L<lnum>-<end_lnum> (<sha, abbreviated>)"
+local function anchor_text(a)
+  if type(a) ~= 'table' then return short(a, 30) end
+  local lnum = tostring(a.lnum or '?')
+  local sha = type(a.sha) == 'string' and a.sha:sub(1, 7) or 'no snapshot'
+  return string.format('L%s-%s (%s)', lnum, tostring(a.end_lnum or a.lnum or '?'), sha)
+end
+
+-- A value of key `k`, on one line
+local function value_text(k, v)
+  if k == 'anchor' then return anchor_text(v) end
+  return short(v, 30)
+end
+
 -- "key: prev -> new" for each key an update sets (keys sorted), and
--- "key: prev -> (unset)" for each it unsets; prev is shown when logged
+-- "key: prev -> (unset)" for each it unsets; prev is shown when logged. An
+-- update that sets the anchor also sets lnum and end_lnum to its lines,
+-- which are left out as the anchor already shows them.
 local function changes(ev)
   local out, prev = {}, type(ev.prev) == 'table' and ev.prev or {}
   local function change(k, v)
-    local old = prev[k] ~= nil and (short(prev[k], 30) .. ' -> ') or ''
+    local old = prev[k] ~= nil and (value_text(k, prev[k]) .. ' -> ') or ''
     table.insert(out, string.format('%s: %s%s', k, old, v))
   end
   local keys = type(ev.set) == 'table' and vim.tbl_keys(ev.set) or {}
+  local sets_anchor = type(ev.set) == 'table' and ev.set.anchor ~= nil
   table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
-  for _, k in ipairs(keys) do change(k, short(ev.set[k], 30)) end
+  for _, k in ipairs(keys) do
+    if not (sets_anchor and (k == 'lnum' or k == 'end_lnum')) then
+      change(k, value_text(k, ev.set[k]))
+    end
+  end
   for _, k in ipairs(type(ev.unset) == 'table' and ev.unset or {}) do change(k, '(unset)') end
   return table.concat(out, ', ')
 end

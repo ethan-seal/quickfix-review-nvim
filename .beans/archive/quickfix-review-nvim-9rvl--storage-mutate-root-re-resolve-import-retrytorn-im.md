@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-9rvl
 title: 'Storage: mutate root re-resolve, import retry/torn import, GC lock hold'
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T16:43:08Z
-updated_at: 2026-09-26T16:43:08Z
+updated_at: 2026-09-26T16:55:16Z
 ---
 
 From review cycle 3 (details/repros: /tmp/claude-1001/-home-ethans-Programming-quickfix-review-nvim/cfc4ea53-3598-4975-b59b-e35c5f93f346/scratchpad/review3/fable-storage.md, /tmp/claude-1001/-home-ethans-Programming-quickfix-review-nvim/cfc4ea53-3598-4975-b59b-e35c5f93f346/scratchpad/review3/opus-adversarial.md).

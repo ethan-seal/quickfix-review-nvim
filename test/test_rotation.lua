@@ -537,6 +537,62 @@ assert.run_test('rotation collects unreferenced old snapshots, keeping ones rota
   vim.fn.delete(other .. '.snapshots', 'rf')
 end)
 
+assert.run_test('gc reads rotated logs outside the lock, so a concurrent change isn\'t kept waiting', function()
+  reset()
+  local store = require('quickfix-review.store')
+  local snapshots = require('quickfix-review.snapshots')
+  local day_ago = os.time() - 25 * 3600
+  local snap_dir = storage_file .. '.snapshots'
+  local function path(sha) return snap_dir .. '/' .. sha end
+
+  -- Named by the logs (the add event, then each rotation's checkpoint)
+  local named = snapshots.put({ 'named' })
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'n',
+    anchor = { sha = named, lnum = 1, end_lnum = 1 } }), 'added')
+  capture_notify(function()
+    qf, store = restart({ log_max_bytes = 1 })
+    add_at(2)
+    add_at(3)
+    add_at(4)
+    -- The GCs the rotations scheduled
+    vim.wait(50, function() return false end, 10)
+  end)
+  local logs = rotated()
+  assert.truthy(#logs >= 2, 'several rotated logs: ' .. #logs)
+  local old = snapshots.put({ 'old' })
+  for _, sha in ipairs({ named, old }) do uv.fs_utime(path(sha), day_ago, day_ago) end
+
+  local log = require('quickfix-review.log')
+  local original_lock, original_open = log.with_lock, io.open
+  local in_lock, opened = false, {}
+  log.with_lock = function(lock, fn)
+    return original_lock(lock, function(...)
+      in_lock = true
+      local res = vim.F.pack_len(pcall(fn, ...))
+      in_lock = false
+      if not res[1] then error(res[2], 0) end
+      return unpack(res, 2, res.n)
+    end)
+  end
+  io.open = function(file, ...)
+    if in_lock then table.insert(opened, vim.fn.fnamemodify(file, ':p')) end
+    return original_open(file, ...)
+  end
+  local ok, removed = pcall(store.gc_snapshots)
+  log.with_lock, io.open = original_lock, original_open
+  assert.truthy(ok, 'gc ran: ' .. tostring(removed))
+
+  assert.equals(removed, 1, 'one snapshot collected')
+  assert.falsy(uv.fs_stat(path(old)), 'unreferenced old deleted')
+  assert.truthy(uv.fs_stat(path(named)), 'a referenced one kept')
+  local under_lock = {}
+  for _, f in ipairs(opened) do under_lock[f] = true end
+  assert.truthy(under_lock[vim.fn.fnamemodify(log_file, ':p')], 'the current log is read under the lock')
+  for _, r in ipairs(logs) do
+    assert.falsy(under_lock[vim.fn.fnamemodify(r, ':p')], 'not read under the lock: ' .. r)
+  end
+end)
+
 assert.run_test('a log from a newer version is refused, not shown empty', function()
   local log = require('quickfix-review.log')
   assert.equals(log.VERSION, 2, 'the log format is v2')

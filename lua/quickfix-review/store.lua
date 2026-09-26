@@ -353,7 +353,13 @@ local function project_root(cwd)
   return guess, true
 end
 
+-- The location a change (mutate) resolved first: every resolve() during the
+-- change returns it, so a fallback root's retry window expiring mid-change
+-- can't send the change's syncs (and what they call) to another project
+local pinned = nil
+
 local function resolve()
+  if pinned then return pinned end
   local explicit = config.options.storage_file
   if explicit ~= nil then
     return {
@@ -752,8 +758,12 @@ local function migrate(loc)
   return ok == true, err
 end
 
--- Storage paths whose legacy import has been tried this session
+-- Log paths whose legacy import is settled this session: done, or nothing
+-- (readable) to import
 local import_tried = {}
+-- Log paths whose failed import was reported this session: the import is
+-- retried at every sync, the error shown once
+local import_failure_notified = {}
 
 -- First use of a project with neither a log nor a comments.json: copy the
 -- comments under the project root out of the legacy global file (old default
@@ -772,7 +782,9 @@ local import_tried = {}
 -- given a state.json.
 local function import_legacy(loc)
   if import_tried[loc.log] then return end
-  import_tried[loc.log] = true
+  -- Tried again (at the next sync) until the outcome is definitive: nothing
+  -- to import, a source that can't be read, or the log written
+  local function done() import_tried[loc.log] = true end
 
   local legacy_path = config.legacy_storage_file()
   local legacy_log = legacy_path .. '.log.jsonl'
@@ -784,8 +796,8 @@ local function import_legacy(loc)
     legacy = legacy .. MIGRATED
     if vim.fn.filereadable(legacy) == 0 then legacy = nil end
   end
-  if legacy and (utils.files_match(legacy, loc.path) or utils.files_match(legacy, loc.log)) then return end
-  if not legacy and not legacy_log then return end
+  if legacy and (utils.files_match(legacy, loc.path) or utils.files_match(legacy, loc.log)) then return done() end
+  if not legacy and not legacy_log then return done() end
 
   -- The legacy log's state and the shas of the files it imported
   local state, imports, log_raw_sha
@@ -806,7 +818,7 @@ local function import_legacy(loc)
       log_raw_sha = bytes and vim.fn.sha256(bytes) or nil
     else
       vim.notify('quickfix-review: not importing from ' .. legacy_log .. ': ' .. tostring(lerr), vim.log.levels.WARN)
-      if not legacy then return end
+      if not legacy then return done() end
     end
   end
 
@@ -817,7 +829,7 @@ local function import_legacy(loc)
     file_list, err = storage.parse(raw, legacy)
     if not file_list then
       vim.notify('quickfix-review: not importing from ' .. legacy .. ': ' .. err, vim.log.levels.WARN)
-      if not state then return end
+      if not state then return done() end
       legacy, raw = nil, nil
     end
   end
@@ -874,10 +886,14 @@ local function import_legacy(loc)
     return log.append(loc.log, { log.new_header(), import })
   end)
   if not got or not ok then
-    vim.notify('quickfix-review: import from ' .. source .. ' failed: ' .. tostring(got and werr or ok),
-      vim.log.levels.ERROR)
+    if not import_failure_notified[loc.log] then
+      import_failure_notified[loc.log] = true
+      vim.notify('quickfix-review: import from ' .. source .. ' failed: ' .. tostring(got and werr or ok),
+        vim.log.levels.ERROR)
+    end
     return
   end
+  done()
   if ok == true and #imported > 0 then
     vim.notify(string.format('quickfix-review: imported %d comments from %s', #imported, source))
   end
@@ -921,9 +937,11 @@ local function init_storage(loc)
 end
 
 -- The first line of the log at `path` is incomplete (no \n at all), or the
--- log is only a header while comments.json sits beside it: the header and
--- import of a migration (or the header and first event of a change) were
--- torn by a short write, so nothing but a partial header or event is lost.
+-- log is only a header: the header and import of a migration or legacy
+-- import (or the header and first event of a change) were torn by a short
+-- write, so nothing but a partial header or event is lost. Each of those
+-- writes the header with an event in one append, and rotation renames a
+-- complete log into place, so a header-only log is never a finished one.
 local function is_torn(loc)
   local fd = uv.fs_open(loc.log, 'r', 0)
   if not fd then return false end
@@ -931,13 +949,12 @@ local function is_torn(loc)
   uv.fs_close(fd)
   if not head then return false end
   if not head:find('\n', 1, true) then return #head > 0 end
-  if not uv.fs_stat(loc.path) then return false end
   local res = log.read(loc.log, 0, 0, seen_lines(loc))
   return res ~= nil and #res.events == 0
 end
 
 -- A torn log (see is_torn) is moved aside, to log.jsonl.torn-<unix time>,
--- and the migration (or import) retried
+-- and the migration or legacy import retried
 -- Returns: ok (boolean), err (string or nil)
 local function recover_torn(loc)
   -- Checked again under the lock, where no write is in flight
@@ -1268,8 +1285,14 @@ end
 -- Snapshots are written (snapshots.put) before the event naming them is
 -- appended, outside the lock, so an unreferenced snapshot may be another
 -- Neovim's about to be referenced: only those untouched for GC_GRACE are
--- deleted (put touches an existing one). The lock keeps the set of logs
--- stable against a concurrent rotation.
+-- deleted (put touches an existing one).
+--
+-- A rotated log is never written again once renamed into place, so the
+-- rotated logs are read before taking the lock: holding it through many
+-- large reads could make another Neovim's change time out. Under the lock
+-- the current log is read, and so is any rotated log that appeared since
+-- (a rotation in between); one retention deleted since only keeps its
+-- snapshots a while longer.
 local GC_GRACE = 24 * 3600
 local SHA_RUN = '%f[%x]' .. ('%x'):rep(64) .. '%f[^%x]'
 
@@ -1282,15 +1305,28 @@ local function gc(loc)
     return 0
   end
 
+  local refs, read = {}, {}
+  -- Returns: an error message, or nil once `path`'s references are in refs
+  local function collect(path)
+    local data = read_bytes(path)
+    if not data then return 'could not read ' .. path end
+    if not log.readable_header(data) then return path .. ' has no header this version reads' end
+    for sha in data:gmatch(SHA_RUN) do refs[sha:lower()] = true end
+    read[path] = true
+  end
+  for _, r in ipairs(list_rotated(loc)) do
+    local err = collect(r.path)
+    if err then return abort(err) end
+  end
+
   local got, removed = locked(loc, function()
-    local refs = {}
-    local logs = { loc.log }
-    for _, r in ipairs(list_rotated(loc)) do table.insert(logs, r.path) end
-    for _, path in ipairs(logs) do
-      local data = read_bytes(path)
-      if not data then return abort('could not read ' .. path) end
-      if not log.readable_header(data) then return abort(path .. ' has no header this version reads') end
-      for sha in data:gmatch(SHA_RUN) do refs[sha:lower()] = true end
+    local err = collect(loc.log)
+    if err then return abort(err) end
+    for _, r in ipairs(list_rotated(loc)) do
+      if not read[r.path] then
+        err = collect(r.path)
+        if err then return abort(err) end
+      end
     end
 
     local count = 0
@@ -1332,8 +1368,7 @@ function M.schedule_startup_gc()
 end
 
 -- opts.defer_view: as for M.all, for every sync the change makes
-local function mutate(build, opts)
-  local loc = resolve()
+local function mutate_at(loc, build, opts)
   -- Before locking: the lock can't be taken in a dir that is not writable
   if readonly_error(loc) then sync(opts) end
   local ro_err = readonly_error(loc)
@@ -1380,6 +1415,17 @@ local function mutate(build, opts)
   if err then vim.notify('quickfix-review: ' .. err, vim.log.levels.ERROR) end
   if result == nil and partial then return nil, 'partial' end
   return result
+end
+
+-- The whole change, with the location resolved once and pinned (see pinned)
+local function mutate(build, opts)
+  local loc = resolve()
+  local prev = pinned
+  pinned = loc
+  local res = vim.F.pack_len(pcall(mutate_at, loc, build, opts))
+  pinned = prev
+  if not res[1] then error(res[2], 0) end
+  return unpack(res, 2, res.n)
 end
 
 -- Called after any change to the comments, including ones read from disk

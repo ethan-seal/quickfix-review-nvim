@@ -286,6 +286,12 @@ end)
 
 -- The legacy global file, with comments in repo a, repo b and a sibling of a
 -- whose path has a as a prefix
+-- Storage dir of the project whose root is `root`, under stdpath('data')
+local function default_dir(root)
+  return vim.env.XDG_DATA_HOME .. '/nvim/quickfix-review/' .. vim.fn.fnamemodify(root, ':t') .. '-'
+    .. vim.fn.sha256(root):sub(1, 12)
+end
+
 local function seed_legacy(a, b, v1)
   local config = mods()
   local legacy = config.legacy_storage_file()
@@ -430,6 +436,110 @@ storage_test('import happens once: a cleared review is not re-imported', functio
   assert.length(saved(store.log_path()), 0, 'nothing live')
 end)
 
+storage_test('a failed legacy import is retried, not marked done by the next change', function()
+  local a, file_a = make_repo('chi')
+  local b = make_repo('psi')
+  local c = make_repo('omega')
+  seed_legacy(a, b, false)
+  cd(c)
+  capture_notify(function() restart() end)
+  local _, store = mods()
+  local dir_a = default_dir(a)
+  local log = require('quickfix-review.log')
+  local original_append = log.append
+  log.append = function(path, ...)
+    if vim.startswith(path, dir_a .. '/') then return false, 'ENOSPC', 0 end
+    return original_append(path, ...)
+  end
+  local ok, err = pcall(function()
+    local calls = capture_notify(function()
+      cd(a)
+      store.all()
+    end)
+    local failed = mentioning(calls, 'import from')
+    assert.truthy(#failed > 0, 'import failure reported')
+    assert.equals(failed[1].level, vim.log.levels.ERROR, 'at ERROR level')
+  end)
+  log.append = original_append
+  if not ok then error(err, 0) end
+
+  capture_notify(function()
+    assert.truthy(store.add({ filename = file_a, lnum = 2, kind = 'note', body = 'after' }), 'added')
+  end)
+  local bodies = {}
+  for _, cm in ipairs(store.all()) do bodies[cm.body] = true end
+  assert.truthy(bodies['from a'], 'legacy comment imported')
+  assert.truthy(bodies['after'], 'the change kept')
+  local records = test_helper.log_records(store.log_path())
+  assert.equals(records[2] and records[2].op, 'import', 'the import is the first event')
+  assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'one import event')
+
+  capture_notify(function() restart() end)
+  _, store = mods()
+  assert.length(store.all(), 2, 'both after a restart')
+  assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'still one import event')
+end)
+
+storage_test('a torn legacy import is moved aside and imported again', function()
+  local a = make_repo('alef')
+  local b = make_repo('bet')
+  seed_legacy(a, b, false)
+  local dir_a = default_dir(a)
+  vim.fn.mkdir(dir_a, 'p')
+  local log = require('quickfix-review.log')
+  local fh = io.open(dir_a .. '/log.jsonl', 'wb')
+  fh:write(vim.json.encode(log.new_header()) .. '\n{"op":"imp')
+  fh:close()
+  cd(a)
+  local calls = capture_notify(function() restart() end)
+  local _, store = mods()
+  assert.equals(store.dir(), dir_a, 'a\'s dir')
+  local list = store.all()
+  assert.length(list, 1, 'imported')
+  assert.equals(list[1].body, 'from a', 'the legacy comment')
+  assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'one import event')
+  assert.length(vim.fn.glob(dir_a .. '/log.jsonl.torn-*', true, true), 1, 'torn log moved aside')
+  assert.truthy(#mentioning(calls, 'was incomplete') > 0, 'warned about the torn log')
+end)
+
+storage_test('an import torn in this session is moved aside and imported again', function()
+  local a = make_repo('gimel')
+  local b = make_repo('dalet')
+  local c = make_repo('he')
+  seed_legacy(a, b, false)
+  cd(c)
+  capture_notify(function() restart() end)
+  local _, store = mods()
+  local dir_a = default_dir(a)
+  local log = require('quickfix-review.log')
+  local original_append = log.append
+  local torn = 0
+  log.append = function(path, events, ...)
+    if path == dir_a .. '/log.jsonl' and torn == 0 then
+      torn = 1
+      local fh = io.open(path, 'wb')
+      fh:write(vim.json.encode(events[1]) .. '\n{"op":"imp')
+      fh:close()
+      return false, 'short write', 1
+    end
+    return original_append(path, events, ...)
+  end
+  local ok, err = pcall(function()
+    capture_notify(function()
+      cd(a)
+      store.all()
+    end)
+  end)
+  log.append = original_append
+  if not ok then error(err, 0) end
+  assert.equals(torn, 1, 'the import was torn')
+  local list = store.all()
+  assert.length(list, 1, 'imported')
+  assert.equals(list[1].body, 'from a', 'the legacy comment')
+  assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'one import event')
+  assert.length(vim.fn.glob(dir_a .. '/log.jsonl.torn-*', true, true), 1, 'torn log moved aside')
+end)
+
 storage_test('a symlinked checkout imports comments saved under the real path', function()
   local a = make_repo('xi')
   local b = make_repo('omicron')
@@ -520,6 +630,65 @@ storage_test('a failed git rev-parse is retried: the review ends up in the root\
     store._set_retry_ns(0)
     assert.equals(store.dir(), expected, 'the root\'s dir once git answers')
     assert.equals(store.root(), a, 'project root')
+  end)
+end)
+
+-- In a subdir of a repo, with git failing (the review is in the fallback
+-- dir) and the retry window 0: runs `change` with git answering again from
+-- the moment the change takes its lock, i.e. after it resolved the project
+-- but before its syncs would resolve it again; then `check`, with git
+-- failing again so the review is still the fallback dir's.
+local function with_window_expiring_mid_change(a, seed, change, check)
+  local sub = a .. '/sub'
+  vim.fn.mkdir(sub, 'p')
+  cd(sub)
+  local fallback
+  with_failing_git(function(git)
+    capture_notify(function() restart() end)
+    local _, store = mods()
+    fallback = store.dir()
+    assert.truthy(fallback ~= default_dir(a), 'in the fallback dir while git fails')
+    if seed then seed(store) end
+    store._set_retry_ns(0)
+    local log = require('quickfix-review.log')
+    local original_lock = log.with_lock
+    log.with_lock = function(...)
+      git.fail = false
+      return original_lock(...)
+    end
+    local ok, err = pcall(change, store)
+    log.with_lock = original_lock
+    -- Failing again: the review stays in the fallback dir, to be looked at
+    git.fail = true
+    if not ok then error(err, 0) end
+    assert.equals(store.dir(), fallback, 'still the fallback dir')
+    check(store, fallback)
+  end)
+end
+
+storage_test('a retry window expiring mid-change still writes to the project resolved first', function()
+  local a, file_a = make_repo('upsilon')
+  with_window_expiring_mid_change(a, nil, function(store)
+    assert.truthy(store.add({ filename = file_a, lnum = 1, kind = 'note', body = 'mid' }), 'added')
+  end, function(store, fallback)
+    local list = store.all()
+    assert.length(list, 1, 'the add is visible')
+    assert.equals(list[1].body, 'mid', 'the comment added')
+    assert.length(test_helper.log_ops(fallback .. '/log.jsonl', 'add'), 1, 'add event in the fallback log')
+    assert.equals(vim.fn.filereadable(default_dir(a) .. '/log.jsonl'), 0, 'nothing written to the root\'s dir')
+  end)
+end)
+
+storage_test('a retry window expiring mid-change still removes from the project resolved first', function()
+  local a, file_a = make_repo('phi')
+  local id
+  with_window_expiring_mid_change(a, function(store)
+    assert.truthy(store.add({ filename = file_a, lnum = 1, kind = 'note', body = 'doomed' }), 'seeded')
+    id = store.all()[1].id
+  end, function(store)
+    assert.equals(store.remove(id), 1, 'one removed')
+  end, function(store)
+    assert.length(store.all(), 0, 'gone')
   end)
 end)
 

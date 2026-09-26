@@ -235,6 +235,19 @@ assert.run_test('a v1 file is migrated to the log as v2 records, the original ke
     end
     assert.equals(on_disk[1].context.commit_short, '01234567', 'context logged')
 
+    -- Legacy comments are anchored at their line, with no snapshot, at read
+    -- time: nothing derived is logged
+    for i, c in ipairs(list) do
+      assert.truthy(type(c.anchor) == 'table', 'comment ' .. i .. ' has an anchor')
+      assert.equals(c.anchor.sha, nil, 'comment ' .. i .. ' anchor has no sha')
+      assert.equals(c.anchor.lnum, c.lnum, 'comment ' .. i .. ' anchor lnum')
+      assert.equals(c.anchor.end_lnum, c.end_lnum, 'comment ' .. i .. ' anchor end_lnum')
+      assert.equals(c.pos.lnum, c.lnum, 'comment ' .. i .. ' pos lnum')
+      assert.equals(c.pos.state, 'current', 'comment ' .. i .. ' pos state')
+      assert.equals(on_disk[i].anchor, nil, 'comment ' .. i .. ' no anchor logged')
+      assert.equals(on_disk[i].pos, nil, 'comment ' .. i .. ' no pos logged')
+    end
+
     -- The qf view looks as it did in v1
     qf.show_list()
     local rows = vim.fn.getqflist()
@@ -433,6 +446,9 @@ assert.run_test('an unknown record field survives load and save', function()
     assert.equals(on_disk[1].foo, 1, 'logged at the top level')
     assert.equals(on_disk[1].extra, nil, 'no extra key on disk')
     assert.equals(on_disk[2].extra, nil, 'no extra key on a new comment')
+    assert.equals(qf.comments()[2].extra, nil, 'an anchor is not an extra')
+    assert.truthy(type(qf.comments()[2].anchor) == 'table', 'the new comment has an anchor')
+    assert.truthy(type(on_disk[2].anchor) == 'table', 'the anchor is logged')
 
     qf = restart(path)
     assert.equals(qf.comments()[1].extra.foo, 1, 'an extra again after restart')
@@ -486,6 +502,38 @@ assert.run_test('a record with a bad lnum is dropped with a warning, the origina
     assert.length(warnings(calls), 0, 'no warning on the second load')
     assert.equals(read_bytes(test_helper.log_path(path)), bytes, 'not logged again')
   end)
+end)
+
+assert.run_test('a logged add event without an anchor is shown at its line after a restart', function()
+  local path, dir = fresh_path()
+  local ok, err = pcall(function()
+    qf = restart(path)
+    -- As a version before anchors logged it
+    assert.truthy(require('quickfix-review.store').add({
+      id = '00000000000000e1', filename = abs, lnum = 3, end_lnum = 4,
+      kind = 'issue', body = 'legacy', created_at = 1700000000,
+    }), 'added')
+    assert.equals(logged(path)[1].anchor, nil, 'logged without an anchor')
+
+    qf = restart(path)
+    local c = qf.comments()[1]
+    assert.equals(c.anchor.sha, nil, 'no sha')
+    assert.equals(c.anchor.lnum, 3, 'anchor lnum')
+    assert.equals(c.anchor.end_lnum, 4, 'anchor end_lnum')
+    assert.equals(c.pos.lnum, 3, 'pos lnum')
+    assert.equals(c.pos.end_lnum, 4, 'pos end_lnum')
+    qf.show_list()
+    local rows = vim.fn.getqflist()
+    assert.equals(rows[1].lnum, 3, 'qf row at its line')
+    assert.equals(rows[1].end_lnum, 4, 'qf row end')
+    vim.fn.setqflist({}, 'f')
+    local on_disk = logged(path)[1]
+    assert.equals(on_disk.anchor, nil, 'still no anchor logged')
+    assert.equals(on_disk.pos, nil, 'no pos logged')
+  end)
+  qf = restart()
+  vim.fn.delete(dir, 'rf')
+  if not ok then error(err, 0) end
 end)
 
 -- Final cleanup

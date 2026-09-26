@@ -168,6 +168,7 @@ assert.run_test('summary counts comment types', function()
 end)
 
 local store = require('quickfix-review.store')
+local snapshots = require('quickfix-review.snapshots')
 local utils = require('quickfix-review.utils')
 local abs = vim.fn.fnamemodify(test_file, ':p')
 local file_buf = vim.api.nvim_get_current_buf()
@@ -233,6 +234,11 @@ assert.run_test('a diffview buffer (buftype nofile) is still accepted', function
   local list = qf.comments()
   assert.length(list, 1, 'comment added')
   assert.equals(list[1].filename, '/no-such-repo/test_file.txt', 'real file path recorded')
+  -- Anchored to what the reviewer saw: the diff buffer's revision
+  local anchor = list[1].anchor
+  assert.truthy(type(anchor.sha) == 'string', 'snapshot taken')
+  assert.truthy(vim.deep_equal(snapshots.get(anchor.sha), { 'a', 'b', 'c' }), 'snapshot is the diff buffer')
+  assert.truthy(vim.deep_equal(anchor.lines, { 'b' }), 'anchor lines from the diff buffer')
   qf.clear_review()
 end)
 
@@ -343,6 +349,92 @@ assert.run_test(':ReviewClear! clears without asking', function()
   qf.add_comment('ISSUE', { 1, 1 })
   assert.equals(review_clear('ReviewClear!', 2), 0, 'not asked')
   assert.length(qf.comments(), 0, 'cleared')
+end)
+
+local function same(actual, expected, msg)
+  assert.truthy(vim.deep_equal(actual, expected),
+    string.format('%s: expected %s, got %s', msg, vim.inspect(expected), vim.inspect(actual)))
+end
+
+assert.run_test('a new comment is anchored to a snapshot of its buffer', function()
+  qf.clear_review()
+  qf.add_comment('ISSUE', { 3, 4 })
+  local c = qf.comments()[1]
+  local a = c.anchor
+  assert.truthy(type(a.sha) == 'string', 'anchor has a sha')
+  assert.equals(vim.fn.filereadable(store.snapshots_dir() .. '/' .. a.sha), 1, 'snapshot file exists')
+  same(snapshots.get(a.sha), vim.api.nvim_buf_get_lines(file_buf, 0, -1, false), 'snapshot is the buffer')
+  assert.equals(a.lnum, 3, 'anchor lnum')
+  assert.equals(a.end_lnum, 4, 'anchor end_lnum')
+  same(a.lines, { 'line 3', 'line 4' }, 'lines')
+  same(a.before, { 'line 1', 'line 2' }, 'before')
+  same(a.after, { 'line 5', 'line 6' }, 'after')
+  assert.equals(c.lnum, a.lnum, 'top-level lnum equals the anchor')
+  assert.equals(c.end_lnum, a.end_lnum, 'top-level end_lnum equals the anchor')
+  same(c.pos, { sha = a.sha, lnum = 3, end_lnum = 4, state = 'current' }, 'pos starts at the anchor')
+  local saved = test_helper.saved()[1]
+  assert.equals(saved.anchor.sha, a.sha, 'anchor is logged')
+  assert.equals(saved.pos, nil, 'pos is not logged')
+  qf.clear_review()
+end)
+
+assert.run_test('anchor context is cut at the start and end of the file', function()
+  qf.clear_review()
+  qf.add_comment('NOTE', { 1, 1 })
+  qf.add_comment('NOTE', { 9, 10 })
+  local first, last = qf.comments()[1].anchor, qf.comments()[2].anchor
+  same(first.before, {}, 'nothing before line 1')
+  same(first.after, { 'line 2', 'line 3' }, 'after line 1')
+  same(last.before, { 'line 7', 'line 8' }, 'before line 9')
+  same(last.after, {}, 'nothing after line 10')
+  qf.clear_review()
+end)
+
+assert.run_test('anchor lines are capped at 50', function()
+  qf.clear_review()
+  local long = {}
+  for i = 1, 60 do long[i] = 'l' .. i end
+  in_scratch('diffview:///no-such-repo/.git/abc123/long.txt', 'nofile', function()
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, long)
+    qf.add_comment('NOTE', { 2, 60 })
+  end)
+  local a = qf.comments()[1].anchor
+  assert.length(a.lines, 50, '50 lines kept')
+  assert.equals(a.lines[50], 'l51', 'the first 50 commented lines')
+  assert.equals(a.end_lnum, 60, 'the range is not cut')
+  qf.clear_review()
+end)
+
+assert.run_test('a buffer with unsaved edits is anchored to the buffer, not disk', function()
+  qf.clear_review()
+  vim.api.nvim_buf_set_lines(file_buf, 2, 3, false, { 'edited line 3' })
+  local ok, err = pcall(function()
+    qf.add_comment('ISSUE', { 3, 3 })
+    local a = qf.comments()[1].anchor
+    local buffer = vim.api.nvim_buf_get_lines(file_buf, 0, -1, false)
+    same(snapshots.get(a.sha), buffer, 'snapshot is the buffer')
+    assert.falsy(vim.deep_equal(snapshots.get(a.sha), vim.fn.readfile(abs)), 'snapshot is not the file on disk')
+    same(a.lines, { 'edited line 3' }, 'anchor lines are the edited line')
+  end)
+  vim.cmd('edit!')
+  qf.clear_review()
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('a snapshot that cannot be saved warns and still adds the comment', function()
+  qf.clear_review()
+  local put = snapshots.put
+  snapshots.put = function() return nil, 'Could not write snapshot' end
+  local ok, calls = pcall(capture_notify, function() qf.add_comment('NOTE', { 2, 2 }) end)
+  snapshots.put = put
+  if not ok then error(calls, 0) end
+  assert.equals(count_level(calls, vim.log.levels.WARN), 1, 'one warning')
+  local list = qf.comments()
+  assert.length(list, 1, 'comment added')
+  assert.equals(list[1].anchor.sha, nil, 'no sha')
+  assert.equals(list[1].anchor.lnum, 2, 'anchored by line')
+  same(list[1].anchor.lines, { 'line 2' }, 'anchor lines kept')
+  qf.clear_review()
 end)
 
 test_helper.cleanup_test_environment()

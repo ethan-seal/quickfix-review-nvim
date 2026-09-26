@@ -105,13 +105,15 @@ function M.add_comment(comment_type, range)
   local text = vim.fn.input(prompt .. ': ')
 
   if text ~= '' then
+    local bufnr = vim.api.nvim_get_current_buf()
     local added = store.add({
       filename = file,
       kind = comment_type:lower(),
       body = text,
       lnum = start_line,
       end_lnum = end_line,
-      context = context.capture(file, start_line, end_line),
+      anchor = context.anchor(start_line, end_line, bufnr),
+      context = context.capture(file, start_line, end_line, bufnr),
       created_at = os.time(),
     })
     if not added then
@@ -256,16 +258,16 @@ function M.jump_comment(direction)
 
   table.sort(sorted, function(a, b)
     if a.filename ~= b.filename then return a.filename < b.filename end
-    return a.lnum < b.lnum
+    return (store.range(a)) < (store.range(b))
   end)
   local line = vim.fn.line('.')
   local function is_after(c)
     if c.filename ~= file then return c.filename > file end
-    return c.lnum > line
+    return (store.range(c)) > line
   end
   local function is_before(c)
     if c.filename ~= file then return c.filename < file end
-    return c.lnum < line
+    return (store.range(c)) < line
   end
 
   local target
@@ -285,7 +287,7 @@ function M.jump_comment(direction)
     vim.cmd('edit ' .. vim.fn.fnameescape(target.filename))
   end
   -- The file may have shrunk since the comment was made
-  local lnum = math.max(1, math.min(target.lnum, vim.api.nvim_buf_line_count(0)))
+  local lnum = math.max(1, math.min((store.range(target)), vim.api.nvim_buf_line_count(0)))
   vim.api.nvim_win_set_cursor(0, { lnum, 0 })
   M.view_comment()
 end
@@ -296,7 +298,7 @@ function M.view_comment()
   local line = vim.fn.line('.')
   local comments = {}
   for _, item in ipairs(store.all()) do
-    if item.lnum == line and utils.files_match(item.filename, file) then
+    if (store.range(item)) == line and utils.files_match(item.filename, file) then
       table.insert(comments, item)
     end
   end
@@ -409,9 +411,9 @@ function M.delete_comment(range)
   
   -- Remove comments overlapping the specified range
   local comments_deleted = store.remove_if(function(item)
-    local item_end = item.end_lnum or item.lnum
+    local item_start, item_end = store.range(item)
     return utils.files_match(item.filename, file) and
-           item.lnum <= end_line and item_end >= start_line
+           item_start <= end_line and item_end >= start_line
   end)
 
   if comments_deleted == nil then

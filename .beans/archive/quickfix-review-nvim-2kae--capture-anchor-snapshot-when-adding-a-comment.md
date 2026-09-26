@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-2kae
 title: Capture anchor + snapshot when adding a comment
-status: todo
+status: completed
 type: task
 priority: high
 created_at: 2026-09-26T04:57:59Z
-updated_at: 2026-09-26T04:57:59Z
+updated_at: 2026-09-26T06:43:25Z
 parent: quickfix-review-nvim-8oi5
 blocked_by:
     - quickfix-review-nvim-m9rq

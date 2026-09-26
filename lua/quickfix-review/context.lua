@@ -122,4 +122,44 @@ function M.capture(file, start_line, end_line, bufnr)
   return ctx
 end
 
+-- Lines first..last of `all` (clamped to it), each without a trailing CR,
+-- as in a snapshot's canonical form
+local function slice(all, first, last)
+  local out = {}
+  for i = math.max(1, first), math.min(#all, last) do
+    table.insert(out, (all[i]:gsub('\r$', '')))
+  end
+  return out
+end
+
+-- The anchor of a comment on lines start_line..end_line of `bufnr` (default:
+-- current): a snapshot of the buffer's content as it is now (unsaved edits
+-- included; for a diff buffer, the revision the reviewer saw) and the lines
+-- relative to it, with the commented lines (at most ANCHOR_MAX_LINES) and up
+-- to ANCHOR_PAD lines either side for a fallback search. If the snapshot
+-- can't be saved this warns and the anchor has no sha.
+local ANCHOR_MAX_LINES = 50
+local ANCHOR_PAD = 2
+
+function M.anchor(start_line, end_line, bufnr)
+  bufnr = (bufnr == nil or bufnr == 0) and vim.api.nvim_get_current_buf() or bufnr
+  local all = vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_lines(bufnr, 0, -1, false) or {}
+
+  -- Required here: snapshots requires the store
+  local sha, err = require('quickfix-review.snapshots').put(all)
+  if not sha then
+    vim.notify('quickfix-review: snapshot not saved, the comment is anchored by its lines only: '
+      .. tostring(err), vim.log.levels.WARN)
+  end
+
+  return {
+    sha = sha,
+    lnum = start_line,
+    end_lnum = end_line,
+    lines = slice(all, start_line, math.min(end_line, start_line + ANCHOR_MAX_LINES - 1)),
+    before = slice(all, start_line - ANCHOR_PAD, start_line - 1),
+    after = slice(all, end_line + 1, end_line + ANCHOR_PAD),
+  }
+end
+
 return M

@@ -453,9 +453,17 @@ require('quickfix-review').load_review()             *quickfix-review.load_revie
 require('quickfix-review').comments()                 *quickfix-review.comments()*
     All review comments, in creation order. Treat as read-only. Each is a
     record `{ id, filename, kind, body, response, lnum, end_lnum, context,
-    created_at }`: `kind` is the lowercase comment type, `body` the text
-    without any `[KIND]` prefix, and `response` and `context` (the captured
-    commit and snippet) may be nil. A record may also carry `extra`: a
+    anchor, pos, created_at }`: `kind` is the lowercase comment type, `body`
+    the text without any `[KIND]` prefix, and `response` and `context` (the
+    captured commit and snippet) may be nil. `anchor` is
+    `{ sha, lnum, end_lnum, lines, before, after }`, written when the
+    comment was made: `sha` names a snapshot of the commented buffer (as the
+    reviewer saw it, unsaved edits included) that `lnum`/`end_lnum` refer
+    to, `lines` the commented lines (at most 50) and `before`/`after` up to
+    2 lines either side. Comments from older versions, or whose snapshot
+    could not be saved, have no `sha` (older ones also no `lines`). `pos`
+    is `{ sha, lnum, end_lnum, state }`, where the comment is displayed;
+    it is derived, never saved. A record may also carry `extra`: a
     table of fields from stored records that the plugin does not know
     (written by other tools), preserved and logged at the top level of the
     record.

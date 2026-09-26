@@ -2,6 +2,7 @@
 local M = {}
 
 local storage = require('quickfix-review.storage')
+local store = require('quickfix-review.store')
 
 -- Each item is formatted with: index, TYPE, file:line (or file:start-end), text
 M.default_item_format = '%d. **[%s]** `%s` - %s'
@@ -30,10 +31,11 @@ function M.to_markdown(comments, config)
 
     -- Format line reference (handle ranges)
     local line_ref
-    if item.end_lnum and item.end_lnum ~= item.lnum then
-      line_ref = string.format('%s:%d-%d', file, item.lnum, item.end_lnum)
+    local lnum, end_lnum = store.range(item)
+    if end_lnum ~= lnum then
+      line_ref = string.format('%s:%d-%d', file, lnum, end_lnum)
     else
-      line_ref = string.format('%s:%d', file, item.lnum)
+      line_ref = string.format('%s:%d', file, lnum)
     end
 
     local ok, line_str = pcall(string.format, item_format, i, comment_type, line_ref, comment_text)

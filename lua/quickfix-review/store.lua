@@ -44,7 +44,7 @@ end
 -- its `extra` table. `text` is a legacy field that is parsed, then dropped.
 local KNOWN = {
   id = true, filename = true, kind = true, body = true, response = true, lnum = true,
-  end_lnum = true, context = true, created_at = true, text = true,
+  end_lnum = true, context = true, created_at = true, text = true, anchor = true,
 }
 
 -- A line number (1 or more), or nil. A numeric string ("12", as an external
@@ -57,6 +57,35 @@ end
 
 local function nonempty(s)
   return type(s) == 'string' and s ~= '' and s or nil
+end
+
+local function string_list(t)
+  if type(t) ~= 'table' then return nil end
+  local out = {}
+  for i = 1, #t do
+    if type(t[i]) ~= 'string' then return nil end
+    out[i] = t[i]
+  end
+  return out
+end
+
+-- A comment's anchor, { sha, lnum, end_lnum, lines, before, after }, as
+-- written when it was made: lnum/end_lnum are relative to the snapshot
+-- `sha`. nil when `a` has no valid line number; a bad field is dropped.
+local function parse_anchor(a)
+  if type(a) ~= 'table' then return nil end
+  local lnum = to_line(a.lnum)
+  if not lnum then return nil end
+  local end_lnum = to_line(a.end_lnum)
+  if not end_lnum or end_lnum < lnum then end_lnum = lnum end
+  return {
+    sha = nonempty(a.sha),
+    lnum = lnum,
+    end_lnum = end_lnum,
+    lines = string_list(a.lines),
+    before = string_list(a.before),
+    after = string_list(a.after),
+  }
 end
 
 -- Keep only the fields of a comment record, giving it an id if it has none
@@ -97,6 +126,7 @@ local function normalize(item)
     lnum = lnum,
     end_lnum = end_lnum,
     context = type(item.context) == 'table' and item.context or nil,
+    anchor = parse_anchor(item.anchor),
     created_at = type(item.created_at) == 'number' and item.created_at or os.time(),
     extra = next(extra) ~= nil and extra or nil,
   }
@@ -106,11 +136,21 @@ local function view_exists()
   return qf_id ~= nil and vim.fn.getqflist({ id = qf_id }).id == qf_id
 end
 
+-- The lines a comment is displayed at: its pos, else its anchor, else the
+-- record's top-level lnum/end_lnum (a record not read through the store).
+-- Returns: lnum, end_lnum
+function M.range(c)
+  local r = c.pos or c.anchor or c
+  local lnum = r.lnum or c.lnum
+  return lnum, r.end_lnum or lnum
+end
+
 -- A comment as displayed: "[KIND] body", or "[KIND:L1-5] body" for a range
 function M.headline(c)
   local label = c.kind:upper()
-  if c.end_lnum > c.lnum then
-    label = string.format('%s:L%d-%d', label, c.lnum, c.end_lnum)
+  local lnum, end_lnum = M.range(c)
+  if end_lnum > lnum then
+    label = string.format('%s:L%d-%d', label, lnum, end_lnum)
   end
   return '[' .. label .. '] ' .. c.body
 end
@@ -123,10 +163,11 @@ local function view_item(c)
   if c.response then
     text = text .. ' | Response: ' .. c.response
   end
+  local lnum, end_lnum = M.range(c)
   return {
     filename = c.filename,
-    lnum = c.lnum,
-    end_lnum = c.end_lnum,
+    lnum = lnum,
+    end_lnum = end_lnum,
     col = 1,
     text = text,
     type = c.kind:sub(1, 1):upper(),
@@ -255,6 +296,13 @@ local function view_of(record)
   local c = views[record]
   if c == nil then
     c = normalize(record) or false
+    if c then
+      -- Derived, never logged: a comment from before anchors is anchored at
+      -- its line with no snapshot (the fallback search handles it), and
+      -- its display position starts at its anchor.
+      c.anchor = c.anchor or { lnum = c.lnum, end_lnum = c.end_lnum }
+      c.pos = { sha = c.anchor.sha, lnum = c.anchor.lnum, end_lnum = c.anchor.end_lnum, state = 'current' }
+    end
     views[record] = c
   end
   return c or nil

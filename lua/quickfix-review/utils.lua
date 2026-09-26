@@ -123,8 +123,8 @@ function M.refresh_buffer_signs(bufnr, file, comments)
   for _, item in ipairs(comments) do
     if M.files_match(item.filename, file) then
       local comment_type = item.kind
-      local start_line = item.lnum
-      local end_line = item.end_lnum or item.lnum
+      -- Required here: store requires utils
+      local start_line, end_line = require('quickfix-review.store').range(item)
 
       -- Track start line
       if not line_info[start_line] then

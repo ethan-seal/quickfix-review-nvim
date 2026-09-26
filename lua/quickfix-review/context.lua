@@ -53,7 +53,9 @@ M._parse_hunks = parse_hunks
 M._find_hunk_for_line = find_hunk_for_line
 
 local function diff_hunk(toplevel, rel, lnum, base)
-  local diff = git(toplevel, { 'diff', '--no-color', '--unified=3', base, '--', rel })
+  -- ':(literal)' so a path with glob characters (app/[id]/page.tsx) matches
+  -- only itself, not siblings like app/d/page.tsx
+  local diff = git(toplevel, { 'diff', '--no-color', '--unified=3', base, '--', ':(literal)' .. rel })
   if not diff or #diff == 0 then return nil end
   local h = find_hunk_for_line(parse_hunks(diff), lnum)
   return h and h.lines or nil

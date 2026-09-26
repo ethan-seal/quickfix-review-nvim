@@ -186,6 +186,36 @@ assert.run_test('capture with unsaved edits snippets the buffer lines', function
   assert.contains(ctx.snippet, '   1  inserted', 'unsaved line present')
 end)
 
+assert.run_test('capture of a path with glob characters diffs only that file', function()
+  -- As a glob pathspec, app/[id]/page.txt also matches the sibling
+  -- app/d/page.txt. Its own file changes at line 1, the sibling at line 9;
+  -- a comment on line 9 must not pick up the sibling's hunk.
+  local repo = make_repo({ 'x' })
+  vim.fn.mkdir(repo .. '/app/[id]', 'p')
+  vim.fn.mkdir(repo .. '/app/d', 'p')
+  local base = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '10' }
+  write_file(repo .. '/app/[id]/page.txt', base)
+  write_file(repo .. '/app/d/page.txt', base)
+  git(repo, 'add', '-A')
+  git(repo, 'commit', '-q', '-m', 'pages')
+  local own, sibling = vim.deepcopy(base), vim.deepcopy(base)
+  own[1] = 'own'
+  sibling[9] = 'sibling'
+  write_file(repo .. '/app/[id]/page.txt', own)
+  write_file(repo .. '/app/d/page.txt', sibling)
+  git(repo, 'commit', '-q', '-am', 'change')
+  local file = repo .. '/app/[id]/page.txt'
+  local bufnr = open(file)
+  local at9 = context.capture(file, 9, 9)
+  local at1 = context.capture(file, 1, 1)
+  wipe(bufnr)
+  vim.fn.delete(repo, 'rf')
+  assert.falsy(vim.tbl_contains(at9.snippet, '+sibling'), 'not the sibling hunk')
+  assert.equals(at9.snippet_source, 'buffer', 'no own hunk at line 9')
+  assert.equals(at1.snippet_source, 'diff', 'own hunk at line 1')
+  assert.contains(at1.snippet, '+own', 'own hunk content')
+end)
+
 -- A repo whose HEAD~1..HEAD diff has a hunk at line 2, and a buffer named
 -- `name(repo)` holding an old revision of file.txt
 local function capture_from_revision_buffer(name)
@@ -247,6 +277,26 @@ end)
 assert.run_test('export fences a diff snippet as diff', function()
   local lines = export_one('/tmp/x.lua', { snippet_source = 'diff', snippet = { '@@ -1 +1 @@', '+x' } })
   assert.contains(lines, '   ```diff', 'diff fence')
+end)
+
+assert.run_test('export fence outlasts backtick runs in the snippet', function()
+  local lines = export_one('/tmp/x.md', { snippet_source = 'diff', snippet = { '@@ -1,2 +1,2 @@', ' ```', '+````lua' } })
+  assert.contains(lines, '   `````diff', 'opening fence longer than any run')
+  assert.equals(lines[#lines], '   `````', 'closing fence matches')
+  assert.contains(lines, '    ```', 'content line kept')
+end)
+
+assert.run_test('export indents a multi-line body under its list item', function()
+  local md = export.to_markdown(
+    { { filename = '/tmp/x.lua', lnum = 1, kind = 'note', body = 'first\nsecond\n\nthird', response = 'r1\nr2' } },
+    { export = { header = '', type_legend = '' } })
+  local lines = vim.split(md, '\n', { plain = true })
+  assert.equals(lines[3], '1. **[NOTE]** `/tmp/x.lua:1` - first', 'item line')
+  assert.equals(lines[4], '   second', 'continuation indented')
+  assert.equals(lines[5], '', 'blank line kept blank')
+  assert.equals(lines[6], '   third | Response: r1', 'later line indented')
+  assert.equals(lines[7], '   r2', 'response continuation indented')
+  assert.length(lines, 7, 'nothing else')
 end)
 
 return assert

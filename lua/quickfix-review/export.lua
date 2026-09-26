@@ -16,6 +16,18 @@ local function snippet_fence_lang(ctx, filename)
   return ok and ft or ''
 end
 
+-- A code fence longer than the longest backtick run in `lines` (at least
+-- three), so no content line can close it early (CommonMark)
+local function fence_for(lines)
+  local longest = 0
+  for _, l in ipairs(lines) do
+    for run in l:gmatch('`+') do
+      if #run > longest then longest = #run end
+    end
+  end
+  return string.rep('`', math.max(3, longest + 1))
+end
+
 -- Convert comment records (store.all()) to a markdown string
 function M.to_markdown(comments, config)
   if not comments or #comments == 0 then
@@ -61,7 +73,13 @@ function M.to_markdown(comments, config)
       end
       line_str = string.format(M.default_item_format, i, comment_type, line_ref, comment_text)
     end
-    table.insert(lines, line_str)
+    -- A multi-line body/response: continuation lines are indented under the
+    -- list item rather than breaking out of it
+    local item_lines = vim.split(line_str, '\n', { plain = true })
+    table.insert(lines, item_lines[1])
+    for k = 2, #item_lines do
+      table.insert(lines, item_lines[k] == '' and '' or '   ' .. item_lines[k])
+    end
 
     -- Append captured context (commit + diff snippet) if present
     local ctx = item.context
@@ -74,11 +92,12 @@ function M.to_markdown(comments, config)
           table.insert(lines, '   - (unsaved buffer)')
         end
         table.insert(lines, '')
-        table.insert(lines, '   ```' .. snippet_fence_lang(ctx, item.filename))
+        local fence = fence_for(ctx.snippet)
+        table.insert(lines, '   ' .. fence .. snippet_fence_lang(ctx, item.filename))
         for _, l in ipairs(ctx.snippet) do
           table.insert(lines, '   ' .. l)
         end
-        table.insert(lines, '   ```')
+        table.insert(lines, '   ' .. fence)
       end
     end
   end

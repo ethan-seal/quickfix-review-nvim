@@ -1024,7 +1024,8 @@ function M.edit_comment()
   else
     vim.ui.select(matches, {
       prompt = 'Edit which comment?',
-      format_item = function(m) return m.headline end,
+      -- First line only: a multi-line body would break the picker row
+      format_item = function(m) return (m.headline:match('^[^\n]*')) end,
     }, function(m)
       if m then prompt_edit(m.id, m.body) end
     end)

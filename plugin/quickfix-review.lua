@@ -27,9 +27,9 @@ vim.api.nvim_create_user_command('ReviewExport', function()
   require('quickfix-review').export_review()
 end, { desc = 'Export review to markdown and clipboard' })
 
-vim.api.nvim_create_user_command('ReviewClear', function()
-  require('quickfix-review').clear_review()
-end, { desc = 'Clear all review comments' })
+vim.api.nvim_create_user_command('ReviewClear', function(o)
+  require('quickfix-review').clear_review({ confirm = not o.bang })
+end, { bang = true, desc = 'Clear all review comments (asks first; ! skips the question)' })
 
 vim.api.nvim_create_user_command('ReviewSave', function()
   require('quickfix-review').save_review()

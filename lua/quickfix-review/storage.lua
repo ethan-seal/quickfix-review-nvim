@@ -6,16 +6,28 @@ local uv = vim.uv or vim.loop
 -- Replace `path` with `str` so that readers only ever see the old or the new
 -- contents: write a per-process temp file next to it, fsync, then rename it
 -- over `path`. On failure the temp file is removed and `path` is untouched.
+-- A symlink is followed, so the link stays and its target is replaced, and an
+-- existing file keeps its permission bits.
 -- Returns: ok (boolean), err (string or nil)
 function M.atomic_write(path, str)
-  local tmp = path .. '.tmp.' .. uv.os_getpid()
-  local fd, err = uv.fs_open(tmp, 'w', 420) -- 0644
+  -- A new file (or a dangling link) has no realpath: write `path` itself
+  local target = uv.fs_realpath(path) or path
+  local stat = uv.fs_stat(target)
+  local mode = stat and bit.band(stat.mode, 511) or 420 -- 0777 mask; new files 0644
+  local tmp = target .. '.tmp.' .. uv.os_getpid()
+  local fd, err = uv.fs_open(tmp, 'w', mode)
   if not fd then return false, err end
 
   local function fail(e)
     if fd then uv.fs_close(fd) end
     uv.fs_unlink(tmp)
     return false, e or 'unknown error'
+  end
+
+  -- fs_open's mode is narrowed by the umask; an existing file's mode is not
+  if stat then
+    local chmoded, merr = uv.fs_fchmod(fd, mode)
+    if not chmoded then return fail(merr) end
   end
 
   local n, werr = uv.fs_write(fd, str, 0)
@@ -29,7 +41,7 @@ function M.atomic_write(path, str)
   fd = nil
   if not closed then return fail(cerr) end
 
-  local renamed, rerr = uv.fs_rename(tmp, path)
+  local renamed, rerr = uv.fs_rename(tmp, target)
   if not renamed then return fail(rerr) end
 
   return true, nil

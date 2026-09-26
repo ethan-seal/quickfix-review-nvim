@@ -37,6 +37,9 @@ The test output includes a "Plugin version check" line that shows the first line
 # Utility function tests
 nvim --headless --clean -c 'lua dofile("test/test_utils.lua")' -c 'qall'
 
+# Configuration tests
+nvim --headless --clean -c 'lua dofile("test/test_config.lua")' -c 'qall'
+
 # Comment add/delete tests
 nvim --headless --clean -c 'lua dofile("test/test_comments.lua")' -c 'qall'
 
@@ -63,6 +66,7 @@ nvim --clean -c 'lua dofile("test/test_comments.lua")'
 | `init.lua` | Test initialization and helper functions |
 | `run.lua` | Test runner that executes all test files |
 | `test_utils.lua` | Tests for utility functions (parse_comment_type, files_match, etc.) |
+| `test_config.lua` | Tests for configuration (comment_types validation, export legend, type order) |
 | `test_comments.lua` | Tests for adding, deleting, and managing comments |
 | `test_signs.lua` | Tests for sign placement on single and multiline comments |
 | `test_persistence.lua` | Tests for save/load functionality |

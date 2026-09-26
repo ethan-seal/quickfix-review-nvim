@@ -15,10 +15,12 @@ quickfix-review-comment-types	quickfix-review.txt	/*quickfix-review-comment-type
 quickfix-review-configuration	quickfix-review.txt	/*quickfix-review-configuration*
 quickfix-review-contents	quickfix-review.txt	/*quickfix-review-contents*
 quickfix-review-disable-keymaps	quickfix-review.txt	/*quickfix-review-disable-keymaps*
+quickfix-review-export	quickfix-review.txt	/*quickfix-review-export*
 quickfix-review-functions	quickfix-review.txt	/*quickfix-review-functions*
 quickfix-review-installation	quickfix-review.txt	/*quickfix-review-installation*
 quickfix-review-introduction	quickfix-review.txt	/*quickfix-review-introduction*
 quickfix-review-keymaps	quickfix-review.txt	/*quickfix-review-keymaps*
+quickfix-review-signs	quickfix-review.txt	/*quickfix-review-signs*
 quickfix-review-usage	quickfix-review.txt	/*quickfix-review-usage*
 quickfix-review.add_comment()	quickfix-review.txt	/*quickfix-review.add_comment()*
 quickfix-review.add_comment_cycle()	quickfix-review.txt	/*quickfix-review.add_comment_cycle()*
@@ -30,9 +32,12 @@ quickfix-review.cycle_previous_comment_type()	quickfix-review.txt	/*quickfix-rev
 quickfix-review.delete_comment()	quickfix-review.txt	/*quickfix-review.delete_comment()*
 quickfix-review.export_review()	quickfix-review.txt	/*quickfix-review.export_review()*
 quickfix-review.goto_real_file()	quickfix-review.txt	/*quickfix-review.goto_real_file()*
+quickfix-review.jump_comment()	quickfix-review.txt	/*quickfix-review.jump_comment()*
 quickfix-review.load_review()	quickfix-review.txt	/*quickfix-review.load_review()*
+quickfix-review.open_list()	quickfix-review.txt	/*quickfix-review.open_list()*
 quickfix-review.save_review()	quickfix-review.txt	/*quickfix-review.save_review()*
 quickfix-review.setup()	quickfix-review.txt	/*quickfix-review.setup()*
 quickfix-review.summary()	quickfix-review.txt	/*quickfix-review.summary()*
+quickfix-review.summary_data()	quickfix-review.txt	/*quickfix-review.summary_data()*
 quickfix-review.txt	quickfix-review.txt	/*quickfix-review.txt*
 quickfix-review.view_comment()	quickfix-review.txt	/*quickfix-review.view_comment()*

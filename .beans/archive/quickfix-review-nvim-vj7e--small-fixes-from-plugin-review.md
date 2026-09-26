@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-vj7e
 title: Small fixes from plugin review
-status: todo
+status: completed
 type: task
 priority: normal
 created_at: 2026-09-26T04:31:28Z
-updated_at: 2026-09-26T05:27:41Z
+updated_at: 2026-09-26T05:40:56Z
 blocked_by:
     - quickfix-review-nvim-0edn
 ---

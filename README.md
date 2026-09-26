@@ -103,6 +103,21 @@ require('quickfix-review').setup({
   -- Additional comment types: merged with defaults
   -- additional_comment_types = { ... },
 
+  -- Signs, keyed by type name and <type>_continuation
+  -- Generated from comment_types; a non-empty table replaces them all
+  -- signs = { issue = { text = '!', texthl = 'DiagnosticError' },
+  --           issue_continuation = { text = '│', texthl = 'DiagnosticError' }, ... },
+
+  -- Markdown export
+  export = {
+    header = '# Code Review\n\n',
+    -- Generated from comment_types unless set (set '' to leave it out)
+    -- type_legend = 'Comment types: ISSUE (Problems to fix), ...\n',
+    -- string.format pattern for each comment, given 4 values in this order:
+    -- index (number), TYPE, file:line or file:start-end, comment text
+    item_format = '%d. **[%s]** `%s` - %s',
+  },
+
   -- Keymaps (set to false to disable)
   -- Default type keymaps: add_issue, add_suggestion, add_note,
   --   add_praise, add_question, add_insight (all <leader>c + first letter)
@@ -167,7 +182,21 @@ require('quickfix-review').setup({
 })
 ```
 
-Signs and continuation signs are auto-generated. The `description` field is shown during type cycling and in the export legend.
+Signs and continuation signs are auto-generated. The `description` field is shown during type cycling and in the export legend. Types are listed (when cycling, in the summary and in the legend) in the default order issue, suggestion, note, praise, question, insight, followed by any other types sorted by name.
+
+`comment_types` must be a non-empty table; anything else is ignored with a warning and the default types are used.
+
+### Export format
+
+`export.item_format` is a `string.format` pattern applied to each comment with four values: the index, the TYPE, the location (`file:line` or `file:start-end`) and the comment text. For example:
+
+```lua
+require('quickfix-review').setup({
+  export = { item_format = '- [%d] %s at %s: %s' },
+})
+```
+
+A pattern that doesn't accept those four values falls back to the default with a warning.
 
 ## Commands
 
@@ -180,7 +209,7 @@ Signs and continuation signs are auto-generated. The `description` field is show
 | `:ReviewDelete` | Delete comment at cursor |
 | `:ReviewView` | View comment at cursor |
 | `:ReviewExport` | Export to markdown and clipboard |
-| `:ReviewClear` | Clear all comments |
+| `:ReviewClear` | Clear all comments (asks first; `:ReviewClear!` doesn't) |
 | `:ReviewSave` | Write review to disk (changes are already saved as they are made) |
 | `:ReviewLoad` | Re-read review from disk and show it in the quickfix list |
 | `:ReviewSummary` | Show comment summary |

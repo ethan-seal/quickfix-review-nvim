@@ -69,19 +69,21 @@ end
 -- Add comment to quickfix and place sign
 -- Optional range parameter: { start_line, end_line } for multiline comments
 function M.add_comment(comment_type, range)
-  -- Validate comment type (ensure config is loaded)
-  if not config.options or not config.options.comment_types then
-    print('Error: Plugin not properly initialized. Call require("quickfix-review").setup() first.')
-    return
-  end
-  
   local type_config = utils.get_comment_type_config(comment_type)
   if not type_config then
     print('Error: Unknown comment type: ' .. comment_type)
     return
   end
 
+  -- Only files (and the diff buffers that map to one) can carry a comment
   local file = utils.get_real_filepath()
+  local buftype = vim.bo.buftype
+  if file == '' or (buftype ~= '' and buftype ~= 'acwrite' and not utils.is_special_buffer()) then
+    vim.notify('quickfix-review: cannot add a comment here: this buffer is not a file',
+      vim.log.levels.WARN)
+    return
+  end
+
   local start_line, end_line
 
   if range then
@@ -111,7 +113,7 @@ function M.add_comment(comment_type, range)
       comment_text = string.format('[%s] %s', comment_type:upper(), text)
     end
 
-    store.add({
+    local added = store.add({
       filename = file,
       lnum = start_line,
       end_lnum = end_line,
@@ -120,6 +122,11 @@ function M.add_comment(comment_type, range)
       type = comment_type:sub(1, 1):upper(),
       user_data = context.capture(file, start_line, end_line),
     })
+    if not added then
+      vim.notify('quickfix-review: ' .. comment_type:upper() .. ' comment was not added',
+        vim.log.levels.WARN)
+      return
+    end
 
     local display_file = vim.fn.fnamemodify(file, ':.')
     if start_line ~= end_line then
@@ -188,10 +195,15 @@ function M.export_review()
   end
 end
 
--- Clear all review comments
-function M.clear_review()
-  store.clear()
-  print('Review cleared')
+-- Clear all review comments. With opts.confirm, ask first (default No).
+function M.clear_review(opts)
+  if opts and opts.confirm
+      and vim.fn.confirm('Clear all review comments?', '&Yes\n&No', 2) ~= 1 then
+    return
+  end
+  if store.clear() then
+    print('Review cleared')
+  end
 end
 
 -- All review comments, in creation order. Treat as read-only.
@@ -236,12 +248,24 @@ function M.jump_comment(direction)
     print('No review comments')
     return
   end
+
+  -- Name every comment on this file (however its path is spelled, e.g.
+  -- through a symlink) by the first comment's spelling of it, so they order
+  -- and compare as one file. `sorted` is a copy, so renaming is safe.
+  local file = vim.fn.fnamemodify(utils.get_real_filepath(), ':p')
+  local canonical
+  for _, c in ipairs(sorted) do
+    if utils.files_match(c.filename, file) then
+      canonical = canonical or c.filename
+      c.filename = canonical
+    end
+  end
+  file = canonical or file
+
   table.sort(sorted, function(a, b)
     if a.filename ~= b.filename then return a.filename < b.filename end
     return a.lnum < b.lnum
   end)
-
-  local file = vim.fn.fnamemodify(utils.get_real_filepath(), ':p')
   local line = vim.fn.line('.')
   local function is_after(c)
     if c.filename ~= file then return c.filename > file end
@@ -268,7 +292,9 @@ function M.jump_comment(direction)
   if target.filename ~= file then
     vim.cmd('edit ' .. vim.fn.fnameescape(target.filename))
   end
-  vim.api.nvim_win_set_cursor(0, { target.lnum, 0 })
+  -- The file may have shrunk since the comment was made
+  local lnum = math.max(1, math.min(target.lnum, vim.api.nvim_buf_line_count(0)))
+  vim.api.nvim_win_set_cursor(0, { lnum, 0 })
   M.view_comment()
 end
 
@@ -343,25 +369,37 @@ function M.view_comment()
   })
 end
 
+-- Comment counts for the review: { total = n, by_type = { { name, count }, ... } }
+-- by_type lists every configured type (lowercase name), in utils.get_comment_types() order
+function M.summary_data()
+  local comments = store.all()
+  local counts = {}
+  for _, item in ipairs(comments) do
+    local name = utils.parse_comment_type(item.text):lower()
+    counts[name] = (counts[name] or 0) + 1
+  end
+
+  local by_type = {}
+  for _, name in ipairs(utils.get_comment_types()) do
+    table.insert(by_type, { name, counts[name] or 0 })
+  end
+  return { total = #comments, by_type = by_type }
+end
+
 -- Show summary of current review
 function M.summary()
-  local comments = store.all()
+  local data = M.summary_data()
 
-  if #comments == 0 then
+  if data.total == 0 then
     print('No review comments')
     return
   end
 
-  local counts = { ISSUE = 0, SUGGESTION = 0, NOTE = 0, PRAISE = 0 }
-  for _, item in ipairs(comments) do
-    local comment_type = utils.parse_comment_type(item.text)
-    if counts[comment_type] then
-      counts[comment_type] = counts[comment_type] + 1
-    end
+  local parts = {}
+  for _, entry in ipairs(data.by_type) do
+    table.insert(parts, string.format('%d %s', entry[2], entry[1]))
   end
-
-  print(string.format('Review: %d total (%d issues, %d suggestions, %d notes, %d praise)',
-    #comments, counts.ISSUE, counts.SUGGESTION, counts.NOTE, counts.PRAISE))
+  print(string.format('Review: %d total (%s)', data.total, table.concat(parts, ', ')))
 end
 
 -- Delete comment(s) at current line or selected range
@@ -388,7 +426,10 @@ function M.delete_comment(range)
            item.lnum <= end_line and item_end >= start_line
   end)
 
-  if comments_deleted > 0 then
+  if comments_deleted == nil then
+    vim.notify('quickfix-review: the storage file is unreadable; no comment was deleted',
+      vim.log.levels.WARN)
+  elseif comments_deleted > 0 then
     local display_file = vim.fn.fnamemodify(file, ':.')
     if start_line ~= end_line then
       print(string.format('Deleted %d comment(s) from %s:%d-%d', comments_deleted, display_file, start_line, end_line))
@@ -469,7 +510,7 @@ local function setup_keymaps()
       { desc = 'Export review to markdown' })
   end
   if keymaps.clear then
-    vim.keymap.set('n', keymaps.clear, M.clear_review,
+    vim.keymap.set('n', keymaps.clear, function() M.clear_review({ confirm = true }) end,
       { desc = 'Clear all review comments' })
   end
   if keymaps.summary then
@@ -526,13 +567,19 @@ function M.delete_comment_from_qf()
     return
   end
 
-  if store.remove(id) == 0 then
+  local removed = store.remove(id)
+  if removed == nil then
+    vim.notify('quickfix-review: the storage file is unreadable; the comment was not deleted',
+      vim.log.levels.WARN)
+  elseif removed == 0 then
     print('Comment no longer exists')
   end
 end
 
 -- Buffer-local keys in the quickfix window that delete a review comment
 local QF_DELETE_KEYS = { 'dd', '<leader>cd' }
+-- Marks the maps this plugin made, so only those are removed again
+local QF_DELETE_DESC = 'Delete comment from quickfix list'
 
 -- Whether buf is the quickfix (not location list) buffer showing the review
 local function shows_review(buf)
@@ -543,8 +590,12 @@ end
 -- the review; otherwise remove the maps and leave the window options alone.
 local function configure_qf_buffer(buf)
   if not shows_review(buf) then
-    for _, lhs in ipairs(QF_DELETE_KEYS) do
-      pcall(vim.keymap.del, 'n', lhs, { buffer = buf })
+    -- Only the plugin's own maps: another plugin's qf maps stay. Delete by
+    -- the reported lhs, which has <leader> already expanded.
+    for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, 'n')) do
+      if map.desc == QF_DELETE_DESC then
+        pcall(vim.keymap.del, 'n', map.lhs, { buffer = buf })
+      end
     end
     return
   end
@@ -559,7 +610,7 @@ local function configure_qf_buffer(buf)
   for _, lhs in ipairs(QF_DELETE_KEYS) do
     vim.keymap.set('n', lhs, M.delete_comment_from_qf, {
       buffer = buf,
-      desc = 'Delete comment from quickfix list'
+      desc = QF_DELETE_DESC,
     })
   end
 end

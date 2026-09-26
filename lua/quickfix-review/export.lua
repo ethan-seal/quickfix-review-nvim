@@ -2,6 +2,10 @@
 local M = {}
 
 local utils = require('quickfix-review.utils')
+local storage = require('quickfix-review.storage')
+
+-- Each item is formatted with: index, TYPE, file:line (or file:start-end), text
+M.default_item_format = '%d. **[%s]** `%s` - %s'
 
 -- Convert quickfix list to markdown string
 function M.to_markdown(qf_list, config)
@@ -12,7 +16,8 @@ function M.to_markdown(qf_list, config)
   local export_config = config.export or {}
   local header = export_config.header or ''
   local type_legend = export_config.type_legend or ''
-  local item_format = export_config.item_format or '%d. [%s] %s:%d - %s'
+  local item_format = export_config.item_format or M.default_item_format
+  local bad_format_reported = false
 
   local lines = { header, type_legend }
 
@@ -29,8 +34,16 @@ function M.to_markdown(qf_list, config)
       line_ref = string.format('%s:%d', file, item.lnum)
     end
 
-    -- Use custom format but replace %s:%d with our line_ref
-    local line_str = string.format('%d. **[%s]** `%s` - %s', i, comment_type, line_ref, comment_text)
+    local ok, line_str = pcall(string.format, item_format, i, comment_type, line_ref, comment_text)
+    if not ok then
+      if not bad_format_reported then
+        bad_format_reported = true
+        vim.notify('quickfix-review: export.item_format ' .. vim.inspect(item_format)
+          .. ' does not take (index, TYPE, file:line, text); using the default: ' .. line_str,
+          vim.log.levels.WARN)
+      end
+      line_str = string.format(M.default_item_format, i, comment_type, line_ref, comment_text)
+    end
     table.insert(lines, line_str)
 
     -- Append captured context (commit + diff snippet) if present
@@ -65,14 +78,11 @@ function M.to_clipboard_and_file(content, filename)
 
   -- Try to write to file
   if filename then
-    local f, err = io.open(filename, 'w')
-    if f then
-      f:write(content)
-      f:close()
-      return true, string.format('Review exported to clipboard and %s', filename)
-    else
-      return true, 'Review copied to clipboard (could not write to file: ' .. (err or 'unknown error') .. ')'
+    local ok, err = storage.atomic_write(filename, content)
+    if not ok then
+      return false, 'Review copied to clipboard, but could not write ' .. filename .. ': ' .. (err or 'unknown error')
     end
+    return true, string.format('Review exported to clipboard and %s', filename)
   end
 
   return true, 'Review copied to clipboard'

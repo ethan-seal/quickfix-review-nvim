@@ -417,6 +417,109 @@ assert.run_test('a null in the comment list is rejected, not truncated', functio
   qf = restart()
 end)
 
+assert.run_test('duplicate ids are split on load and persisted once', function()
+  local abs = vim.fn.fnamemodify(test_file, ':p')
+  seed_legacy(string.format(
+    '[{"id":"00000000000000aa","filename":%q,"lnum":1,"col":1,"text":"[NOTE] a"},'
+      .. '{"id":"00000000000000aa","filename":%q,"lnum":3,"col":1,"text":"[NOTE] copy"}]', abs, abs))
+
+  local list = qf.comments()
+  assert.length(list, 2, 'both loaded')
+  assert.equals(list[1].id, '00000000000000aa', 'first keeps its id')
+  assert.truthy(is_id(list[2].id), 'copy got a fresh id')
+  assert.not_equals(list[2].id, list[1].id, 'ids differ')
+  local on_disk = saved()
+  assert.equals(on_disk[2].id, list[2].id, 'fresh id written back')
+
+  assert.equals(require('quickfix-review.store').remove('00000000000000aa'), 1, 'remove deletes one')
+  local left = qf.comments()
+  assert.length(left, 1, 'one left')
+  assert.equals(left[1].text, '[NOTE] copy', 'the copy remains')
+end)
+
+assert.run_test('a symlinked storage file stays a link and its target is updated', function()
+  local target = vim.fn.tempname() .. '-target.json'
+  local link = vim.fn.tempname() .. '-link.json'
+  vim.fn.writefile({ '[]' }, target)
+  assert.truthy(vim.uv.fs_symlink(target, link), 'symlink created')
+  local ok, err = pcall(function()
+    qf = restart(link)
+    vim.fn.cursor(2, 1)
+    qf.add_comment('ISSUE')
+    assert.equals(vim.uv.fs_lstat(link).type, 'link', 'still a symlink')
+    assert.length(decode(read_bytes(target)), 1, 'target has the comment')
+    assert.equals(vim.fn.glob(target .. '.tmp.*'), '', 'no temp files left behind')
+  end)
+  qf = restart()
+  os.remove(link)
+  os.remove(target)
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('the storage file keeps its permission bits', function()
+  local path = vim.fn.tempname() .. '-private.json'
+  vim.fn.writefile({ '[]' }, path)
+  vim.fn.setfperm(path, 'rw-------')
+  local ok, err = pcall(function()
+    qf = restart(path)
+    vim.fn.cursor(2, 1)
+    qf.add_comment('ISSUE')
+    assert.length(decode(read_bytes(path)), 1, 'comment saved')
+    assert.equals(vim.fn.getfperm(path), 'rw-------', 'mode 0600 kept')
+  end)
+  qf = restart()
+  os.remove(path)
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('export.item_format is applied, and a bad one falls back with a warning', function()
+  reset()
+  vim.fn.cursor(3, 1)
+  qf.add_comment('ISSUE')
+  local export_opts = require('quickfix-review.config').options.export
+  local original = export_opts.item_format
+  local ok, err = pcall(function()
+    export_opts.item_format = '%d) %s @ %s: %s'
+    assert.truthy(export_markdown():find('1) ISSUE @ test_file.txt:3: Test comment', 1, true), 'custom format used')
+
+    export_opts.item_format = '%d. [%s] %s:%d - %s' -- the old 5-placeholder shape
+    local md
+    local calls = capture_notify(function() md = export_markdown() end)
+    assert.truthy(md:find('1. **[ISSUE]** `test_file.txt:3` - Test comment', 1, true), 'default format used')
+    local warned = 0
+    for _, c in ipairs(calls) do
+      if c.level == vim.log.levels.WARN and c.msg:find('item_format', 1, true) then warned = warned + 1 end
+    end
+    assert.equals(warned, 1, 'warned once')
+  end)
+  export_opts.item_format = original
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('an export that cannot be written fails with a message', function()
+  local uv = vim.uv or vim.loop
+  if uv.getuid and uv.getuid() == 0 then
+    print('  (skipped: running as root ignores directory permissions)')
+    return
+  end
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, 'p')
+  vim.fn.setfperm(dir, 'r-xr-xr-x')
+  local original_setreg = vim.fn.setreg
+  vim.fn.setreg = function() end
+  local ok, err = pcall(function()
+    local out = dir .. '/review.md'
+    local success, message = require('quickfix-review.export').to_clipboard_and_file('# x', out)
+    assert.equals(success, false, 'reported as a failure')
+    assert.truthy(message:find('could not write ' .. out, 1, true), 'message names the file: ' .. message)
+    assert.equals(vim.fn.glob(dir .. '/*', true), '', 'no file or temp file left behind')
+  end)
+  vim.fn.setreg = original_setreg
+  vim.fn.setfperm(dir, 'rwxr-xr-x')
+  vim.fn.delete(dir, 'rf')
+  if not ok then error(err, 0) end
+end)
+
 -- Final cleanup
 test_helper.cleanup_test_environment()
 

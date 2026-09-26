@@ -16,9 +16,9 @@ end
 -- Store sign configuration for extmark use
 M.sign_config = {}
 
--- Get comment types dynamically from configuration
+-- Get comment types from configuration, in a fixed order (see config.type_order)
 function M.get_comment_types()
-  return vim.tbl_keys(config.options.comment_types)
+  return config.type_order(config.options.comment_types)
 end
 
 -- Get configuration for a specific comment type
@@ -51,11 +51,9 @@ function M.get_sign_priority(type_name)
   return base_priority
 end
 
--- Initialize signs based on configuration
-function M.init_signs(config)
-  local signs = config.signs or {}
-  for type_name, sign_def in pairs(signs) do
-    vim.fn.sign_define('review_' .. type_name, sign_def)
+-- Record the sign configuration used to place extmark signs
+function M.init_signs(opts)
+  for type_name, sign_def in pairs(opts.signs or {}) do
     M.sign_config[type_name] = sign_def
   end
 end
@@ -95,35 +93,6 @@ local function make_extmark_opts(text, hl_group, prio)
     sign_hl_group = hl_group,
     priority = prio,
   }
-end
-
--- Place signs for a comment using extmarks (supports multiple signs per line)
--- Note: For proper counting of overlapping comments, use refresh_buffer_signs instead
-function M.place_comment_signs(bufnr, comment_type, start_line, end_line)
-  if bufnr <= 0 or vim.fn.bufexists(bufnr) ~= 1 then return end
-
-  local type_key = comment_type:lower()
-  local sign_cfg = M.sign_config[type_key]
-  local cont_cfg = M.sign_config[type_key .. '_continuation']
-
-  if not sign_cfg then return end
-
-  local priority = M.get_sign_priority(type_key) or 50
-
-  -- Place sign at start line using extmark
-  vim.api.nvim_buf_set_extmark(bufnr, M.get_ns_id(), start_line - 1, 0,
-    make_extmark_opts(sign_cfg.text, sign_cfg.texthl, priority))
-
-  if start_line ~= end_line and cont_cfg then
-    local cont_priority = M.get_sign_priority(type_key .. '_continuation') or 30
-    for line = start_line + 1, end_line - 1 do
-      vim.api.nvim_buf_set_extmark(bufnr, M.get_ns_id(), line - 1, 0,
-        make_extmark_opts(cont_cfg.text, cont_cfg.texthl, cont_priority))
-    end
-    -- Place sign at end line
-    vim.api.nvim_buf_set_extmark(bufnr, M.get_ns_id(), end_line - 1, 0,
-      make_extmark_opts(sign_cfg.text, sign_cfg.texthl, priority))
-  end
 end
 
 -- Refresh all signs for a buffer, showing count when multiple comments overlap

@@ -27,6 +27,9 @@ end
 -- Run utility tests first (no plugin dependency)
 run_file('test/test_utils.lua')
 
+-- Run configuration tests
+run_file('test/test_config.lua')
+
 -- Run comment tests
 run_file('test/test_comments.lua')
 

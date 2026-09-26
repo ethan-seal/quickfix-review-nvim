@@ -46,7 +46,8 @@ M.defaults = {
   export = {
     header = '# Code Review\n\n',
     type_legend = '',  -- Generated dynamically from comment_types
-    item_format = '%d. **[%s]** `%s:%d` - %s',
+    -- Each item: index, TYPE, file:line (or file:start-end), comment text
+    item_format = '%d. **[%s]** `%s` - %s',
   },
 
   -- Keymaps (set to false to disable a keymap)
@@ -71,28 +72,49 @@ M.defaults = {
   },
 }
 
--- Current options (populated by setup)
-M.options = {}
+-- Order of the default comment types, used wherever types are listed
+M.default_type_order = { 'issue', 'suggestion', 'note', 'praise', 'question', 'insight' }
 
--- Setup configuration by merging user options with defaults
-function M.setup(opts)
-  local user_opts = opts or {}
+-- The names in `types` (a name -> config table) in a fixed order: the default
+-- types in their usual order, then any others sorted by name
+function M.type_order(types)
+  local ordered, seen = {}, {}
+  for _, name in ipairs(M.default_type_order) do
+    if types[name] ~= nil then
+      table.insert(ordered, name)
+      seen[name] = true
+    end
+  end
+  local extra = {}
+  for name, _ in pairs(types) do
+    if not seen[name] then table.insert(extra, name) end
+  end
+  table.sort(extra)
+  vim.list_extend(ordered, extra)
+  return ordered
+end
 
-  -- Start with defaults (excluding comment_types which is handled specially)
-  M.options = vim.tbl_deep_extend('force', {}, M.defaults, user_opts)
-
+-- Fill in the options derived from comment_types (the types themselves, their
+-- keymaps, signs and export legend), respecting what the user set explicitly
+local function derive(user_opts)
   -- Determine final comment_types:
   -- 1. If user provides comment_types, use it (replaces defaults)
   -- 2. Otherwise use default_comment_types
   -- 3. Merge additional_comment_types on top
   local base_types
-  if user_opts.comment_types then
-    base_types = vim.deepcopy(user_opts.comment_types)
+  local user_types = user_opts.comment_types
+  if user_types ~= nil and (type(user_types) ~= 'table' or vim.tbl_isempty(user_types)) then
+    vim.notify('quickfix-review: comment_types must be a non-empty table; using the default types',
+      vim.log.levels.WARN)
+    user_types = nil
+  end
+  if user_types then
+    base_types = vim.deepcopy(user_types)
   else
     base_types = vim.deepcopy(M.default_comment_types)
   end
 
-  if user_opts.additional_comment_types then
+  if type(user_opts.additional_comment_types) == 'table' then
     base_types = vim.tbl_deep_extend('force', base_types, user_opts.additional_comment_types)
   end
 
@@ -129,12 +151,28 @@ function M.setup(opts)
     end
   end
 
-  -- Generate type legend for export
-  local type_descriptions = {}
-  for type_name, type_config in pairs(M.options.comment_types) do
-    table.insert(type_descriptions, type_name:upper() .. ' (' .. type_config.description .. ')')
+  -- Generate type legend for export, unless the user set one (even '')
+  if not (type(user_opts.export) == 'table' and user_opts.export.type_legend ~= nil) then
+    local type_descriptions = {}
+    for _, type_name in ipairs(M.type_order(M.options.comment_types)) do
+      local type_config = M.options.comment_types[type_name]
+      table.insert(type_descriptions, type_name:upper() .. ' (' .. (type_config.description or '') .. ')')
+    end
+    M.options.export.type_legend = 'Comment types: ' .. table.concat(type_descriptions, ', ') .. '\n'
   end
-  M.options.export.type_legend = 'Comment types: ' .. table.concat(type_descriptions, ', ') .. '\n'
+end
+
+-- Current options. Filled with the defaults at load, so commands work before
+-- setup() is called; setup() replaces them.
+M.options = vim.deepcopy(M.defaults)
+derive({})
+
+-- Setup configuration by merging user options with defaults
+function M.setup(opts)
+  local user_opts = opts or {}
+
+  M.options = vim.tbl_deep_extend('force', {}, M.defaults, user_opts)
+  derive(user_opts)
 
   return M
 end

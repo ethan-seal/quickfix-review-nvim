@@ -114,11 +114,19 @@ local function sync()
 
   comments = {}
   local backfilled = false
+  local seen = {}
   for _, item in ipairs(list) do
     local c = normalize(item)
     if c then
-      table.insert(comments, c)
       if not has_id(item) then backfilled = true end
+      -- A hand-copied comment shares its id; give the copy its own, so
+      -- remove(id) never deletes both
+      if seen[c.id] then
+        c.id = new_id()
+        backfilled = true
+      end
+      seen[c.id] = true
+      table.insert(comments, c)
     end
   end
   synced = { path = path, mtime = current }
@@ -177,8 +185,15 @@ function M.all()
   return comments
 end
 
+-- Add a comment
+-- Returns: true if it was added, false if it has no file or the change was refused
 function M.add(item)
-  update(function() table.insert(comments, normalize(item)) end)
+  return update(function()
+    local c = normalize(item)
+    if not c then return false end
+    table.insert(comments, c)
+    return true
+  end) == true
 end
 
 -- The comment with this id, or nil. Treat as read-only.
@@ -191,7 +206,7 @@ function M.get(id)
 end
 
 -- Remove every comment for which pred(comment) is true
--- Returns: number removed (0 if the change was refused)
+-- Returns: number removed, or nil if the change was refused (unreadable file)
 function M.remove_if(pred)
   return update(function()
     local kept, removed = {}, 0
@@ -200,17 +215,22 @@ function M.remove_if(pred)
     end
     comments = kept
     return removed
-  end) or 0
+  end)
 end
 
 -- Remove the comment with this id
--- Returns: number removed (0 if there is none or the change was refused)
+-- Returns: number removed (0 if there is none), or nil if the change was refused
 function M.remove(id)
   return M.remove_if(function(c) return c.id == id end)
 end
 
+-- Remove every comment
+-- Returns: true, or nil if the change was refused
 function M.clear()
-  update(function() comments = {} end)
+  return update(function()
+    comments = {}
+    return true
+  end)
 end
 
 -- Re-read the storage file even if it looks unchanged

@@ -78,6 +78,16 @@ options are optional; defaults are shown below.
       -- Additional comment types: merged with defaults
       -- additional_comment_types = { ... },
 
+      -- Signs (see |quickfix-review-signs|)
+      -- signs = { ... },
+
+      -- Markdown export (see |quickfix-review-export|)
+      export = {
+        header = '# Code Review\n\n',
+        -- type_legend: generated from comment_types unless set
+        item_format = '%d. **[%s]** `%s` - %s',
+      },
+
       -- Keymaps (set to false to disable)
       -- Default type keymaps: add_issue, add_suggestion, add_note,
       --   add_praise, add_question, add_insight
@@ -130,6 +140,46 @@ To replace defaults entirely, use `comment_types`: >lua
 <
 Signs and continuation signs are auto-generated from comment_types.
 Keymaps follow the pattern `add_<type>` (e.g., `add_bug`, `add_idea`).
+
+`comment_types` must be a non-empty table; anything else is ignored with a
+warning and the default types are used.
+
+Types are listed (when cycling, in the summary and in the export legend) in
+the default order issue, suggestion, note, praise, question, insight, then
+any other types sorted by name.
+
+                                                        *quickfix-review-signs*
+Signs:~
+
+`signs` maps each type name, and `<type>_continuation` (the sign on the
+middle lines of a range), to `{ text = ..., texthl = ... }`. It is generated
+from comment_types (`sign` and `highlight`, with `│` as the continuation
+text). A non-empty `signs` table replaces the generated one entirely: >lua
+    require('quickfix-review').setup({
+      signs = {
+        issue = { text = '!', texthl = 'DiagnosticError' },
+        issue_continuation = { text = '|', texthl = 'DiagnosticError' },
+        -- ... one pair per comment type
+      },
+    })
+<
+                                                       *quickfix-review-export*
+Export format:~
+
+`export.header`       Text at the top of the export.
+                      Default: `'# Code Review\n\n'`
+`export.type_legend`  Text after the header. Generated from comment_types
+                      (`Comment types: ISSUE (Problems to fix), ...`) unless
+                      set; set it to `''` to leave it out.
+`export.item_format`  A |string.format()| pattern for each comment, given
+                      four values in this order: the index (a number), the
+                      TYPE, the location (`file:line` or `file:start-end`)
+                      and the comment text.
+                      Default (as in the setup example above), which
+                      gives lines like: >
+                          1. **[ISSUE]** `src/main.lua:12` - Fix this
+<                     A pattern that does not accept these values falls
+                      back to the default with a warning.
 
                                                 *quickfix-review-disable-keymaps*
 To disable specific keymaps, set them to `false`: >lua
@@ -224,7 +274,8 @@ press `dd` to delete the comment under cursor.
                         Copies to clipboard and optionally writes to file.
 
                                                             *:ReviewClear*
-:ReviewClear            Clear all review comments and signs.
+:ReviewClear[!]         Clear all review comments and signs. Asks for
+                        confirmation first (default No); with ! it does not.
 
                                                              *:ReviewSave*
 :ReviewSave             Write the review to disk. Every change is already
@@ -315,8 +366,9 @@ require('quickfix-review').view_comment()           *quickfix-review.view_commen
 require('quickfix-review').export_review()         *quickfix-review.export_review()*
     Export all comments to markdown and clipboard.
 
-require('quickfix-review').clear_review()           *quickfix-review.clear_review()*
-    Clear all comments and signs.
+require('quickfix-review').clear_review({opts})     *quickfix-review.clear_review()*
+    Clear all comments and signs. With `{ confirm = true }` ask first
+    (default No); without it, clear at once.
 
 require('quickfix-review').save_review()             *quickfix-review.save_review()*
     Write the review to the configured storage file (every change
@@ -331,6 +383,21 @@ require('quickfix-review').comments()                 *quickfix-review.comments(
 
 require('quickfix-review').summary()                   *quickfix-review.summary()*
     Print a summary of comment counts.
+
+require('quickfix-review').summary_data()         *quickfix-review.summary_data()*
+    The summary as data: `{ total = n, by_type = { { name, count }, ... } }`,
+    with one entry for every configured comment type (lowercase name), in
+    the order described in |quickfix-review-comment-types|.
+
+require('quickfix-review').open_list()               *quickfix-review.open_list()*
+    Show the review in the quickfix list and open the quickfix window.
+
+require('quickfix-review').jump_comment({direction})
+                                                 *quickfix-review.jump_comment()*
+    Jump to the next ({direction} 1) or previous ({direction} -1) comment
+    across all files, ordered by file then line and wrapping around at the
+    ends, and show it. A comment past the end of its file lands on the last
+    line.
 
 require('quickfix-review').goto_real_file()       *quickfix-review.goto_real_file()*
     Jump from a diff buffer to the actual file.

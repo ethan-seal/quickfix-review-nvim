@@ -77,18 +77,15 @@ local function clear_extmarks(bufnr)
   vim.api.nvim_buf_clear_namespace(bufnr, utils.get_ns_id(), 0, -1)
 end
 
-assert.run_test('sign definitions exist', function()
-  local defined = vim.fn.sign_getdefined()
-  local sign_names = {}
-  for _, sign in ipairs(defined) do
-    sign_names[sign.name] = true
+assert.run_test('sign config is recorded for extmarks, no legacy signs defined', function()
+  for _, name in ipairs({ 'issue', 'suggestion', 'note', 'praise', 'question', 'insight' }) do
+    assert.truthy(utils.sign_config[name], name .. ' sign configured')
+    assert.truthy(utils.sign_config[name .. '_continuation'], name .. '_continuation configured')
   end
-
-  assert.truthy(sign_names['review_issue'], 'review_issue defined')
-  assert.truthy(sign_names['review_suggestion'], 'review_suggestion defined')
-  assert.truthy(sign_names['review_note'], 'review_note defined')
-  assert.truthy(sign_names['review_praise'], 'review_praise defined')
-  assert.truthy(sign_names['review_issue_continuation'], 'review_issue_continuation defined')
+  assert.equals(utils.sign_config.issue.text, '!', 'issue sign text from comment_types')
+  assert.equals(utils.sign_config.issue.texthl, 'DiagnosticError', 'issue sign highlight')
+  assert.length(vim.fn.sign_getdefined('review_issue'), 0, 'no :sign definition')
+  assert.equals(utils.place_comment_signs, nil, 'dead place_comment_signs removed')
 end)
 
 assert.run_test('single line comment places one sign', function()

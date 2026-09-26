@@ -141,6 +141,55 @@ assert.run_test('show_list maps dd when the quickfix window already shows anothe
   close_lists()
 end)
 
+assert.run_test("another plugin's dd in the quickfix window survives a refill", function()
+  add_two_comments()
+  qf.open_list()
+  local buf = vim.api.nvim_get_current_buf()
+  vim.fn.setqflist({ { filename = test_file, lnum = 2, text = 'grep hit' } }, ' ')
+  assert.falsy(has_buf_map(buf, 'dd'), 'review dd removed')
+
+  vim.keymap.set('n', 'dd', '<Nop>', { buffer = buf, desc = 'other plugin' })
+  vim.keymap.set('n', '<leader>cd', '<Nop>', { buffer = buf, desc = 'other plugin' })
+  vim.fn.setqflist({ { filename = test_file, lnum = 3, text = 'grep hit 2' } }, ' ')
+  assert.truthy(has_buf_map(buf, 'dd'), 'other dd kept')
+  assert.truthy(has_buf_map(buf, '<leader>cd'), 'other <leader>cd kept')
+  assert.equals(vim.fn.maparg('dd', 'n', false, true).desc, 'other plugin', 'dd is the other plugin map')
+  pcall(vim.keymap.del, 'n', 'dd', { buffer = buf })
+  pcall(vim.keymap.del, 'n', '<leader>cd', { buffer = buf })
+  close_lists()
+end)
+
+assert.run_test('dd with an unreadable storage file says so and deletes nothing', function()
+  add_two_comments()
+  qf.open_list()
+  vim.fn.cursor(1, 1)
+  local storage_file = test_helper.storage_file
+  vim.uv.sleep(10) -- so the rewrite gets a new mtime
+  vim.fn.writefile({ 'not json' }, storage_file)
+
+  local calls = {}
+  local original_notify, original_print = vim.notify, print
+  vim.notify = function(msg, level) table.insert(calls, { msg = msg, level = level }) end
+  local printed = {}
+  print = function(...) table.insert(printed, table.concat({ ... }, ' ')) end
+  local ok, err = pcall(qf.delete_comment_from_qf)
+  vim.notify, print = original_notify, original_print
+  assert.truthy(ok, 'no error: ' .. tostring(err))
+
+  local warned = false
+  for _, c in ipairs(calls) do
+    if c.level == vim.log.levels.WARN and c.msg:find('unreadable', 1, true) then warned = true end
+  end
+  assert.truthy(warned, 'warns that the storage file is unreadable')
+  for _, line in ipairs(printed) do
+    assert.falsy(line:find('no longer exists', 1, true), 'does not claim the comment is gone')
+  end
+  assert.equals(vim.fn.readfile(storage_file)[1], 'not json', 'file untouched')
+
+  os.remove(storage_file)
+  close_lists()
+end)
+
 qf.clear_review()
 test_helper.cleanup_test_environment()
 

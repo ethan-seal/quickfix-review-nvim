@@ -131,6 +131,83 @@ assert.run_test('get_real_filepath uses the repo root from a subdirectory cwd', 
   assert.equals(result, expected_real, 'fugitive path resolved against repo root, not cwd')
 end)
 
+-- Worktree and submodule git dirs live under the main repo's .git, not in the
+-- work tree they belong to
+do
+  local function run(cmd)
+    local r = vim.system(cmd, { text = true }):wait()
+    if r.code ~= 0 then
+      error('command failed: ' .. table.concat(cmd, ' ') .. ': ' .. (r.stderr or ''))
+    end
+    return vim.trim(r.stdout or '')
+  end
+  local function git(dir, ...)
+    return run(vim.list_extend(
+      { 'git', '-C', dir, '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+        '-c', 'commit.gpgsign=false', '-c', 'protocol.file.allow=always' },
+      { ... }))
+  end
+  local function make_repo(dir)
+    vim.fn.mkdir(dir, 'p')
+    git(dir, 'init', '-q')
+    vim.fn.writefile({ 'hello' }, dir .. '/file.txt')
+    git(dir, 'add', 'file.txt')
+    git(dir, 'commit', '-q', '-m', 'init')
+    return dir
+  end
+  local function real(p) return vim.fn.resolve(vim.fn.fnamemodify(p, ':p')) end
+
+  local tmp = vim.fn.resolve(vim.fn.tempname())
+  local ok_setup, setup_err = pcall(function()
+    make_repo(tmp .. '/main')
+    make_repo(tmp .. '/src')
+    git(tmp .. '/main', 'worktree', 'add', '-q', tmp .. '/wt')
+    git(tmp .. '/main', 'submodule', 'add', '-q', tmp .. '/src', 'sub')
+  end)
+  local main, wt = tmp .. '/main', tmp .. '/wt'
+
+  assert.run_test('get_real_filepath resolves worktree git-dir names to the worktree', function()
+    assert.truthy(ok_setup, 'repo setup: ' .. tostring(setup_err))
+    local want = real(wt .. '/file.txt')
+    assert.equals(real(real_path_for_name('fugitive://' .. main .. '/.git/worktrees/wt//0/file.txt')),
+      want, 'fugitive worktree name')
+    assert.equals(real(real_path_for_name('diffview://' .. main .. '/.git/worktrees/wt/abc123/file.txt')),
+      want, 'diffview worktree name')
+  end)
+
+  assert.run_test('get_real_filepath resolves submodule git-dir names to the submodule', function()
+    assert.truthy(ok_setup, 'repo setup: ' .. tostring(setup_err))
+    local want = real(main .. '/sub/file.txt')
+    assert.equals(real(real_path_for_name('fugitive://' .. main .. '/.git/modules/sub//0/file.txt')),
+      want, 'fugitive submodule name')
+    assert.equals(real(real_path_for_name('diffview://' .. main .. '/.git/modules/sub/abc123/file.txt')),
+      want, 'diffview submodule name')
+  end)
+
+  assert.run_test('get_real_filepath caches the git-dir work tree', function()
+    assert.truthy(ok_setup, 'repo setup: ' .. tostring(setup_err))
+    local name = 'fugitive://' .. main .. '/.git/modules/sub//0/file.txt'
+    real_path_for_name(name)
+    local orig, calls = vim.system, 0
+    vim.system = function(...) calls = calls + 1 return orig(...) end
+    local ok, err = pcall(real_path_for_name, name)
+    vim.system = orig
+    assert.truthy(ok, tostring(err))
+    assert.equals(calls, 0, 'no git call on a repeat resolution')
+  end)
+
+  assert.run_test('get_real_filepath leaves fugitive summary and commit names unresolved', function()
+    assert.equals(real_path_for_name('fugitive://' .. repo_root .. '/.git//'),
+      'fugitive://' .. repo_root .. '/.git//', 'summary name unchanged')
+    local commit = 'fugitive://' .. repo_root .. '/.git//0123456789abcdef'
+    assert.equals(real_path_for_name(commit), commit, 'commit name unchanged')
+    assert.truthy(utils.is_unresolved(commit), 'commit name is unresolved')
+    assert.equals(real_path_for_name('diffview://null'), 'diffview://null', 'diffview://null unchanged')
+  end)
+
+  vim.fn.delete(tmp, 'rf')
+end
+
 assert.run_test('files_match treats a symlink and its target as the same file', function()
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, 'p')

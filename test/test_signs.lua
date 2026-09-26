@@ -485,6 +485,66 @@ assert.run_test('a fugitive buffer holding the snapshot shows the sign at the an
   assert.truthy(float, 'view_comment opens a float at line 5 of the fugitive buffer')
 end)
 
+assert.run_test(']r/[r in a fugitive buffer land on the signed anchor line', function()
+  -- Let callbacks earlier tests scheduled run now, not mid-test (one would
+  -- redraw this test's buffers from another module instance's comments)
+  vim.wait(50)
+  qf.clear_review()
+  local bufnr = vim.fn.bufnr()
+  clear_extmarks(bufnr)
+
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  -- The working buffer moves on: the comment is tracked at line 7, and a
+  -- second comment made now is not shown in the older revision
+  vim.api.nvim_buf_set_lines(bufnr, 0, 0, false, { 'new a', 'new b' })
+  vim.fn.cursor(11, 1)
+  qf.add_comment('NOTE')
+
+  local fugbuf = vim.api.nvim_create_buf(true, true)
+  vim.api.nvim_buf_set_lines(fugbuf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_name(fugbuf, 'fugitive://' .. vim.fn.getcwd() .. '/.git//0/' .. test_file)
+  vim.cmd('buffer ' .. fugbuf)
+
+  local function close_floats()
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_get_config(w).relative ~= '' then vim.api.nvim_win_close(w, true) end
+    end
+  end
+  -- Jump from `from` in `direction`; returns ok, buffer, line
+  local function jump_from(from, direction)
+    vim.api.nvim_set_current_buf(fugbuf)
+    vim.fn.cursor(from, 1)
+    local ok, err = pcall(qf.jump_comment, direction)
+    vim.wait(50)
+    close_floats()
+    return ok and true or err, vim.api.nvim_get_current_buf(), vim.fn.line('.')
+  end
+
+  local fwd_ok, fwd_buf, fwd_line = jump_from(1, 1)
+  local signed = has_sign_on_line(fugbuf, 5)
+  local back_ok, back_buf, back_line = jump_from(#lines, -1)
+  local wrap_ok, wrap_buf, wrap_line = jump_from(6, 1)
+
+  vim.cmd('buffer ' .. bufnr)
+  vim.cmd('bwipeout! ' .. fugbuf)
+  vim.api.nvim_buf_set_lines(bufnr, 0, 2, false, {})
+  vim.bo[bufnr].modified = false
+  qf.clear_review()
+
+  assert.equals(fwd_ok, true, ']r did not error')
+  assert.equals(fwd_buf, fugbuf, ']r stays in the fugitive buffer')
+  assert.equals(fwd_line, 5, ']r lands on the anchor line, not the tracked line 7')
+  assert.truthy(signed, 'the sign is on line 5')
+  assert.equals(back_ok, true, '[r did not error')
+  assert.equals(back_buf, fugbuf, '[r stays in the fugitive buffer')
+  assert.equals(back_line, 5, '[r skips the comment this revision does not show')
+  assert.equals(wrap_ok, true, ']r past the last shown comment did not error')
+  assert.equals(wrap_buf, fugbuf, ']r wraps within the fugitive buffer')
+  assert.equals(wrap_line, 5, ']r wraps to the shown comment')
+end)
+
 assert.run_test('a comment added in a fugitive buffer holding the snapshot keeps its sign at the anchor line there', function()
   qf.clear_review()
   local bufnr = vim.fn.bufnr()

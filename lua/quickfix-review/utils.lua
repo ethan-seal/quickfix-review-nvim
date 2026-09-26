@@ -273,21 +273,84 @@ local function resolve_repo_path(root, rel)
   return base .. '/' .. rel
 end
 
+-- work tree per git dir; false marks "could not resolve" so misses are cached too
+local worktree_cache = {}
+
+-- The work tree a git dir belongs to. Diff plugins name buffers after the git
+-- dir, which for a linked worktree (.git/worktrees/<n>) or a submodule
+-- (.git/modules/<n>) is not inside the work tree.
+local function worktree_of(gitdir)
+  local cached = worktree_cache[gitdir]
+  if cached ~= nil then return cached or nil end
+
+  local tree = false
+  local prefix = gitdir:match('^(.-)/%.git$')
+  if prefix then
+    -- The main repo's own .git: its parent (resolved as before)
+    -- (an empty prefix resolves against the cwd, which is not cached here)
+    tree = prefix ~= '' and (M.git_toplevel(prefix) or prefix) or false
+  elseif vim.fn.filereadable(gitdir .. '/gitdir') == 1 then
+    -- Linked worktree: <gitdir>/gitdir holds the path of <worktree>/.git
+    local ok, lines = pcall(vim.fn.readfile, gitdir .. '/gitdir', '', 1)
+    if ok and lines[1] and vim.trim(lines[1]) ~= '' then
+      tree = vim.fn.fnamemodify(vim.trim(lines[1]), ':h')
+    end
+  elseif vim.fn.isdirectory(gitdir) == 1 then
+    -- Submodule (core.worktree set in its git dir)
+    local ok, result = pcall(function()
+      return vim.system({ 'git', '-C', gitdir, 'rev-parse', '--show-toplevel' }, { text = true, timeout = 1000 }):wait()
+    end)
+    if ok and result and result.code == 0 and result.stdout then
+      local trimmed = vim.trim(result.stdout)
+      if trimmed ~= '' then tree = trimmed end
+    end
+  end
+  if not tree then
+    -- Last resort: the directory holding the first .git
+    tree = gitdir:match('^(.-)/%.git/') or false
+  end
+
+  worktree_cache[gitdir] = tree
+  return tree or nil
+end
+
+-- Resolve `rel` inside the work tree of `gitdir`
+local function resolve_gitdir_path(gitdir, rel)
+  local tree = worktree_of(gitdir)
+  if tree then return tree .. '/' .. rel end
+  return resolve_repo_path(nil, rel)
+end
+
 -- Extract real file path from special diff buffers. Regular buffers (and names
 -- matching no known scheme) return the buffer name unchanged.
 function M.get_real_filepath(bufnr)
   local bufname = vim.api.nvim_buf_get_name(bufnr or 0)
 
-  -- diffview:///repo/.git/<rev>/file.txt (also tolerates .git//<rev>/)
-  local root, rel = bufname:match('^diffview://(.-)/%.git/+[^/]+/(.+)$')
-  if rel then
-    return resolve_repo_path(root, rel)
+  -- diffview:///repo/.git/<rev>/file.txt (also tolerates .git//<rev>/); the
+  -- git dir may be a linked worktree's (.git/worktrees/<n>) or a submodule's
+  -- (.git/modules/<n>, possibly nested)
+  local gitdir, rest = bufname:match('^diffview://(.-/%.git)/+(.+)$')
+  if rest then
+    local seg, tail = rest:match('^(worktrees/[^/]+)/+(.+)$')
+    if seg then
+      gitdir, rest = gitdir .. '/' .. seg, tail
+    else
+      seg, tail = rest:match('^(modules/[^/]+)/+(.+)$')
+      while seg do
+        gitdir, rest = gitdir .. '/' .. seg, tail
+        seg, tail = rest:match('^(modules/[^/]+)/+(.+)$')
+      end
+    end
+    local rel = rest:match('^[^/]+/+(.+)$')
+    if rel then
+      return resolve_gitdir_path(gitdir, rel)
+    end
   end
 
-  -- fugitive:///repo/.git//<rev>/file.txt
-  root, rel = bufname:match('^fugitive://(.-)/%.git//[^/]+/(.+)$')
-  if rel then
-    return resolve_repo_path(root, rel)
+  -- fugitive:///repo/.git//<rev>/file.txt (the git dir, then //)
+  local gd, rel = bufname:match('^fugitive://(.-)//[^/]+/(.+)$')
+  if rel and gd:find('/%.git') then
+    return resolve_gitdir_path(gd, rel)
   end
 
   -- codediff buffers carry a repo-relative path with no repo root
@@ -333,6 +396,14 @@ function M.range_in(item, bufnr)
   if cached.sha ~= a.sha then return nil end
   local lnum = a.lnum or item.lnum
   return lnum, a.end_lnum or lnum
+end
+
+-- True when `path` (from get_real_filepath) still carries a diff plugin's
+-- scheme, i.e. the buffer name did not map to a file
+function M.is_unresolved(path)
+  return path:match('^diffview://') ~= nil
+      or path:match('^fugitive://') ~= nil
+      or path:match('^codediff://') ~= nil
 end
 
 -- Check if a buffer (default: current) is a diff/special buffer

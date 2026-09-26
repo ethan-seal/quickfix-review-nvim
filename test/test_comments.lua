@@ -224,6 +224,26 @@ assert.run_test('an unnamed buffer is refused with a warning', function()
   assert.length(qf.comments(), 0, 'no comment added')
 end)
 
+assert.run_test('diff-plugin buffers that show no file are refused', function()
+  local names = {
+    'diffview://null',
+    'diffview:///repo/panels/1/DiffviewFilePanel',
+    'fugitive://' .. vim.fn.getcwd() .. '/.git//',
+    'fugitive://' .. vim.fn.getcwd() .. '/.git//0123456789abcdef0123456789abcdef01234567',
+  }
+  for _, name in ipairs(names) do
+    qf.clear_review()
+    local adds = #test_helper.log_ops(test_helper.log_path(), 'add')
+    in_scratch(name, 'nofile', function()
+      vim.fn.cursor(1, 1)
+      local calls = capture_notify(function() qf.add_comment('NOTE') end)
+      assert.equals(count_level(calls, vim.log.levels.WARN), 1, 'one warning for ' .. name)
+    end)
+    assert.length(qf.comments(), 0, 'no comment added for ' .. name)
+    assert.equals(#test_helper.log_ops(test_helper.log_path(), 'add'), adds, 'nothing logged for ' .. name)
+  end
+end)
+
 assert.run_test('a diffview buffer (buftype nofile) is still accepted', function()
   qf.clear_review()
   in_scratch('diffview:///no-such-repo/.git/abc123/test_file.txt', 'nofile', function()

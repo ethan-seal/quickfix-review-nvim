@@ -98,6 +98,13 @@ function M.add_comment(comment_type, range)
       vim.log.levels.WARN)
     return
   end
+  -- A diff-plugin buffer that shows no file (a panel, diffview://null, a
+  -- fugitive summary or commit): its name did not map to a path
+  if utils.is_unresolved(file) then
+    vim.notify('quickfix-review: cannot add a comment here: this buffer does not show a file',
+      vim.log.levels.WARN)
+    return
+  end
 
   local start_line, end_line
 
@@ -172,7 +179,7 @@ function M.goto_real_file()
   local real_file = utils.get_real_filepath()
   local line = vim.fn.line('.')
 
-  if real_file:match('^diffview://') or real_file:match('^fugitive://') or real_file:match('^codediff://') then
+  if utils.is_unresolved(real_file) then
     print('Error: Cannot determine real file from buffer')
     return
   end
@@ -450,6 +457,23 @@ function M.jump_comment(direction)
     end
   end
   file = canonical or file
+
+  -- In a diff buffer, comments on the file it shows sit where signs and view
+  -- put them (their anchor's lines in this revision); those this revision
+  -- does not show are skipped. Other files keep store.range, since the jump
+  -- opens the real file.
+  if utils.is_special_buffer(0) then
+    local shown = {}
+    for _, c in ipairs(sorted) do
+      if c.filename == file then line_of[c.id] = (utils.range_in(c, 0)) end
+      if line_of[c.id] then table.insert(shown, c) end
+    end
+    sorted = shown
+    if #sorted == 0 then
+      print('No review comments')
+      return
+    end
+  end
 
   table.sort(sorted, function(a, b)
     if a.filename ~= b.filename then return a.filename < b.filename end

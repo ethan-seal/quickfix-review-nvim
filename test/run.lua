@@ -36,6 +36,9 @@ run_file('test/test_signs.lua')
 -- Run persistence tests
 run_file('test/test_persistence.lua')
 
+-- Run setup idempotency tests
+run_file('test/test_setup.lua')
+
 -- Final summary
 print('')
 print(string.rep('=', 50))

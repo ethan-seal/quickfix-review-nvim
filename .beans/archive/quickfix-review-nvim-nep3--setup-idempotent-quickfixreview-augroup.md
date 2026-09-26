@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-nep3
 title: 'setup() idempotent: QuickfixReview augroup'
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-09-26T04:57:33Z
-updated_at: 2026-09-26T04:57:33Z
+updated_at: 2026-09-26T05:03:40Z
 blocked_by:
     - quickfix-review-nvim-46kf
 ---

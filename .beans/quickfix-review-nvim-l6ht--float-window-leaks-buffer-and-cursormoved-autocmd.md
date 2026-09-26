@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: normal
 created_at: 2026-09-26T04:31:20Z
-updated_at: 2026-09-26T04:57:49Z
+updated_at: 2026-09-26T05:03:39Z
 blocked_by:
     - quickfix-review-nvim-nep3
 ---
@@ -24,3 +24,7 @@ view_comment also only matches `item.lnum == line` (init.lua:277), while signs, 
 - [ ] Test: 3 consecutive views → buffer count and float count back to baseline after closing
 - [ ] Test: cursor on middle line of a range comment opens its float
 - [ ] Test: two overlapping comments → one float containing both
+
+
+
+Note (from nep3): `QuickfixReviewFloat` is created with `clear = false`; each float's close autocmd deletes itself by id (init.lua ~331-339). Build on per-float removal, not a group clear.

@@ -326,10 +326,16 @@ function M.view_comment()
   })
   vim.wo[win].wrap = true
 
-  -- Close on any cursor move or keypress
-  vim.api.nvim_create_autocmd({ 'CursorMoved', 'BufLeave' }, {
-    once = true,
-    callback = function() pcall(vim.api.nvim_win_close, win, true) end,
+  -- Close on cursor move or leaving the buffer. The handler lives in the
+  -- QuickfixReviewFloat group and removes itself (both events) on close.
+  local float_group = vim.api.nvim_create_augroup('QuickfixReviewFloat', { clear = false })
+  local close_id
+  close_id = vim.api.nvim_create_autocmd({ 'CursorMoved', 'BufLeave' }, {
+    group = float_group,
+    callback = function()
+      pcall(vim.api.nvim_win_close, win, true)
+      pcall(vim.api.nvim_del_autocmd, close_id)
+    end,
   })
 end
 
@@ -531,6 +537,9 @@ end
 
 -- Setup the plugin
 function M.setup(opts)
+  -- Clearing the group makes setup() safe to call more than once
+  local augroup = vim.api.nvim_create_augroup('QuickfixReview', { clear = true })
+
   config.setup(opts)
   utils.init_signs(config.options)
   setup_keymaps()
@@ -541,6 +550,7 @@ function M.setup(opts)
 
   -- Auto-show floating comment after navigating the review's quickfix list
   vim.api.nvim_create_autocmd('QuickFixCmdPost', {
+    group = augroup,
     pattern = { 'cnext', 'cprev', 'cc', 'cfirst', 'clast' },
     callback = function()
       if store.is_current_view() then M.view_comment() end
@@ -549,6 +559,7 @@ function M.setup(opts)
 
   -- Place signs when entering a buffer (also picks up changes made on disk)
   vim.api.nvim_create_autocmd('BufEnter', {
+    group = augroup,
     callback = function()
       local file = vim.fn.expand('%:p')
       if file == '' then return end
@@ -559,6 +570,7 @@ function M.setup(opts)
   -- Prompt to clear comments when file is reloaded from disk
   if config.options.prompt_on_file_change then
     vim.api.nvim_create_autocmd('FileChangedShellPost', {
+      group = augroup,
       callback = function()
         local file = utils.get_real_filepath()
         local function in_file(item) return utils.files_match(item.filename, file) end
@@ -581,6 +593,7 @@ function M.setup(opts)
 
   -- Set up quickfix window configuration and keymaps
   vim.api.nvim_create_autocmd('FileType', {
+    group = augroup,
     pattern = 'qf',
     callback = function()
       -- Configure quickfix window for better display of multiline comments

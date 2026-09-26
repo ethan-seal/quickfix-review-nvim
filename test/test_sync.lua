@@ -1,0 +1,204 @@
+-- Tests for multi-instance sync: another Neovim appends to the same event
+-- log, and this one picks the change up on FocusGained, BufEnter, CursorHold
+-- and before any change, redrawing the list view and signs only when the
+-- review changed
+local test_helper = dofile('test/init.lua')
+local assert = dofile('test/assertions.lua')
+local utils = require('quickfix-review.utils')
+
+print('\nRunning multi-instance sync tests...')
+
+local qf = test_helper.setup_test_environment()
+local test_file = test_helper.create_test_file([[
+line 1
+line 2
+line 3
+line 4
+line 5
+]])
+local abs = vim.fn.fnamemodify(test_file, ':p')
+local file_buf = vim.api.nvim_get_current_buf()
+local log_file = test_helper.log_path()
+
+local function reset()
+  vim.cmd('silent! cclose')
+  vim.fn.setqflist({}, 'f')
+  test_helper.remove_storage()
+  qf.clear_review()
+  vim.api.nvim_set_current_buf(file_buf)
+end
+
+-- Run `code` in another headless Neovim on the same review, with `store`
+-- bound to its store
+local function other(code)
+  local result = vim.system({
+    vim.v.progpath, '--headless', '--clean',
+    '--cmd', 'set rtp^=' .. vim.fn.getcwd(),
+    '-c', string.format('lua require("quickfix-review").setup({ storage_file = %q }); '
+      .. 'local store = require("quickfix-review.store"); %s', test_helper.storage_file, code),
+    '-c', 'qall!',
+  }):wait(30000)
+  assert.equals(result.code, 0, 'other Neovim exits cleanly: ' .. tostring(result.stderr))
+end
+
+local function other_add(lnum, body)
+  other(string.format('assert(store.add({ filename = %q, lnum = %d, kind = "note", body = %q }))',
+    abs, lnum, body or 'from the other one'))
+end
+
+local function has_sign_on_line(lnum)
+  return #vim.api.nvim_buf_get_extmarks(file_buf, utils.get_ns_id(), { lnum - 1, 0 }, { lnum - 1, -1 }, {}) > 0
+end
+
+-- Run fn with print and vim.notify recorded; returns printed lines, notify calls
+local function capture(fn)
+  local printed, notified = {}, {}
+  local orig_print, orig_notify = print, vim.notify
+  print = function(...) table.insert(printed, table.concat(vim.tbl_map(tostring, { ... }), ' ')) end
+  vim.notify = function(msg, level) table.insert(notified, { msg = msg, level = level }) end
+  local ok, err = pcall(fn)
+  print, vim.notify = orig_print, orig_notify
+  if not ok then error(err, 0) end
+  return printed, notified
+end
+
+local function view_tick(id)
+  return vim.fn.getqflist({ id = id, changedtick = 0 }).changedtick
+end
+
+assert.run_test('a comment added by another Neovim shows on the next BufEnter', function()
+  reset()
+  assert.length(qf.comments(), 0, 'empty to start')
+  qf.show_list()
+  local view = vim.fn.getqflist({ id = 0 }).id
+
+  other_add(2)
+  assert.falsy(has_sign_on_line(2), 'not seen before any trigger')
+
+  vim.api.nvim_exec_autocmds('BufEnter', { buffer = file_buf })
+  assert.truthy(has_sign_on_line(2), 'sign drawn after BufEnter')
+  local items = vim.fn.getqflist({ id = view, items = 0 }).items
+  assert.length(items, 1, 'list view refreshed')
+  assert.equals(items[1].lnum, 2, 'at its line')
+  assert.equals(vim.fn.getqflist({ id = 0 }).id, view, 'the view is still the current list')
+  reset()
+end)
+
+assert.run_test('FocusGained and CursorHold pick up another Neovim\'s change', function()
+  for _, event in ipairs({ 'FocusGained', 'CursorHold' }) do
+    reset()
+    assert.length(qf.comments(), 0, event .. ': empty to start')
+    other_add(3)
+    assert.falsy(has_sign_on_line(3), event .. ': not seen before the event')
+    vim.api.nvim_exec_autocmds(event, {})
+    assert.truthy(has_sign_on_line(3), event .. ': sign drawn')
+  end
+  reset()
+end)
+
+assert.run_test('dd on a comment another Neovim deleted is a no-op', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('NOTE')
+  local id = qf.comments()[1].id
+  qf.open_list()
+  vim.fn.cursor(1, 1)
+
+  other(string.format('assert(store.remove(%q) == 1)', id))
+  local printed, notified = capture(function() qf.delete_comment_from_qf() end)
+  assert.truthy(vim.tbl_contains(printed, 'Comment no longer exists'), 'says so: ' .. vim.inspect(printed))
+  assert.length(notified, 0, 'no error or warning')
+  assert.length(test_helper.log_ops(log_file, 'delete'), 1, 'only the other one\'s delete is logged')
+  assert.length(vim.fn.getqflist(), 0, 'the view no longer lists it')
+  reset()
+end)
+
+assert.run_test(':ReviewDelete on a comment another Neovim deleted is a no-op', function()
+  reset()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('NOTE')
+  local id = qf.comments()[1].id
+
+  other(string.format('assert(store.remove(%q) == 1)', id))
+  local printed, notified = capture(function() qf.delete_comment() end)
+  assert.truthy(printed[1] and printed[1]:match('^No comments found'), 'says so: ' .. vim.inspect(printed))
+  assert.length(notified, 0, 'no error or warning')
+  assert.length(test_helper.log_ops(log_file, 'delete'), 1, 'only the other one\'s delete is logged')
+  assert.falsy(has_sign_on_line(2), 'its sign is gone')
+  reset()
+end)
+
+assert.run_test('a sync that finds nothing new does not rebuild the list view', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('NOTE')
+  qf.show_list()
+  local view = vim.fn.getqflist({ id = 0 }).id
+  local tick = view_tick(view)
+  for _, event in ipairs({ 'FocusGained', 'CursorHold', 'BufEnter' }) do
+    vim.api.nvim_exec_autocmds(event, { buffer = event == 'BufEnter' and file_buf or nil })
+  end
+  qf.comments()
+  assert.equals(view_tick(view), tick, 'changedtick unchanged')
+  assert.equals(vim.fn.getqflist({ id = 0 }).id, view, 'same list')
+  reset()
+end)
+
+assert.run_test('a synced change keeps the selected entry and opens no window', function()
+  reset()
+  vim.fn.cursor(3, 1)
+  qf.add_comment('NOTE')
+  vim.fn.cursor(4, 1)
+  qf.add_comment('NOTE')
+  qf.show_list()
+  local view = vim.fn.getqflist({ id = 0 }).id
+  vim.fn.setqflist({}, 'a', { id = view, idx = 2 })
+  local selected = vim.fn.getqflist({ id = view, idx = 0, items = 0 })
+  local selected_id = selected.items[selected.idx].user_data.id
+  local win = vim.api.nvim_get_current_win()
+  local wins = #vim.api.nvim_list_wins()
+
+  -- Added before both: the selected comment moves to the third row
+  other_add(1)
+  vim.api.nvim_exec_autocmds('CursorHold', {})
+  local after = vim.fn.getqflist({ id = view, idx = 0, items = 0 })
+  assert.length(after.items, 3, 'refreshed')
+  assert.equals(after.items[after.idx].user_data.id, selected_id, 'the same comment is selected')
+  assert.equals(vim.api.nvim_get_current_win(), win, 'focus kept')
+  assert.equals(#vim.api.nvim_list_wins(), wins, 'no window opened')
+  reset()
+end)
+
+assert.run_test('a log rewritten in place with another log_id is replayed from the start', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('NOTE')
+  assert.length(qf.comments(), 1, 'one comment')
+  local ino = vim.uv.fs_stat(log_file).ino
+
+  -- Same inode, a new header, and longer than what was read
+  local log = require('quickfix-review.log')
+  local lines = { vim.json.encode(log.new_header()) }
+  for i = 1, 3 do
+    table.insert(lines, vim.json.encode(log.event('add', { comment = {
+      id = string.format('%016x', i), kind = 'issue', filename = abs, lnum = i + 1, body = 'rotated ' .. i,
+      created_at = os.time(),
+    } })))
+  end
+  local f = io.open(log_file, "w")
+  assert.truthy(f, "log opened for writing")
+  f:write(table.concat(lines, '\n') .. '\n')
+  f:close()
+  assert.equals(vim.uv.fs_stat(log_file).ino, ino, 'same inode')
+
+  vim.api.nvim_exec_autocmds('CursorHold', {})
+  local list = qf.comments()
+  assert.length(list, 3, 'only the new log\'s comments')
+  assert.equals(list[1].body, 'rotated 1', 'from the new log')
+  assert.falsy(has_sign_on_line(1), 'the old comment\'s sign is gone')
+  reset()
+end)
+
+test_helper.cleanup_test_environment()
+
+return assert

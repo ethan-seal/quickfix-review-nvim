@@ -46,6 +46,9 @@ run_file('test/test_log.lua')
 -- Run persistence tests
 run_file('test/test_persistence.lua')
 
+-- Run multi-instance sync tests
+run_file('test/test_sync.lua')
+
 -- Run storage schema and upgrade tests
 run_file('test/test_schema.lua')
 

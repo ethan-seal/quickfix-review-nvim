@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-aazu
 title: Multi-instance tail sync for the event log
-status: todo
+status: completed
 type: task
 priority: normal
 created_at: 2026-09-26T04:57:59Z
-updated_at: 2026-09-26T04:57:59Z
+updated_at: 2026-09-26T07:26:28Z
 parent: quickfix-review-nvim-oyi9
 blocked_by:
     - quickfix-review-nvim-0scv

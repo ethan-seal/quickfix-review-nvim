@@ -854,15 +854,24 @@ function M.setup(opts)
     end,
   })
 
-  -- Draw signs when entering a buffer. Reading the review may pick up
-  -- changes another Neovim logged (which redraws every buffer); otherwise
-  -- only a buffer that changed since its signs were drawn is redrawn.
+  -- Pick up changes another Neovim logged when coming back to this one or
+  -- idling. Reading the review is a single stat when nothing was logged; a
+  -- change refreshes the list view and every buffer's signs (on_change).
+  vim.api.nvim_create_autocmd({ 'FocusGained', 'CursorHold' }, {
+    group = augroup,
+    callback = function() store.all() end,
+  })
+
+  -- Read the review on entering any buffer, and draw signs for a file.
+  -- Reading may pick up changes another Neovim logged (which redraws every
+  -- buffer); otherwise only a buffer that changed since its signs were drawn
+  -- is redrawn.
   vim.api.nvim_create_autocmd('BufEnter', {
     group = augroup,
     callback = function(args)
+      local comments = store.all()
       local file = utils.get_real_filepath(args.buf)
       if file == '' then return end
-      local comments = store.all()
       if drawn_at[args.buf] ~= vim.api.nvim_buf_get_changedtick(args.buf) then
         draw_signs(args.buf, file, comments)
       end

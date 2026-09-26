@@ -201,10 +201,24 @@ local function view_items()
   return items
 end
 
+-- Refill the review's quickfix list, keeping its selected entry: the same
+-- comment if it is still listed, else the same position (clamped). A refill
+-- alone would reset the selection to the first entry.
 local function refresh_view()
-  if view_exists() then
-    vim.fn.setqflist({}, 'r', { id = qf_id, items = view_items(), title = QF_TITLE })
+  if not view_exists() then return end
+  local before = vim.fn.getqflist({ id = qf_id, idx = 0, items = 0 })
+  local selected = before.items[before.idx]
+  local selected_id = selected and type(selected.user_data) == 'table' and selected.user_data.id
+  local items = view_items()
+  local idx = math.min(before.idx, #items)
+  for i, item in ipairs(items) do
+    if selected_id and item.user_data.id == selected_id then
+      idx = i
+      break
+    end
   end
+  vim.fn.setqflist({}, 'r', { id = qf_id, items = items, title = QF_TITLE })
+  if idx > 1 then vim.fn.setqflist({}, 'a', { id = qf_id, idx = idx }) end
 end
 
 -- Where the review lives. Per project: log.jsonl (the review), state.json
@@ -451,6 +465,12 @@ end
 local function read_log(loc, stat, opts)
   local full = opts.full or not synced.log_id or synced.ino ~= stat.ino or stat.size < synced.offset
   if not full and stat.size == synced.offset then return true, nil, false end
+  -- A log that grew may still be another one (rewritten in place rather than
+  -- renamed over): a different header log_id means replay it from the start
+  if not full then
+    local id = log.read_id(loc.log)
+    if id and id ~= synced.log_id then full = true end
+  end
 
   local base, state = synced, reduced
   local cached = false

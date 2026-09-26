@@ -298,6 +298,9 @@ end
 -- or nil outside git (or with no git installed). Definitive answers are
 -- cached per argument for the session; a failed or timed-out git is not, and
 -- is asked again once the retry window has passed (see rev_parse_toplevel).
+-- While the path's directory does not exist yet, git is asked about its
+-- nearest existing ancestor and the answer is not cached (the directory may be
+-- created later, possibly as a repo of its own).
 -- Returns: root (or nil), transient (true when git gave no definitive answer)
 function M.git_toplevel(dir)
   if not dir or dir == '' then return nil, false end
@@ -308,10 +311,16 @@ function M.git_toplevel(dir)
   if vim.fn.isdirectory(query) == 0 then
     query = vim.fn.fnamemodify(query, ':h')
   end
+  local missing = vim.fn.isdirectory(query) == 0
+  while vim.fn.isdirectory(query) == 0 do
+    local up = vim.fn.fnamemodify(query, ':h')
+    if up == query then break end
+    query = up
+  end
 
   local root, transient = rev_parse_toplevel(query)
   if transient then return nil, true end
-  toplevel_cache[dir] = root
+  if not missing then toplevel_cache[dir] = root end
   return root or nil, false
 end
 
@@ -377,6 +386,11 @@ local function resolve_gitdir_path(gitdir, rel)
   return resolve_repo_path(nil, rel)
 end
 
+-- Undo %XX percent-encoding (as fugitive applies to its buffer names)
+local function pct_decode(s)
+  return (s:gsub('%%(%x%x)', function(h) return string.char(tonumber(h, 16)) end))
+end
+
 -- Extract real file path from special diff buffers. Regular buffers (and names
 -- matching no known scheme) return the buffer name unchanged.
 function M.get_real_filepath(bufnr)
@@ -400,10 +414,21 @@ function M.get_real_filepath(bufnr)
     end
   end
 
-  -- fugitive:///repo/.git//<rev>/file.txt (the git dir, then //)
+  -- fugitive:///repo/.git//<rev>/file.txt (the git dir, then //); fugitive
+  -- percent-encodes %, #, ? and control characters in both parts
   local gd, rel = bufname:match('^fugitive://(.-)//[^/]+/(.+)$')
-  if rel and (gd:find('/%.git$') or gd:find('/%.git/')) then
-    return resolve_gitdir_path(gd, rel)
+  if rel then
+    gd, rel = pct_decode(gd), pct_decode(rel)
+    if gd:find('/%.git$') or gd:find('/%.git/') then
+      return resolve_gitdir_path(gd, rel)
+    end
+  end
+
+  -- gitsigns://<gitdir>//<rev>:<path>, where <rev> is :0..:3 (index stages)
+  -- or a commit; the path-less form (gitsigns://<gitdir>//:0) is left as is
+  local sgd, srel = bufname:match('^gitsigns://(.-)//:?[^:]+:(.+)$')
+  if srel then
+    return resolve_gitdir_path(sgd, srel)
   end
 
   -- codediff buffers carry a repo-relative path with no repo root
@@ -429,7 +454,7 @@ end
 
 -- The lines comment `item` covers in buffer `bufnr`. In a file's own buffer:
 -- store.range (where its anchor's lines are now). In a diff buffer showing a
--- revision (fugitive, diffview): its anchor's lines when that buffer holds
+-- revision (fugitive, diffview, gitsigns): its anchor's lines when that buffer holds
 -- exactly the anchor's snapshot, else nil (the comment is not shown there).
 -- Returns: lnum, end_lnum, or nil
 function M.range_in(item, bufnr)
@@ -457,6 +482,7 @@ function M.is_unresolved(path)
   return path:match('^diffview://') ~= nil
       or path:match('^fugitive://') ~= nil
       or path:match('^codediff://') ~= nil
+      or path:match('^gitsigns://') ~= nil
 end
 
 -- Check if a buffer (default: current) is a diff/special buffer
@@ -465,6 +491,7 @@ function M.is_special_buffer(bufnr)
   return bufname:match('^diffview://')
       or bufname:match('^fugitive://')
       or bufname:match('^codediff://')
+      or bufname:match('^gitsigns://')
 end
 
 return M

@@ -23,3 +23,5 @@ Leftovers from 9rvl (all should-fix, narrow).
 - [ ] scripts/test.sh passes
 
 Note (from jou7): track.lua:109 norm() and context.lua:132-140 slice() still strip only a single trailing CR (snapshots.canonical now strips all trailing CRs), so the search fallback can miss a CR CR line read from disk. Make them match canonical. Add a test.
+
+Note (from rcof): utils.lua:354-358 worktree_of with git_toplevel walk-up (:314-319): if a fugitive/gitsigns gitdir's main-repo prefix no longer exists, git_toplevel(prefix) now walks up to an enclosing repo and worktree_of caches that (e.g. /home/u/deleted-repo/.git maps files to /home/u/<rel> when /home/u is a repo). Fall back to prefix when the prefix dir does not exist. Add a test.

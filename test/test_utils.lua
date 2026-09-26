@@ -213,6 +213,52 @@ assert.run_test('git_toplevel caches "not a git repo" without a transient flag',
   vim.fn.delete(dir, 'rf')
 end)
 
+assert.run_test('git_toplevel does not cache a miss for a directory that does not exist yet', function()
+  local base = vim.fn.resolve(vim.fn.tempname())
+  vim.fn.mkdir(base, 'p')
+  local file = base .. '/sub/f.txt'
+  local root, transient = utils.git_toplevel(file)
+  assert.equals(root, nil, 'no toplevel before the dir exists')
+  assert.equals(transient, false, 'a definitive answer')
+  vim.fn.mkdir(base .. '/sub', 'p')
+  vim.system({ 'git', 'init', '-q', base .. '/sub' }):wait()
+  assert.equals(utils.git_toplevel(file), base .. '/sub', 'repo found once the dir exists')
+  vim.fn.delete(base, 'rf')
+end)
+
+assert.run_test('git_toplevel of a missing subdir of a repo is the repo', function()
+  assert.equals(utils.git_toplevel(repo_root .. '/no-such-dir-rcof/deeper/f.txt'), repo_root,
+    'walks up to the nearest existing dir')
+end)
+
+assert.run_test('get_real_filepath decodes fugitive percent-encoding', function()
+  assert.equals(real_path_for_name('fugitive://' .. repo_root .. '/.git//0/notes%231.md'),
+    repo_root .. '/notes#1.md', '%23 decodes to #')
+  assert.equals(real_path_for_name('fugitive://' .. repo_root .. '/.git//0/a%25b%3F.txt'),
+    repo_root .. '/a%b?.txt', '%25 and %3F decode')
+  assert.equals(real_path_for_name('fugitive://' .. repo_root
+      .. '/.git//0123456789abcdef0123456789abcdef01234567/notes%231.md'),
+    repo_root .. '/notes#1.md', 'commit rev form')
+end)
+
+assert.run_test('get_real_filepath resolves gitsigns names', function()
+  assert.equals(real_path_for_name('gitsigns://' .. repo_root .. '/.git//:0:lua/quickfix-review/utils.lua'),
+    expected_real, 'index form')
+  assert.equals(real_path_for_name('gitsigns://' .. repo_root .. '/.git//:2:lua/quickfix-review/utils.lua'),
+    expected_real, 'merge stage form')
+  assert.equals(real_path_for_name('gitsigns://' .. repo_root
+      .. '/.git//0123456789abcdef0123456789abcdef01234567:lua/quickfix-review/utils.lua'),
+    expected_real, 'commit form')
+  local pathless = 'gitsigns://' .. repo_root .. '/.git//:0'
+  assert.equals(real_path_for_name(pathless), pathless, 'path-less name unchanged')
+  assert.truthy(utils.is_unresolved(pathless), 'path-less name is unresolved')
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(buf, 'gitsigns://' .. repo_root .. '/.git//:0:lua/quickfix-review/utils.lua')
+  local special = utils.is_special_buffer(buf)
+  vim.cmd('bwipeout! ' .. buf)
+  assert.truthy(special, 'gitsigns buffer is special')
+end)
+
 assert.run_test('get_real_filepath resolves diffview names (single slash)', function()
   local result = real_path_for_name('diffview://' .. repo_root .. '/.git/abc123/lua/quickfix-review/utils.lua')
   assert.equals(result, expected_real, 'diffview single-slash form')
@@ -359,6 +405,14 @@ do
       assert.truthy(ok, tostring(err))
       assert.equals(git.calls, 1, 'git spawned once within the window')
     end)
+  end)
+
+  assert.run_test('get_real_filepath decodes a percent-encoded fugitive git dir', function()
+    local dir = tmp .. '/pct#repo'
+    local ok, err = pcall(make_repo, dir)
+    assert.truthy(ok, 'repo setup: ' .. tostring(err))
+    assert.equals(real(real_path_for_name('fugitive://' .. tmp .. '/pct%23repo/.git//0/file.txt')),
+      real(dir .. '/file.txt'), 'encoded # in the git dir')
   end)
 
   assert.run_test('get_real_filepath leaves fugitive summary and commit names unresolved', function()

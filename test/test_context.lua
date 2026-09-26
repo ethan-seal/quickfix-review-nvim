@@ -169,6 +169,21 @@ assert.run_test('capture of a non-git file has no commit and a buffer snippet', 
   assert.equals(ctx.snippet[2], '   2  two', 'snippet line 2')
 end)
 
+assert.run_test('capture in a dir created after the first lookup gets the commit', function()
+  local repo = make_repo({ 'x' })
+  local file = repo .. '/newdir/f.txt'
+  pcall(context.capture, file, 1, 1)
+  vim.fn.mkdir(repo .. '/newdir', 'p')
+  write_file(file, { 'one', 'two' })
+  local bufnr = open(file)
+  local ok, ctx = pcall(context.capture, file, 1, 1, bufnr)
+  wipe(bufnr)
+  local head = git(repo, 'rev-parse', 'HEAD')
+  vim.fn.delete(repo, 'rf')
+  assert.truthy(ok, 'capture does not error: ' .. tostring(ctx))
+  assert.equals(ctx.commit, head, 'commit captured')
+end)
+
 assert.run_test('capture with unsaved edits snippets the buffer lines', function()
   local repo = make_repo({ 'l1', 'l2', 'l3', 'l4' })
   local file = repo .. '/file.txt'

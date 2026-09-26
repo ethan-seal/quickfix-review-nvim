@@ -231,6 +231,16 @@ assert.run_test('git_toplevel of a missing subdir of a repo is the repo', functi
     'walks up to the nearest existing dir')
 end)
 
+assert.run_test('a diff buffer of a deleted repo inside another repo maps under the deleted repo', function()
+  -- The repo is gone; git_toplevel would walk up to the enclosing repo_root
+  local gone = repo_root .. '/gone-repo-tx1f-fugitive'
+  assert.equals(real_path_for_name('fugitive://' .. gone .. '/.git//0/file.txt'), gone .. '/file.txt',
+    'fugitive: under the deleted repo, not the enclosing one')
+  local gone2 = repo_root .. '/gone-repo-tx1f-gitsigns'
+  assert.equals(real_path_for_name('gitsigns://' .. gone2 .. '/.git//:0:sub/file.txt'), gone2 .. '/sub/file.txt',
+    'gitsigns: under the deleted repo, not the enclosing one')
+end)
+
 assert.run_test('get_real_filepath decodes fugitive percent-encoding', function()
   assert.equals(real_path_for_name('fugitive://' .. repo_root .. '/.git//0/notes%231.md'),
     repo_root .. '/notes#1.md', '%23 decodes to #')

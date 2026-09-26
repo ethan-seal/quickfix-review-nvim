@@ -134,7 +134,7 @@ end
 local function slice(all, first, last)
   local out = {}
   for i = math.max(1, first), math.min(#all, last) do
-    table.insert(out, (all[i]:gsub('\r$', '')))
+    table.insert(out, (all[i]:gsub('\r+$', '')))
   end
   return out
 end

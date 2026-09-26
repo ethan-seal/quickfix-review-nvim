@@ -57,6 +57,13 @@ local function wipe(bufnr)
   end
 end
 
+assert.run_test('anchor lines drop every trailing CR, as a snapshot does', function()
+  local a = context.anchor(2, 2, 0, { lines = { 'a\r\r', 'x\r\r', 'b\r' }, sha = string.rep('0', 64) })
+  assert.equals(table.concat(a.lines, '|'), 'x', 'commented line')
+  assert.equals(table.concat(a.before, '|'), 'a', 'before')
+  assert.equals(table.concat(a.after, '|'), 'b', 'after')
+end)
+
 -- _parse_hunks / _find_hunk_for_line
 
 local multi_diff = {

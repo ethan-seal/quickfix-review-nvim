@@ -497,6 +497,74 @@ assert.run_test('a stray .rotating file of a dead process is removed at rotation
   os.remove(live)
 end)
 
+assert.run_test('a stray .rotating-<pid>-old copy of a dead process is removed at rotation', function()
+  reset()
+  add_at(1)
+  local child = vim.system({ 'true' })
+  child:wait()
+  local dead = log_file .. '.rotating-' .. child.pid .. '-old'
+  local live = log_file .. '.rotating-' .. uv.os_getppid() .. '-old'
+  vim.fn.writefile({ 'stray' }, dead)
+  vim.fn.writefile({ 'in flight' }, live)
+  qf = restart({ log_max_bytes = 1 })
+  add_at(2) -- rotates
+  assert.length(rotated(), 1, 'rotated')
+  assert.equals(vim.fn.filereadable(dead), 0, 'the dead process\'s copy is removed')
+  assert.equals(vim.fn.filereadable(live), 1, 'a live process\'s is kept')
+  os.remove(live)
+end)
+
+assert.run_test('rotation without hard links never shows a partly copied rotated log', function()
+  reset()
+  local store = require('quickfix-review.store')
+  local snapshots = require('quickfix-review.snapshots')
+  local day_ago = os.time() - 25 * 3600
+  local snap_dir = storage_file .. '.snapshots'
+  add_at(1)
+  -- Named only at the end of the log (a torn record, not carried into the
+  -- checkpoint): lost if a GC read the rotated log half-copied
+  local tail = snapshots.put({ 'tail' })
+  local fh = io.open(log_file, 'ab')
+  fh:write('{"op":"add","comment":{"anchor":{"sha":"' .. tail .. '"')
+  fh:close()
+  uv.fs_utime(snap_dir .. '/' .. tail, day_ago, day_ago)
+
+  local original_link, original_copy = uv.fs_link, uv.fs_copyfile
+  local copies, seen, source_bytes = 0, {}, nil
+  uv.fs_link = function() return nil, 'EXDEV: cross-device link not permitted' end
+  uv.fs_copyfile = function(src, dst, flags)
+    copies = copies + 1
+    source_bytes = table.concat(vim.fn.readfile(src, 'b'), '\n')
+    -- Half copied: nothing a GC (or :ReviewHistory) lists may name it yet
+    local f = io.open(dst, 'wb')
+    f:write(source_bytes:sub(1, math.floor(#source_bytes / 2)))
+    f:close()
+    table.insert(seen, { dst = dst, rotated = #rotated(), listed = #store.rotated_logs() })
+    os.remove(dst)
+    return original_copy(src, dst, flags)
+  end
+  local ok, err = pcall(function()
+    capture_notify(function()
+      qf, store = restart({ log_max_bytes = 1 })
+      add_at(2) -- rotates by copying
+    end)
+  end)
+  uv.fs_link, uv.fs_copyfile = original_link, original_copy
+  assert.truthy(ok, 'rotated: ' .. tostring(err))
+
+  assert.equals(copies, 1, 'copied once')
+  assert.falsy(seen[1].dst:match('%.jsonl$'), 'copied to a temp name: ' .. seen[1].dst)
+  assert.equals(seen[1].rotated, 0, 'no rotated log while copying')
+  assert.equals(seen[1].listed, 0, 'none listed while copying')
+  local logs = rotated()
+  assert.length(logs, 1, 'one rotated log')
+  assert.equals(table.concat(vim.fn.readfile(logs[1], 'b'), '\n'), source_bytes, 'the whole log was kept')
+  assert.length(vim.fn.glob(log_file .. '.rotating-*', true, true), 0, 'no temp files left')
+  vim.wait(50, function() return false end, 10) -- the GC the rotation scheduled
+  store.gc_snapshots()
+  assert.truthy(uv.fs_stat(snap_dir .. '/' .. tail), 'the snapshot named by the rotated log is kept')
+end)
+
 assert.run_test('rotation collects unreferenced old snapshots, keeping ones rotated logs name', function()
   reset()
   local store = require('quickfix-review.store')

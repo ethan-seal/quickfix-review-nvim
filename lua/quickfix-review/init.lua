@@ -128,16 +128,19 @@ function M.add_comment(comment_type, range)
 
   if text ~= '' then
     local bufnr = vim.api.nvim_get_current_buf()
-    local added = store.add({
-      filename = file,
-      kind = comment_type:lower(),
-      body = text,
-      lnum = start_line,
-      end_lnum = end_line,
-      anchor = context.anchor(start_line, end_line, bufnr),
-      context = context.capture(file, start_line, end_line, bufnr),
-      created_at = os.time(),
-    })
+    -- One location for the anchor's snapshot and the add event naming it
+    local added = store.with_location(function()
+      return store.add({
+        filename = file,
+        kind = comment_type:lower(),
+        body = text,
+        lnum = start_line,
+        end_lnum = end_line,
+        anchor = context.anchor(start_line, end_line, bufnr),
+        context = context.capture(file, start_line, end_line, bufnr),
+        created_at = os.time(),
+      })
+    end)
     if not added then
       vim.notify('quickfix-review: ' .. comment_type:upper() .. ' comment was not added',
         vim.log.levels.WARN)
@@ -573,36 +576,39 @@ function M.reanchor()
   -- The buffer's content, read and snapshotted once for every comment
   -- re-anchored; false once the snapshot failed (warned about once)
   local pre
-  for _, c in ipairs(store.all()) do
-    local lnum, end_lnum = store.range(c)
-    if lnum <= line and end_lnum >= line and utils.files_match(c.filename, file) then
-      found = found + 1
-      if store.is_outdated(c) and pre ~= false then
-        if pre == nil then
-          local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-          local sha, err = require('quickfix-review.snapshots').put(lines)
-          if sha then
-            pre = { lines = lines, sha = sha }
-          else
-            vim.notify('quickfix-review: snapshot not saved, comments not re-anchored: '
-              .. tostring(err), vim.log.levels.WARN)
-            pre = false
+  -- One location for the snapshot and the update events naming it
+  local n = store.with_location(function()
+    for _, c in ipairs(store.all()) do
+      local lnum, end_lnum = store.range(c)
+      if lnum <= line and end_lnum >= line and utils.files_match(c.filename, file) then
+        found = found + 1
+        if store.is_outdated(c) and pre ~= false then
+          if pre == nil then
+            local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+            local sha, err = require('quickfix-review.snapshots').put(lines)
+            if sha then
+              pre = { lines = lines, sha = sha }
+            else
+              vim.notify('quickfix-review: snapshot not saved, comments not re-anchored: '
+                .. tostring(err), vim.log.levels.WARN)
+              pre = false
+            end
           end
-        end
-        if pre then
-          local a = context.anchor(lnum, end_lnum, bufnr, pre)
-          table.insert(changes, { id = c.id, anchor = a })
+          if pre then
+            local a = context.anchor(lnum, end_lnum, bufnr, pre)
+            table.insert(changes, { id = c.id, anchor = a })
+          end
         end
       end
     end
-  end
 
-  if #changes == 0 then
-    vim.notify(found == 0 and 'quickfix-review: no comment on this line'
-      or 'quickfix-review: no outdated comment on this line', vim.log.levels.INFO)
-    return
-  end
-  local n = store.update(changes)
+    if #changes == 0 then
+      vim.notify(found == 0 and 'quickfix-review: no comment on this line'
+        or 'quickfix-review: no outdated comment on this line', vim.log.levels.INFO)
+      return nil
+    end
+    return store.update(changes)
+  end)
   if not n then return end
   -- The tracking extmark still holds the outdated position (or is invalid,
   -- if the whole range was deleted): place it again from the new anchor
@@ -1268,37 +1274,43 @@ local function write_back(bufnr, file)
   -- 'autowrite', a quickfix jump (:cnext) writes the buffer mid-jump, and
   -- refilling then would abort the jump with E925
   local defer = { defer_view = true }
-  local mine, snapshotted = {}, {}
-  for _, c in ipairs(store.all(defer)) do
-    if utils.files_match(c.filename, name) then
-      table.insert(mine, c)
-      if c.anchor and c.anchor.sha then table.insert(snapshotted, c) end
-    end
-  end
-  local relocated = track.relocate_buffer(bufnr, snapshotted)
-
-  local changes = {}
-  -- The saved content, read and snapshotted once for every comment anchored
-  local pre
-  for _, c in ipairs(mine) do
-    local p = store.pos(c)
-    if p and p.state ~= 'outdated' and moved(c) then
-      if not pre then
-        local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-        local sha, err = require('quickfix-review.snapshots').put(lines)
-        if not sha then
-          vim.notify('quickfix-review: snapshot not saved, comment anchors not updated: '
-            .. tostring(err), vim.log.levels.WARN)
-          break
-        end
-        pre = { lines = lines, sha = sha }
+  local relocated
+  -- One location for the snapshot and the update events naming it
+  local updated = store.with_location(function()
+    local mine, snapshotted = {}, {}
+    for _, c in ipairs(store.all(defer)) do
+      if utils.files_match(c.filename, name) then
+        table.insert(mine, c)
+        if c.anchor and c.anchor.sha then table.insert(snapshotted, c) end
       end
-      local a = context.anchor(p.lnum, p.end_lnum, bufnr, pre)
-      if a.sha then table.insert(changes, { id = c.id, anchor = a }) end
     end
-  end
+    relocated = track.relocate_buffer(bufnr, snapshotted)
 
-  if #changes > 0 and (store.update(changes, defer) or 0) > 0 then
+    local changes = {}
+    -- The saved content, read and snapshotted once for every comment anchored
+    local pre
+    for _, c in ipairs(mine) do
+      local p = store.pos(c)
+      if p and p.state ~= 'outdated' and moved(c) then
+        if not pre then
+          local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+          local sha, err = require('quickfix-review.snapshots').put(lines)
+          if not sha then
+            vim.notify('quickfix-review: snapshot not saved, comment anchors not updated: '
+              .. tostring(err), vim.log.levels.WARN)
+            break
+          end
+          pre = { lines = lines, sha = sha }
+        end
+        local a = context.anchor(p.lnum, p.end_lnum, bufnr, pre)
+        if a.sha then table.insert(changes, { id = c.id, anchor = a }) end
+      end
+    end
+
+    return #changes > 0 and (store.update(changes, defer) or 0) > 0
+  end)
+
+  if updated then
     -- Place the marks from the new anchors (a changed record has a new view,
     -- whose pos starts at its anchor), then redraw
     track.relocate_buffer(bufnr, store.all(defer))

@@ -108,6 +108,15 @@ do
   check_search('CR line endings match', crlf, A45, 5, 6, 'shifted')
 end
 do
+  -- As read from a file with CR CR line endings (snapshots.canonical strips
+  -- every trailing CR)
+  local crcr = { 'new', 'line 1\r\r', 'line 2\r\r', 'line 3\r\r', 'line 4\r\r', 'line 5\r\r', 'line 6\r\r' }
+  check_search('CR CR line endings match', crcr, A45, 5, 6, 'shifted')
+  local anchor = { lnum = 4, end_lnum = 5, lines = { 'line 4\r\r', 'line 5\r\r' },
+    before = { 'line 2\r\r', 'line 3\r\r' }, after = { 'line 6\r\r', 'line 7\r\r' } }
+  check_search('an anchor with CR CR lines matches plain lines', numbered(10), anchor, 4, 5, 'current')
+end
+do
   -- NVIM 0.12 gives a NUL in a buffer line as "\0", readfile() as "\n"
   local anchor = { lnum = 2, end_lnum = 2, lines = { 'x\0y' }, before = { 'a' }, after = { 'c' } }
   check_search('an anchor NUL as "\\0" matches a file line with "\\n"', { 'a', 'x\ny', 'c' }, anchor, 2, 2, 'current')

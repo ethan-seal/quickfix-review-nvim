@@ -764,6 +764,20 @@ local import_tried = {}
 -- Log paths whose failed import was reported this session: the import is
 -- retried at every sync, the error shown once
 local import_failure_notified = {}
+-- Log paths whose legacy import failed (a source to import, the log not
+-- written) and has not succeeded since: the first change must not create the
+-- log without it (see mutate_at), or the project would count as imported
+local import_failed = {}
+-- Import warnings shown this session, by log path and message: a failing
+-- import is retried at every sync, each warning shown once
+local import_warned = {}
+
+local function warn_once(loc, msg)
+  local key = loc.log .. '\0' .. msg
+  if import_warned[key] then return end
+  import_warned[key] = true
+  vim.notify(msg, vim.log.levels.WARN)
+end
 
 -- First use of a project with neither a log nor a comments.json: copy the
 -- comments under the project root out of the legacy global file (old default
@@ -784,7 +798,10 @@ local function import_legacy(loc)
   if import_tried[loc.log] then return end
   -- Tried again (at the next sync) until the outcome is definitive: nothing
   -- to import, a source that can't be read, or the log written
-  local function done() import_tried[loc.log] = true end
+  local function done()
+    import_tried[loc.log] = true
+    import_failed[loc.log] = nil
+  end
 
   local legacy_path = config.legacy_storage_file()
   local legacy_log = legacy_path .. '.log.jsonl'
@@ -817,7 +834,7 @@ local function import_legacy(loc)
       local bytes = read_bytes(legacy_log)
       log_raw_sha = bytes and vim.fn.sha256(bytes) or nil
     else
-      vim.notify('quickfix-review: not importing from ' .. legacy_log .. ': ' .. tostring(lerr), vim.log.levels.WARN)
+      warn_once(loc, 'quickfix-review: not importing from ' .. legacy_log .. ': ' .. tostring(lerr))
       if not legacy then return done() end
     end
   end
@@ -828,7 +845,7 @@ local function import_legacy(loc)
     local err
     file_list, err = storage.parse(raw, legacy)
     if not file_list then
-      vim.notify('quickfix-review: not importing from ' .. legacy .. ': ' .. err, vim.log.levels.WARN)
+      warn_once(loc, 'quickfix-review: not importing from ' .. legacy .. ': ' .. err)
       if not state then return done() end
       legacy, raw = nil, nil
     end
@@ -874,8 +891,8 @@ local function import_legacy(loc)
     end
   end
   if dropped > 0 then
-    vim.notify(string.format('quickfix-review: not importing %d comment(s) from %s: invalid line number'
-      .. ' or no file name (the file is unchanged)', dropped, source), vim.log.levels.WARN)
+    warn_once(loc, string.format('quickfix-review: not importing %d comment(s) from %s: invalid line number'
+      .. ' or no file name (the file is unchanged)', dropped, source))
   end
 
   local got, ok, werr = locked(loc, function()
@@ -886,6 +903,7 @@ local function import_legacy(loc)
     return log.append(loc.log, { log.new_header(), import })
   end)
   if not got or not ok then
+    import_failed[loc.log] = true
     if not import_failure_notified[loc.log] then
       import_failure_notified[loc.log] = true
       vim.notify('quickfix-review: import from ' .. source .. ' failed: ' .. tostring(got and werr or ok),
@@ -940,8 +958,9 @@ end
 -- log is only a header: the header and import of a migration or legacy
 -- import (or the header and first event of a change) were torn by a short
 -- write, so nothing but a partial header or event is lost. Each of those
--- writes the header with an event in one append, and rotation renames a
--- complete log into place, so a header-only log is never a finished one.
+-- writes the header with an event in one append, and rotation links or
+-- renames a complete log into place, so a header-only log is never a
+-- finished one.
 local function is_torn(loc)
   local fd = uv.fs_open(loc.log, 'r', 0)
   if not fd then return false end
@@ -1077,17 +1096,19 @@ end
 -- alive (a reused pid)
 local STRAY_SECONDS = 10 * 60
 
--- Remove the .rotating-<pid> temp files of rotations that crashed (their
--- process is gone, or they are old). Call with the lock held.
+-- Remove the .rotating-<pid> (and .rotating-<pid>-old copy) temp files of
+-- rotations that crashed (their process is gone, or they are old). Call with
+-- the lock held.
 local function remove_strays(loc)
   local dir = vim.fn.fnamemodify(loc.log, ':h')
   local pattern = '^' .. vim.pesc(vim.fn.fnamemodify(loc.log, ':t')) .. '%.rotating%-(%d+)$'
+  local copy_pattern = '^' .. vim.pesc(vim.fn.fnamemodify(loc.log, ':t')) .. '%.rotating%-(%d+)%-old$'
   local me = uv.os_getpid()
   local handle = uv.fs_scandir(dir)
   while handle do
     local name = uv.fs_scandir_next(handle)
     if not name then break end
-    local pid = tonumber(name:match(pattern) or '')
+    local pid = tonumber(name:match(pattern) or name:match(copy_pattern) or '')
     if pid and pid ~= me then
       local path = dir .. '/' .. name
       local st = uv.fs_stat(path)
@@ -1144,12 +1165,20 @@ local function rotate(loc)
   local ms = now_ms()
   while uv.fs_stat(rotated_name(loc, ms)) do ms = ms + 1 end
   local rotated = rotated_name(loc, ms)
+  -- Hard-linked into place, or (no hard links) copied to a temp name and
+  -- renamed into place: never filled in under its final name, where a GC
+  -- reading rotated logs outside the lock could see it half-copied
   local kept, kerr = uv.fs_link(loc.log, rotated)
-  if not kept then kept, kerr = uv.fs_copyfile(loc.log, rotated, { excl = true }) end
   if not kept then
-    os.remove(tmp)
-    os.remove(rotated)
-    return warn(kerr)
+    local copy = tmp .. '-old'
+    os.remove(copy)
+    kept, kerr = uv.fs_copyfile(loc.log, copy, { excl = true })
+    if kept then kept, kerr = uv.fs_rename(copy, rotated) end
+    if not kept then
+      os.remove(tmp)
+      os.remove(copy)
+      return warn(kerr)
+    end
   end
   local renamed, rerr = uv.fs_rename(tmp, loc.log)
   if not renamed then
@@ -1287,7 +1316,8 @@ end
 -- Neovim's about to be referenced: only those untouched for GC_GRACE are
 -- deleted (put touches an existing one).
 --
--- A rotated log is never written again once renamed into place, so the
+-- A rotated log only ever appears complete (hard-linked, or copied to a
+-- temp name and renamed into place) and is never written again, so the
 -- rotated logs are read before taking the lock: holding it through many
 -- large reads could make another Neovim's change time out. Under the lock
 -- the current log is read, and so is any rotated log that appeared since
@@ -1383,6 +1413,12 @@ local function mutate_at(loc, build, opts)
     if #events == 0 then return res end
     local stat = uv.fs_stat(loc.log)
     local header = (not stat or stat.size == 0) and 1 or 0
+    -- The legacy import (retried by the sync above) failed: a log started
+    -- by this change would mark the project imported without it
+    if header == 1 and import_failed[loc.log] then
+      return nil, 'Not changing the review: the import of legacy comments into ' .. loc.log
+        .. ' failed, and the review can\'t be started without it'
+    end
     if header == 1 then table.insert(events, 1, log.new_header()) end
     local wrote, werr, landed = log.append(loc.log, events)
     -- Read back what was written: all of it, some or none
@@ -1417,15 +1453,24 @@ local function mutate_at(loc, build, opts)
   return result
 end
 
--- The whole change, with the location resolved once and pinned (see pinned)
-local function mutate(build, opts)
+-- Call fn(loc, ...) with the location resolved once and pinned (see
+-- pinned), so everything it does (snapshots.put, syncs, a change) uses that
+-- location even if a fallback root's retry window expires meanwhile. Nests;
+-- the previous pin is restored even if fn errors.
+-- Returns: what fn returns
+function M.with_location(fn, ...)
   local loc = resolve()
   local prev = pinned
   pinned = loc
-  local res = vim.F.pack_len(pcall(mutate_at, loc, build, opts))
+  local res = vim.F.pack_len(pcall(fn, loc, ...))
   pinned = prev
   if not res[1] then error(res[2], 0) end
   return unpack(res, 2, res.n)
+end
+
+-- The whole change, with the location resolved once and pinned (see pinned)
+local function mutate(build, opts)
+  return M.with_location(mutate_at, build, opts)
 end
 
 -- Called after any change to the comments, including ones read from disk

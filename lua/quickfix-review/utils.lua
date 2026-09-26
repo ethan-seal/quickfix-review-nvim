@@ -354,6 +354,12 @@ local function worktree_of(gitdir)
     -- The main repo's own .git: its parent (resolved as before)
     -- (an empty prefix resolves against the cwd, which is not cached here)
     if prefix ~= '' then
+      if vim.fn.isdirectory(prefix) == 0 then
+        -- The repo is gone: git_toplevel would walk up to an enclosing repo
+        -- and map the file there. Use the prefix itself, uncached (the
+        -- directory may reappear)
+        return prefix
+      end
       local top, failed = M.git_toplevel(prefix)
       tree, transient = top or prefix, failed
     end

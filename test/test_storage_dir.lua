@@ -882,6 +882,144 @@ storage_test('a legacy record with only a bufnr is not imported onto an open buf
   vim.cmd('bwipeout! ' .. buf)
 end)
 
+-- log.append failing for every path under `dir` while fn runs
+local function with_failing_append(dir, fn)
+  local log = require('quickfix-review.log')
+  local original_append = log.append
+  log.append = function(path, ...)
+    if vim.startswith(path, dir .. '/') then return false, 'ENOSPC', 0 end
+    return original_append(path, ...)
+  end
+  local ok, err = pcall(fn)
+  log.append = original_append
+  if not ok then error(err, 0) end
+end
+
+storage_test('a failing legacy import warns once, not at every sync', function()
+  local a = make_repo('kappa')
+  local c = make_repo('lambda')
+  local config = mods()
+  local legacy = config.legacy_storage_file()
+  vim.fn.mkdir(vim.fn.fnamemodify(legacy, ':h'), 'p')
+  vim.fn.writefile({ vim.json.encode({
+    { filename = a .. '/a.txt', lnum = 1, col = 1, text = '[NOTE] kept' },
+    { lnum = 1, col = 1, text = '[NOTE] no file' },
+  }) }, legacy)
+  cd(c)
+  capture_notify(function() restart() end)
+  local _, store = mods()
+  with_failing_append(default_dir(a), function()
+    local calls = capture_notify(function()
+      cd(a)
+      for _ = 1, 3 do store.all() end
+    end)
+    assert.length(mentioning(calls, 'not importing 1 comment'), 1, 'the dropped record warned about once')
+    assert.length(mentioning(calls, 'import from'), 1, 'the failure reported once')
+  end)
+end)
+
+storage_test('an unreadable legacy log is warned about once while the import keeps failing', function()
+  local a = make_repo('mu')
+  local b = make_repo('nu')
+  local c = make_repo('xi')
+  local legacy = seed_legacy(a, b, false)
+  vim.fn.writefile({ '{"op":"header","v":99}' }, legacy .. '.log.jsonl')
+  cd(c)
+  capture_notify(function() restart() end)
+  local _, store = mods()
+  with_failing_append(default_dir(a), function()
+    local calls = capture_notify(function()
+      cd(a)
+      for _ = 1, 3 do store.all() end
+    end)
+    assert.length(mentioning(calls, 'not importing from ' .. legacy .. '.log.jsonl'), 1, 'warned once')
+  end)
+end)
+
+storage_test('a failed import retried by a change does not start the log without it', function()
+  local a, file_a = make_repo('rho2')
+  local b = make_repo('sigma2')
+  local c = make_repo('tau2')
+  seed_legacy(a, b, false)
+  cd(c)
+  capture_notify(function() restart() end)
+  local _, store = mods()
+  local log = require('quickfix-review.log')
+  local original_append = log.append
+  log.append = function(path, events, ...)
+    for _, ev in ipairs(events) do
+      if ev.op == 'import' then return false, 'ENOSPC', 0 end
+    end
+    return original_append(path, events, ...)
+  end
+  local ok, err = pcall(function()
+    capture_notify(function()
+      cd(a)
+      assert.falsy(store.add({ filename = file_a, lnum = 2, kind = 'note', body = 'first' }), 'the add refused')
+    end)
+    local st = vim.uv.fs_stat(store.log_path())
+    assert.truthy(not st or st.size == 0, 'no log started without the import')
+  end)
+  log.append = original_append
+  if not ok then error(err, 0) end
+
+  local bodies = {}
+  capture_notify(function()
+    for _, cm in ipairs(store.all()) do bodies[cm.body] = true end
+  end)
+  assert.truthy(bodies['from a'], 'the legacy comment imported once the import works')
+  capture_notify(function() restart() end)
+  _, store = mods()
+  bodies = {}
+  for _, cm in ipairs(store.all()) do bodies[cm.body] = true end
+  assert.truthy(bodies['from a'], 'still there after a restart')
+  assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'one import event')
+end)
+
+storage_test('a retry window expiring between the snapshot and the add keeps both in one dir', function()
+  local a, file_a = make_repo('chi2')
+  local sub = a .. '/sub'
+  vim.fn.mkdir(sub, 'p')
+  cd(sub)
+  with_failing_git(function(git)
+    capture_notify(function() restart() end)
+    local _, store = mods()
+    local fallback = store.dir()
+    assert.truthy(fallback ~= default_dir(a), 'in the fallback dir while git fails')
+    store._set_retry_ns(0)
+    local snapshots = require('quickfix-review.snapshots')
+    local original_put, original_input = snapshots.put, vim.fn.input
+    snapshots.put = function(...)
+      local sha, perr = original_put(...)
+      git.fail = false -- the window expires right after the snapshot
+      return sha, perr
+    end
+    vim.fn.input = function() return 'split' end
+    local buf
+    local ok, err = pcall(function()
+      vim.cmd('edit ' .. vim.fn.fnameescape(file_a))
+      buf = vim.api.nvim_get_current_buf()
+      vim.fn.cursor(2, 1)
+      capture_notify(function() qf.add_comment('NOTE') end)
+    end)
+    snapshots.put, vim.fn.input = original_put, original_input
+    git.fail = true
+    if buf then vim.cmd('bwipeout! ' .. buf) end
+    if not ok then error(err, 0) end
+
+    local adds = test_helper.log_records(fallback .. '/log.jsonl')
+    local sha
+    for _, r in ipairs(adds) do
+      if r.op == 'add' then sha = r.comment.anchor and r.comment.anchor.sha end
+    end
+    assert.truthy(sha, 'the add event, with its anchor, in the fallback log')
+    assert.truthy(vim.uv.fs_stat(fallback .. '/snapshots/' .. sha), 'its snapshot in the same dir')
+    local other = default_dir(a)
+    assert.equals(vim.fn.filereadable(other .. '/log.jsonl'), 0, 'no log in the root\'s dir')
+    assert.falsy(vim.uv.fs_stat(other .. '/snapshots/' .. sha), 'no snapshot in the root\'s dir')
+  end)
+end)
+
 -- Put the test configuration back for the files that run after this one
 cd(original_cwd)
 vim.env.XDG_DATA_HOME = original_data_home

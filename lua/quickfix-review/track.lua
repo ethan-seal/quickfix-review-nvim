@@ -105,7 +105,7 @@ local SEARCH_WINDOW = 200
 -- A line as compared by the search: without a trailing CR, and with a NUL
 -- as "\n" (NVIM 0.12's nvim_buf_get_lines gives a NUL as "\0", readfile()
 -- and older buffers as "\n"; a stored anchor line may hold either)
-local function norm(line) return (line:gsub('%z', '\n'):gsub('\r$', '')) end
+local function norm(line) return (line:gsub('%z', '\n'):gsub('\r+$', '')) end
 
 -- `list` with every line normalised (see norm)
 local function norm_all(list)

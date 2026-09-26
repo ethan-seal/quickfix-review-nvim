@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-tx1f
 title: 'Storage follow-ups from 9rvl: GC copyfile race, import WARN repeats, header-without-import, snapshot put pin'
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T16:55:16Z
-updated_at: 2026-09-26T16:55:16Z
+updated_at: 2026-09-26T17:50:42Z
 ---
 
 Leftovers from 9rvl (all should-fix, narrow).

@@ -504,6 +504,111 @@ assert.run_test('a record with a bad lnum is dropped with a warning, the origina
   end)
 end)
 
+-- Every path that drops records keeps the original bytes: migration renames
+-- the file to .pre-log.bak (above), and the legacy global import only reads
+-- its file. There is no separate repair rewrite that needs its own backup.
+assert.run_test('a non-finite lnum is dropped, not a save failure', function()
+  -- Raw JSON: vim.json.encode refuses inf, but a file may hold it
+  local json = '{"version":2,"comments":['
+    .. '{"id":"00000000000000f1","filename":' .. vim.json.encode(abs)
+    .. ',"lnum":"1e999","end_lnum":1,"kind":"note","body":"str inf","created_at":1700000000},'
+    .. '{"id":"00000000000000f2","filename":' .. vim.json.encode(abs)
+    .. ',"lnum":1e999,"end_lnum":1,"kind":"note","body":"num inf","created_at":1700000000},'
+    .. '{"id":"00000000000000f3","filename":' .. vim.json.encode(abs)
+    .. ',"lnum":2,"end_lnum":1e999,"kind":"note","body":"ok","created_at":1e999,'
+    .. '"anchor":{"lnum":"1e999","end_lnum":2}},'
+    .. '{"id":"00000000000000f4","filename":' .. vim.json.encode(abs)
+    .. ',"lnum":3,"end_lnum":3,"kind":"note","body":"anchored","created_at":1700000000,'
+    .. '"anchor":{"lnum":3,"end_lnum":"1e999"}}'
+    .. ']}'
+  with_file(json, function(path)
+    local list
+    local calls = capture_notify(function()
+      qf = restart(path)
+      list = qf.comments()
+    end)
+    assert.length(list, 2, 'the finite records load')
+    assert.length(warnings(calls), 1, 'one warning for the dropped records')
+    assert.truthy(warnings(calls)[1].msg:find('dropped 2', 1, true), 'both inf records dropped')
+    assert.equals(read_bytes(path .. '.pre-log.bak'), json, 'original kept byte for byte')
+    assert.equals(list[1].end_lnum, 2, 'inf end_lnum treated as unset')
+    assert.truthy(list[1].created_at ~= math.huge, 'inf created_at replaced')
+    assert.equals(list[1].anchor.sha, nil, 'inf anchor lnum: no logged anchor')
+    assert.equals(list[2].anchor.end_lnum, 3, 'inf anchor end_lnum treated as unset')
+
+    local on_disk = logged(path)
+    assert.length(on_disk, 2, 'logged without the inf records')
+    assert.equals(on_disk[1].anchor, nil, 'the inf anchor is not logged')
+
+    -- A save after load works (encode would fail on inf)
+    vim.cmd('edit ' .. test_file)
+    vim.fn.cursor(4, 1)
+    qf.add_comment('NOTE')
+    assert.length(logged(path), 3, 'saved')
+
+    -- An add with an inf lnum is refused, not logged
+    local store = require('quickfix-review.store')
+    assert.equals(store.add({ filename = abs, lnum = '1e999', kind = 'note', body = 'x' }), false, 'add refused')
+    assert.length(logged(path), 3, 'nothing logged')
+
+    qf = restart(path)
+    assert.length(qf.comments(), 3, 'reloads')
+  end)
+end)
+
+assert.run_test('legacy text the record did not take is kept as extra.legacy_text', function()
+  local json = v2_json({
+    { id = '00000000000000a1', filename = abs, lnum = 1, end_lnum = 1, kind = 'issue', body = 'a',
+      created_at = 1700000000, text = '[ISSUE:L1] b' },
+    { id = '00000000000000a2', filename = abs, lnum = 2, end_lnum = 2, kind = 'note', body = 'a',
+      created_at = 1700000000, text = '[NOTE] a | response: lower' },
+    { id = '00000000000000a3', filename = abs, lnum = 3, end_lnum = 3, kind = 'note', body = 'same',
+      created_at = 1700000000, text = '[ISSUE] same' },
+    { id = '00000000000000a4', filename = abs, lnum = 4, end_lnum = 4, kind = 'issue', body = 'c',
+      created_at = 1700000000, text = '[ISSUE:L4] c | Response: done' },
+  })
+  with_file(json, function(path)
+    qf = restart(path)
+    local list = qf.comments()
+    assert.length(list, 4, 'loaded')
+    assert.equals(list[1].body, 'a', 'record body kept')
+    assert.equals(list[1].extra.legacy_text, '[ISSUE:L1] b', 'differing body: text kept')
+    assert.equals(list[2].extra.legacy_text, '[NOTE] a | response: lower', 'lowercase response: text kept')
+    assert.equals(list[3].kind, 'note', 'record kind kept')
+    assert.equals(list[3].extra.legacy_text, '[ISSUE] same', 'differing kind: text kept')
+    assert.equals(list[4].extra, nil, 'fully taken text is dropped')
+    assert.equals(list[4].response, 'done', 'response merged')
+
+    local on_disk = logged(path)
+    assert.equals(on_disk[1].legacy_text, '[ISSUE:L1] b', 'logged at the top level')
+    assert.equals(on_disk[1].text, nil, 'text itself not logged')
+
+    -- Survives a later add event and a replay of the log
+    vim.cmd('edit ' .. test_file)
+    vim.fn.cursor(5, 1)
+    qf.add_comment('NOTE')
+    require('quickfix-review.store').reload()
+    assert.equals(qf.comments()[1].extra.legacy_text, '[ISSUE:L1] b', 'after reload')
+    qf = restart(path)
+    assert.equals(qf.comments()[1].extra.legacy_text, '[ISSUE:L1] b', 'after restart')
+    assert.equals(qf.comments()[2].extra.legacy_text, '[NOTE] a | response: lower', 'second after restart')
+  end)
+
+  -- An add event carrying unconsumed text keeps it too
+  local path, dir = fresh_path()
+  local ok, err = pcall(function()
+    qf = restart(path)
+    local store = require('quickfix-review.store')
+    assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'issue', body = 'a', text = '[ISSUE:L1] b' }), 'added')
+    assert.equals(logged(path)[1].legacy_text, '[ISSUE:L1] b', 'logged')
+    store.reload()
+    assert.equals(store.all()[1].extra.legacy_text, '[ISSUE:L1] b', 'replayed')
+  end)
+  qf = restart()
+  vim.fn.delete(dir, 'rf')
+  if not ok then error(err, 0) end
+end)
+
 assert.run_test('a logged add event without an anchor is shown at its line after a restart', function()
   local path, dir = fresh_path()
   local ok, err = pcall(function()

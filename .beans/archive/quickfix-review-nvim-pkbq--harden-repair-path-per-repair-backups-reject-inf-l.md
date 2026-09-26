@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-pkbq
 title: 'Harden repair path: per-repair backups, reject inf lnum, keep unconsumed text'
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T05:59:32Z
-updated_at: 2026-09-26T06:33:01Z
+updated_at: 2026-09-26T08:29:28Z
 ---
 
 Follow-ups from t1m3 review (store.lua sync/normalize/to_line):

@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: normal
 created_at: 2026-09-26T06:33:01Z
-updated_at: 2026-09-26T07:42:26Z
+updated_at: 2026-09-26T08:29:28Z
 ---
 
 Follow-ups from 0scv review:
@@ -26,3 +26,9 @@ Note (j2ye): reduce.lua copies ev.ts into state.removed unchecked and init.lua s
 
 
 Note (9ljx): partial-success appends. If fs_fsync/fs_close fails after a complete write, or a short write still lands whole event lines (log.lua ~84-87), sync() applies the landed events but mutate() returns nil (store.lua ~707-709). The user then sees 'not added'/'no comment was deleted' although the change applied. Fix: log.append should report which bytes/lines landed, and mutate should return success when the event is durable in the log, or else word the failure messages as 'may be incomplete'.
+
+
+
+Note (pkbq):
+- An inf or NaN in an unknown top-level field (kept in extra) or inside context still passes normalize, and vim.json.encode then refuses the record in serialise. Sanitise non-finite numbers recursively in extra and context, or drop them with a WARN (store.lua ~132-144).
+- storage.backup_once is now dead code, and test/init.lua still cleans up .pre-repair.bak. Remove both.

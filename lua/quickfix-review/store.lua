@@ -43,17 +43,25 @@ local function has_id(item)
 end
 
 -- The fields normalize() understands; any other field of a record is kept in
--- its `extra` table. `text` is a legacy field that is parsed, then dropped.
+-- its `extra` table. `text` is a legacy field that is parsed, then dropped
+-- (or kept as extra.legacy_text when the record didn't take all of it).
 local KNOWN = {
   id = true, filename = true, kind = true, body = true, response = true, lnum = true,
   end_lnum = true, context = true, created_at = true, text = true, anchor = true,
 }
 
+-- A finite number (not NaN or +-inf, which vim.json.encode refuses), or nil
+local function finite(v)
+  if type(v) ~= 'number' or v ~= v or v == math.huge or v == -math.huge then return nil end
+  return v
+end
+
 -- A line number (1 or more), or nil. A numeric string ("12", as an external
--- tool may write) is accepted.
+-- tool may write) is accepted; "1e999" (inf) is not.
 local function to_line(v)
   if type(v) == 'string' then v = tonumber(v) end
-  if type(v) ~= 'number' or v ~= math.floor(v) or v < 1 then return nil end
+  v = finite(v)
+  if not v or v ~= math.floor(v) or v < 1 then return nil end
   return v
 end
 
@@ -106,18 +114,26 @@ local function normalize(item)
   local kind, body = nonempty(item.kind), nonempty(item.body)
   local response = nonempty(item.response)
   -- An external tool (or an older one) may write the v1 text into a v2
-  -- record, e.g. appending " | Response: ..." to it; merge it in
+  -- record, e.g. appending " | Response: ..." to it; merge it in. Text the
+  -- record didn't take all of (its kind or body differ from the text's) is
+  -- kept as extra.legacy_text rather than lost.
+  local legacy_text
   if type(item.text) == 'string' then
     local t_kind, t_body, t_response = storage.parse_text(item.text)
+    t_body = nonempty(t_body)
     kind = kind or t_kind
-    body = body or nonempty(t_body)
+    body = body or t_body
     if t_response then response = t_response end
+    local kind_taken = t_kind == nil or kind:lower() == t_kind
+    local body_taken = t_body == nil or body == t_body
+    if not (kind_taken and body_taken) then legacy_text = item.text end
   end
 
   local extra = {}
   for k, v in pairs(item) do
     if not KNOWN[k] then extra[k] = v end
   end
+  if legacy_text and extra.legacy_text == nil then extra.legacy_text = legacy_text end
 
   return {
     id = has_id(item) and item.id or new_id(),
@@ -129,7 +145,7 @@ local function normalize(item)
     end_lnum = end_lnum,
     context = type(item.context) == 'table' and item.context or nil,
     anchor = parse_anchor(item.anchor),
-    created_at = type(item.created_at) == 'number' and item.created_at or os.time(),
+    created_at = finite(item.created_at) or os.time(),
     extra = next(extra) ~= nil and extra or nil,
   }
 end

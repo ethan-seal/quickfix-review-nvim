@@ -36,6 +36,8 @@ Features:
 ==============================================================================
 2. INSTALLATION                                   *quickfix-review-installation*
 
+Requires Neovim 0.10 or later.
+
 Using lazy.nvim: >lua
     {
       'your-username/quickfix-review.nvim',
@@ -70,7 +72,9 @@ options are optional; defaults are shown below.
       -- Default export filename (nil = clipboard only)
       export_file = nil,
 
-      -- Prompt to clear comments when file changes on disk
+      -- Deprecated, does nothing: comments follow the file when it
+      -- changes on disk (see |quickfix-review-outdated|). Setting it to
+      -- true shows a one-time notice.
       prompt_on_file_change = false,
 
       -- Comment types: replaces defaults if provided (see comment_types section)
@@ -156,6 +160,36 @@ of a file (or one missing its final newline) share a snapshot. A snapshot
 whose content no longer matches its name is ignored with a warning. Files
 in an encoding other than UTF-8 may give noisy results. With
 |quickfix-review-storage_file| the directory is `<storage_file>.snapshots`.
+
+                                                  *quickfix-review-outdated*
+                                                     *QuickfixReviewOutdated*
+When the code changes:~
+
+Each comment is anchored to the snapshot of its file it was written
+against. When the file changes, the snapshot is diffed against the file as
+it is now and the comment moves with its lines: when the file is read or
+reloaded after changing on disk (|BufReadPost|, |FileChangedShellPost|), as
+you edit it (tracking extmarks follow the lines), and, for a file that is
+not open, when it is read for the quickfix list, export or a jump (cached by
+the file's size and modification time). Positions are kept in memory only;
+nothing is written to the log. Diff buffers (fugitive, diffview, codediff)
+hold an old revision and never move a comment.
+
+A comment is outdated when one of its lines was changed or deleted, a line
+was inserted inside its range, or its file or snapshot is missing. It stays
+where its code was (a deleted range collapses to the line before it). Lines
+added or removed next to a range, CRLF line endings and a missing final
+newline don't make it outdated. An outdated comment is shown with:
+- the `QuickfixReviewOutdated` sign highlight, linked to `DiagnosticWarn`
+  unless you define it
+- `[outdated] ` in front of its quickfix row
+- "outdated — code changed since comment" at the top of its float
+- ` (outdated)` after its location in the export
+
+While a file is open, a comment whose whole range is deleted becomes
+outdated at once; other in-session edits inside a range are checked the
+next time the file is read from disk. Comments made before snapshots
+existed stay at their saved line and are never outdated.
 
                                                  *quickfix-review-migration*
 Earlier versions kept the review in `comments.json` in the same directory.

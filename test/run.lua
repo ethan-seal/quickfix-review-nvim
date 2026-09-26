@@ -55,6 +55,10 @@ run_file('test/test_storage_dir.lua')
 -- Run snapshot store tests
 run_file('test/test_snapshots.lua')
 
+-- Run relocation tests (mapping, then tracking and the outdated state)
+run_file('test/test_track.lua')
+run_file('test/test_relocate.lua')
+
 -- Run setup idempotency tests
 run_file('test/test_setup.lua')
 

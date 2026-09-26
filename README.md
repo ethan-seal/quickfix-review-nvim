@@ -19,12 +19,15 @@ This tool was inspired by:
 - **Six default comment types**: ISSUE, SUGGESTION, NOTE, PRAISE, QUESTION, INSIGHT
 - **Customizable comment types**: Add your own or replace defaults entirely
 - **Visual gutter signs**: See review comments at a glance
+- **Comments follow the code**: When a file changes, comments move with their lines; a comment whose code changed is marked outdated
 - **Diff buffer support**: Works also on diffbuffers
 - **Export to markdown**: Share reviews with formatted output
 - **Persistent storage**: Every change is saved immediately and reloaded on startup
 - **Quickfix integration**: Navigate comments with familiar commands
 
 ## Installation
+
+Requires Neovim 0.10 or later.
 
 ### lazy.nvim
 
@@ -95,7 +98,8 @@ require('quickfix-review').setup({
   -- Export filename (nil = clipboard only)
   export_file = nil,
 
-  -- Prompt to clear comments when file changes on disk
+  -- Deprecated, does nothing: comments now follow the file when it
+  -- changes on disk (setting it to true shows a one-time notice)
   prompt_on_file_change = false,
 
   -- Comment types: replaces all defaults if provided (see Custom comment types)
@@ -165,6 +169,19 @@ e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/log.jsonl`, readab
 **Migrating from the global file.** Older versions kept every project's comments in one file, `stdpath('data')/quickfix-review.json`. The first time you open a project that has neither a log nor a `comments.json`, the comments in that file whose path is inside the project are imported (you'll see "imported N comments from ..."). The global file is only read, never changed. This happens once per project: once its log exists, even with nothing imported, nothing is imported again.
 
 **`storage_file` (deprecated).** If you set `storage_file`, one review is used for every project, as before: no storage directory, no switching on `:cd`, and no import from the global file. Its log and cache sit next to the path you give: `<storage_file>.log.jsonl` and `<storage_file>.state.json` (plus a `<storage_file>.lock` directory while writing); an existing file at that path is migrated to the log and renamed to `<storage_file>.pre-log.bak`. If you copied the old "full configuration" example, remove its `storage_file` line to get per-project reviews.
+
+### When the code changes
+
+Each comment remembers the version of the file it was written against (a snapshot in `snapshots/` in the storage directory). When the file changes, the snapshot is diffed against the file as it is now and the comment moves with its lines. This happens when a file is read or reloaded after changing on disk, as you edit it, and, for a file that isn't open, when it is read for the quickfix list, export or a jump. The new position is kept in memory only; nothing is written to the review log. Diff buffers (fugitive, diffview, codediff) show an old revision and never move a comment.
+
+A comment is **outdated** when one of its lines was changed or deleted, a line was inserted inside its range, or its file or snapshot is missing. It stays where its code was (a deleted range collapses to the line before it). Outdated comments get:
+
+- the `QuickfixReviewOutdated` sign highlight (linked to `DiagnosticWarn` unless you define it)
+- `[outdated] ` in front of their quickfix row
+- "outdated — code changed since comment" at the top of the comment float
+- ` (outdated)` after their location in the export
+
+Lines added or removed next to a range don't make it outdated, and neither do CRLF line endings or a missing final newline. While a file is open, a comment whose whole range you delete becomes outdated at once; other edits inside a range are checked the next time the file is read from disk. Comments made before snapshots existed stay at their saved line and are never marked outdated.
 
 ### Multiple signs per line
 

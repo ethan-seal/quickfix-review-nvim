@@ -56,7 +56,12 @@ function M.init_signs(opts)
   for type_name, sign_def in pairs(opts.signs or {}) do
     M.sign_config[type_name] = sign_def
   end
+  -- The sign highlight of a comment whose code changed since it was made
+  vim.api.nvim_set_hl(0, M.OUTDATED_HL, { link = 'DiagnosticWarn', default = true })
 end
+
+-- Highlight group for the signs of outdated comments
+M.OUTDATED_HL = 'QuickfixReviewOutdated'
 
 -- Resolved (symlink-free) paths; only hits are cached, so a file created
 -- later in the session is still resolved once it exists
@@ -109,7 +114,10 @@ local function make_extmark_opts(text, hl_group, prio)
 end
 
 -- Refresh all signs for a buffer, showing count when multiple comments overlap
--- This clears and re-renders all signs, consolidating overlapping start/end lines
+-- This clears and re-renders all signs, consolidating overlapping start/end lines.
+-- Positions come from store.range (the tracking extmarks, see track.lua);
+-- only this sign namespace is cleared. A line with an outdated comment gets
+-- the QuickfixReviewOutdated highlight.
 function M.refresh_buffer_signs(bufnr, file, comments)
   if bufnr <= 0 or vim.fn.bufexists(bufnr) ~= 1 then return end
 
@@ -124,13 +132,16 @@ function M.refresh_buffer_signs(bufnr, file, comments)
     if M.files_match(item.filename, file) then
       local comment_type = item.kind
       -- Required here: store requires utils
-      local start_line, end_line = require('quickfix-review.store').range(item)
+      local store = require('quickfix-review.store')
+      local start_line, end_line = store.range(item)
+      local outdated = store.is_outdated(item)
 
       -- Track start line
       if not line_info[start_line] then
         line_info[start_line] = { count = 0, types = {}, is_continuation = false }
       end
       line_info[start_line].count = line_info[start_line].count + 1
+      line_info[start_line].outdated = line_info[start_line].outdated or outdated
       table.insert(line_info[start_line].types, comment_type)
 
       -- Track end line (if different from start)
@@ -139,6 +150,7 @@ function M.refresh_buffer_signs(bufnr, file, comments)
           line_info[end_line] = { count = 0, types = {}, is_continuation = false }
         end
         line_info[end_line].count = line_info[end_line].count + 1
+        line_info[end_line].outdated = line_info[end_line].outdated or outdated
         table.insert(line_info[end_line].types, comment_type)
 
         -- Track continuation lines (middle lines)
@@ -150,6 +162,7 @@ function M.refresh_buffer_signs(bufnr, file, comments)
           if line_info[line].count == 0 then
             line_info[line].is_continuation = true
           end
+          line_info[line].outdated = line_info[line].outdated or outdated
           table.insert(line_info[line].types, comment_type)
         end
       end
@@ -171,7 +184,7 @@ function M.refresh_buffer_signs(bufnr, file, comments)
           if cont_cfg then
             local cont_priority = M.get_sign_priority(type_key .. '_continuation') or 30
             vim.api.nvim_buf_set_extmark(bufnr, M.get_ns_id(), line - 1, 0,
-              make_extmark_opts(cont_cfg.text, cont_cfg.texthl, cont_priority))
+              make_extmark_opts(cont_cfg.text, info.outdated and M.OUTDATED_HL or cont_cfg.texthl, cont_priority))
           end
         end
       end
@@ -200,7 +213,7 @@ function M.refresh_buffer_signs(bufnr, file, comments)
         end
 
         vim.api.nvim_buf_set_extmark(bufnr, M.get_ns_id(), line - 1, 0,
-          make_extmark_opts(sign_text, sign_cfg.texthl, best_priority))
+          make_extmark_opts(sign_text, info.outdated and M.OUTDATED_HL or sign_cfg.texthl, best_priority))
       end
     end
     ::continue::

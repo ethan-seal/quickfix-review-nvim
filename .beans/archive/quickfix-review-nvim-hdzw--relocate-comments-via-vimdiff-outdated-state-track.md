@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-hdzw
 title: Relocate comments via vim.diff; outdated state; tracking extmarks
-status: todo
+status: completed
 type: feature
 priority: high
 created_at: 2026-09-26T04:57:59Z
-updated_at: 2026-09-26T04:57:59Z
+updated_at: 2026-09-26T07:00:39Z
 parent: quickfix-review-nvim-8oi5
 blocked_by:
     - quickfix-review-nvim-2kae

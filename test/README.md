@@ -70,6 +70,8 @@ nvim --clean -c 'lua dofile("test/test_comments.lua")'
 | `test_comments.lua` | Tests for adding, deleting, and managing comments |
 | `test_signs.lua` | Tests for sign placement on single and multiline comments |
 | `test_persistence.lua` | Tests for save/load functionality |
+| `test_track.lua` | Tests for mapping a comment's range through a diff (pure relocation core) |
+| `test_relocate.lua` | Tests for comments following file changes and the outdated state |
 
 ## Writing New Tests
 

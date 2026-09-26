@@ -36,7 +36,8 @@ M.defaults = {
   -- Default export filename (nil = clipboard only, set to 'quickfix-review.md' to also save to file)
   export_file = nil,
 
-  -- Prompt to clear comments when file changes on disk
+  -- Deprecated, does nothing: comments follow the file when it changes on
+  -- disk (see track.lua). Setting it to true shows a one-time notice.
   prompt_on_file_change = false,
 
   -- Comment types: if provided, replaces defaults entirely

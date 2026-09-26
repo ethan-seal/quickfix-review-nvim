@@ -7,6 +7,7 @@ local utils = require('quickfix-review.utils')
 local store = require('quickfix-review.store')
 local export = require('quickfix-review.export')
 local context = require('quickfix-review.context')
+local track = require('quickfix-review.track')
 
 -- State for comment type cycling
 local cycle_state = {
@@ -237,11 +238,16 @@ end
 -- Jump to the next (direction 1) or previous (direction -1) comment across
 -- all files, ordered by file then line, wrapping around at the ends
 function M.jump_comment(direction)
-  local sorted = vim.deepcopy(store.all())
-  if #sorted == 0 then
+  local all = store.all()
+  if #all == 0 then
     print('No review comments')
     return
   end
+  -- Where each comment is now, read from the originals (the copies below
+  -- are renamed, so they are never passed to the store)
+  local line_of = {}
+  for _, c in ipairs(all) do line_of[c.id] = (store.range(c)) end
+  local sorted = vim.deepcopy(all)
 
   -- Name every comment on this file (however its path is spelled, e.g.
   -- through a symlink) by the first comment's spelling of it, so they order
@@ -258,16 +264,16 @@ function M.jump_comment(direction)
 
   table.sort(sorted, function(a, b)
     if a.filename ~= b.filename then return a.filename < b.filename end
-    return (store.range(a)) < (store.range(b))
+    return line_of[a.id] < line_of[b.id]
   end)
   local line = vim.fn.line('.')
   local function is_after(c)
     if c.filename ~= file then return c.filename > file end
-    return (store.range(c)) > line
+    return line_of[c.id] > line
   end
   local function is_before(c)
     if c.filename ~= file then return c.filename < file end
-    return (store.range(c)) < line
+    return line_of[c.id] < line
   end
 
   local target
@@ -287,7 +293,7 @@ function M.jump_comment(direction)
     vim.cmd('edit ' .. vim.fn.fnameescape(target.filename))
   end
   -- The file may have shrunk since the comment was made
-  local lnum = math.max(1, math.min((store.range(target)), vim.api.nvim_buf_line_count(0)))
+  local lnum = math.max(1, math.min(line_of[target.id], vim.api.nvim_buf_line_count(0)))
   vim.api.nvim_win_set_cursor(0, { lnum, 0 })
   M.view_comment()
 end
@@ -312,6 +318,9 @@ function M.view_comment()
   local lines = {}
   for i, c in ipairs(comments) do
     if i > 1 then table.insert(lines, '') end
+    if store.is_outdated(c) then
+      table.insert(lines, 'outdated — code changed since comment')
+    end
     table.insert(lines, store.headline(c))
     if c.response then
       table.insert(lines, '')
@@ -605,17 +614,45 @@ local function configure_qf_buffer(buf)
   end
 end
 
--- Redraw signs in every loaded buffer from the current comments
+-- b:changedtick of each buffer when its signs were last drawn, so BufEnter
+-- only redraws a buffer that changed since
+local drawn_at = {}
+
+local function draw_signs(bufnr, name, comments)
+  utils.refresh_buffer_signs(bufnr, name, comments)
+  drawn_at[bufnr] = vim.api.nvim_buf_get_changedtick(bufnr)
+end
+
+-- Redraw signs in every loaded buffer from the current comments, and drop
+-- the tracking extmarks of comments that are gone
 local function refresh_all_signs(comments)
+  track.prune(comments)
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(bufnr) then
       local name = utils.get_real_filepath(bufnr)
       if name ~= '' then
-        utils.refresh_buffer_signs(bufnr, name, comments)
+        draw_signs(bufnr, name, comments)
       end
     end
   end
 end
+
+-- The file in `bufnr` was read or reloaded from disk: relocate its comments
+-- from its content (never from a diff buffer, which holds an old revision).
+-- Positions are kept in memory only; nothing is logged.
+local function relocate_buffer(bufnr)
+  if vim.bo[bufnr].buftype ~= '' or utils.is_special_buffer(bufnr) then return end
+  local comments = store.all()
+  if track.relocate_buffer(bufnr, comments) then
+    store.refresh()
+  else
+    local name = utils.get_real_filepath(bufnr)
+    if name ~= '' then draw_signs(bufnr, name, comments) end
+  end
+end
+
+-- prompt_on_file_change is deprecated: warn once per session
+local prompt_deprecation_shown = false
 
 -- Setup the plugin
 function M.setup(opts)
@@ -654,38 +691,36 @@ function M.setup(opts)
     end,
   })
 
-  -- Place signs when entering a buffer (also picks up changes made on disk)
+  -- Draw signs when entering a buffer. Reading the review may pick up
+  -- changes another Neovim logged (which redraws every buffer); otherwise
+  -- only a buffer that changed since its signs were drawn is redrawn.
   vim.api.nvim_create_autocmd('BufEnter', {
     group = augroup,
     callback = function(args)
       local file = utils.get_real_filepath(args.buf)
       if file == '' then return end
-      utils.refresh_buffer_signs(args.buf, file, store.all())
+      local comments = store.all()
+      if drawn_at[args.buf] ~= vim.api.nvim_buf_get_changedtick(args.buf) then
+        draw_signs(args.buf, file, comments)
+      end
     end
   })
 
-  -- Prompt to clear comments when file is reloaded from disk
-  if config.options.prompt_on_file_change then
-    vim.api.nvim_create_autocmd('FileChangedShellPost', {
-      group = augroup,
-      callback = function(args)
-        local file = utils.get_real_filepath(args.buf)
-        local function in_file(item) return utils.files_match(item.filename, file) end
-        local has_comments = false
-        for _, item in ipairs(store.all()) do
-          if in_file(item) then
-            has_comments = true
-            break
-          end
-        end
-        if has_comments then
-          local choice = vim.fn.confirm('File changed on disk. Clear review comments for this file?', '&Yes\n&No', 2)
-          if choice == 1 then
-            store.remove_if(in_file)
-          end
-        end
-      end
-    })
+  -- Relocate a file's comments when it is read, and when it is reloaded
+  -- after changing on disk
+  vim.api.nvim_create_autocmd({ 'BufReadPost', 'FileChangedShellPost' }, {
+    group = augroup,
+    callback = function(args) relocate_buffer(args.buf) end,
+  })
+  vim.api.nvim_create_autocmd('BufWipeout', {
+    group = augroup,
+    callback = function(args) drawn_at[args.buf] = nil end,
+  })
+
+  if config.options.prompt_on_file_change and not prompt_deprecation_shown then
+    prompt_deprecation_shown = true
+    vim.notify('quickfix-review: prompt_on_file_change is deprecated and does nothing:'
+      .. ' comments now follow the file when it changes on disk', vim.log.levels.WARN)
   end
 
   -- Configure the quickfix window and add the delete keymaps, but only while

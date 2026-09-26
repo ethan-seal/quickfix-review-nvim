@@ -37,6 +37,8 @@ function M.to_markdown(comments, config)
     else
       line_ref = string.format('%s:%d', file, lnum)
     end
+    -- Its code changed since the comment was made (see track.lua)
+    if store.is_outdated(item) then line_ref = line_ref .. ' (outdated)' end
 
     local ok, line_str = pcall(string.format, item_format, i, comment_type, line_ref, comment_text)
     if not ok then

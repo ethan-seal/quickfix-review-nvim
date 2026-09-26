@@ -33,6 +33,9 @@ local function canonical(lines)
   return table.concat(out, '\n') .. '\n'
 end
 
+-- `lines` in canonical form (a string), as hashed and stored
+M.canonical = canonical
+
 local function is_sha(sha)
   return type(sha) == 'string' and #sha == 64 and sha:match('^%x+$') ~= nil
 end

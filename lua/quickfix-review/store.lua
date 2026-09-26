@@ -136,11 +136,28 @@ local function view_exists()
   return qf_id ~= nil and vim.fn.getqflist({ id = qf_id }).id == qf_id
 end
 
--- The lines a comment is displayed at: its pos, else its anchor, else the
--- record's top-level lnum/end_lnum (a record not read through the store).
+-- Where a comment is now, { sha, lnum, end_lnum, state } (see track.lua), or
+-- nil for a record not read through the store (no id or anchor)
+function M.pos(c)
+  if type(c.id) ~= 'string' or type(c.filename) ~= 'string' or type(c.anchor) ~= 'table' then
+    return nil
+  end
+  -- Required here: track requires snapshots, which requires the store
+  return require('quickfix-review.track').pos(c)
+end
+
+-- Whether a comment's code changed since it was made (see track.lua)
+function M.is_outdated(c)
+  local p = M.pos(c)
+  return p ~= nil and p.state == 'outdated'
+end
+
+-- The lines a comment is displayed at: its pos (where its anchor's lines
+-- are now), else its anchor, else the record's top-level lnum/end_lnum (a
+-- record not read through the store).
 -- Returns: lnum, end_lnum
 function M.range(c)
-  local r = c.pos or c.anchor or c
+  local r = M.pos(c) or c.anchor or c
   local lnum = r.lnum or c.lnum
   return lnum, r.end_lnum or lnum
 end
@@ -163,6 +180,7 @@ local function view_item(c)
   if c.response then
     text = text .. ' | Response: ' .. c.response
   end
+  if M.is_outdated(c) then text = '[outdated] ' .. text end
   local lnum, end_lnum = M.range(c)
   return {
     filename = c.filename,
@@ -677,6 +695,13 @@ end
 -- Called after any change to the comments, including ones read from disk
 function M.set_on_change(fn)
   on_change = fn
+end
+
+-- Redraw the quickfix view and call on_change after comments moved (a
+-- relocation), without reading or writing the log: positions are never logged
+function M.refresh()
+  refresh_view()
+  on_change(comments)
 end
 
 -- All comments, in creation order. Treat as read-only.

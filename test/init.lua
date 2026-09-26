@@ -13,6 +13,9 @@ package.loaded['quickfix-review.store'] = nil
 package.loaded['quickfix-review.log'] = nil
 package.loaded['quickfix-review.reduce'] = nil
 package.loaded['quickfix-review.export'] = nil
+package.loaded['quickfix-review.snapshots'] = nil
+package.loaded['quickfix-review.context'] = nil
+package.loaded['quickfix-review.track'] = nil
 
 -- Load the plugin
 local quickfix_review = require('quickfix-review')
@@ -121,11 +124,14 @@ function M.cleanup_test_environment()
   quickfix_review.clear_review()
   M.remove_storage()
 
-  -- Remove extmarks from all buffers
+  -- Remove extmarks (signs and tracking marks) from all buffers
   local utils = require('quickfix-review.utils')
+  local track = require('quickfix-review.track')
+  track._reset()
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_valid(bufnr) then
       vim.api.nvim_buf_clear_namespace(bufnr, utils.get_ns_id(), 0, -1)
+      vim.api.nvim_buf_clear_namespace(bufnr, track.ns(), 0, -1)
     end
   end
 

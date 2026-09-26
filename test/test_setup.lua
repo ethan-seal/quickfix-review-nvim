@@ -50,29 +50,51 @@ assert.run_test('view_comment float close autocmd is grouped and removed on clos
   qf.clear_review()
 end)
 
-assert.run_test('FileChangedShellPost checks the changed buffer, not the current one', function()
+assert.run_test('FileChangedShellPost relocates the changed buffer and never offers to clear', function()
   local changed_buf = vim.api.nvim_get_current_buf()
+  local path = vim.api.nvim_buf_get_name(changed_buf)
   local other = vim.fn.tempname() .. '-other.txt'
   vim.fn.writefile({ 'other' }, other)
   local original_confirm = vim.fn.confirm
+  local original_notify = vim.notify
   local ok, err = pcall(function()
+    local notes = {}
+    vim.notify = function(msg, level) table.insert(notes, { msg = msg, level = level }) end
     qf.setup({ storage_file = test_helper.storage_file, prompt_on_file_change = true })
+    qf.setup({ storage_file = test_helper.storage_file, prompt_on_file_change = true })
+    vim.notify = original_notify
+    local deprecations = 0
+    for _, n in ipairs(notes) do
+      if n.msg:find('prompt_on_file_change is deprecated', 1, true) then deprecations = deprecations + 1 end
+    end
+    assert.equals(deprecations, 1, 'deprecation notice shown once across two setup() calls')
+
     qf.clear_review()
     vim.fn.cursor(2, 1)
     qf.add_comment('NOTE')
     assert.length(qf.comments(), 1, 'comment in the changed file')
 
+    -- Two lines added above it on disk, reloaded
+    vim.fn.writefile({ 'new a', 'new b', 'line 1', 'line 2', 'line 3' }, path)
+    vim.api.nvim_buf_call(changed_buf, function() vim.cmd('silent edit!') end)
+
     vim.cmd('edit ' .. vim.fn.fnameescape(other))
     local asked = 0
     vim.fn.confirm = function() asked = asked + 1 return 1 end
     vim.api.nvim_exec_autocmds('FileChangedShellPost', { buffer = changed_buf })
-    assert.equals(asked, 1, 'asked about the changed file')
-    assert.length(qf.comments(), 0, 'its comments cleared')
+    assert.equals(asked, 0, 'never asked to clear comments')
+    local list = qf.comments()
+    assert.length(list, 1, 'the comment is kept')
+    local lnum = require('quickfix-review.store').range(list[1])
+    assert.equals(lnum, 4, 'the comment followed its line')
   end)
+  vim.notify = original_notify
   vim.fn.confirm = original_confirm
   vim.api.nvim_set_current_buf(changed_buf)
   pcall(vim.cmd, 'bwipeout! ' .. vim.fn.fnameescape(other))
   os.remove(other)
+  vim.fn.writefile({ 'line 1', 'line 2', 'line 3' }, path)
+  vim.cmd('silent edit!')
   test_helper.setup_test_environment()
   if not ok then error(err, 0) end
 end)

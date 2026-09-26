@@ -1076,10 +1076,10 @@ function M.setup(opts)
 
   -- The project follows the global cwd: after :cd, re-read the review from the
   -- new project's storage dir (the list view and signs refresh on change).
-  -- :lcd and :tcd leave the project alone.
+  -- 'autochdir' changes it too ('auto'); :lcd and :tcd leave the project alone.
   vim.api.nvim_create_autocmd('DirChanged', {
     group = augroup,
-    pattern = 'global',
+    pattern = { 'global', 'auto' },
     callback = function() store.all() end,
   })
 

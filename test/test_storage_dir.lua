@@ -177,6 +177,64 @@ storage_test(':cd into the other repo switches the list and the signs', function
   pcall(vim.api.nvim_buf_delete, buf, { force = true })
 end)
 
+-- :cd into a project whose review can't be read: the other project's comments
+-- must not stay visible, and nothing may be written into the bad review
+for _, case in ipairs({ 'log', 'comments.json' }) do
+  storage_test(':cd into a project with an unreadable ' .. case .. ' empties the view and refuses writes', function()
+    local a, file_a = make_repo('pi')
+    local b, file_b = make_repo('rho')
+    local base = vim.fn.tempname() .. '-dirs'
+    local function dir_of(root) return base .. '/' .. vim.fn.fnamemodify(root, ':t') end
+    local dir_b = dir_of(b)
+    vim.fn.mkdir(dir_b, 'p')
+    local bad_log = '{"op":"add","not":"a header"}\n'
+    if case == 'log' then
+      local fh = io.open(dir_b .. '/log.jsonl', 'wb')
+      assert.truthy(fh, 'bad log opened')
+      fh:write(bad_log)
+      fh:close()
+    else
+      vim.fn.writefile({ '{ not json' }, dir_b .. '/comments.json')
+    end
+
+    cd(a)
+    restart({ storage_dir = dir_of })
+    local _, store = mods()
+    vim.cmd('edit ' .. vim.fn.fnameescape(file_a))
+    local buf = vim.api.nvim_get_current_buf()
+    note(file_a, 'pi note')
+    store.show()
+    local qf_id = vim.fn.getqflist({ id = 0 }).id
+    assert.truthy(extmarks(buf) > 0, 'sign placed in pi')
+
+    local calls = capture_notify(function() cd(b) end)
+    assert.length(store.all(), 0, 'pi comment not visible in rho')
+    assert.equals(extmarks(buf), 0, 'pi sign gone')
+    assert.length(vim.fn.getqflist({ id = qf_id, items = 0 }).items, 0, 'list view emptied')
+    local errors = mentioning(calls, 'will not be modified')
+    assert.length(errors, 1, 'one error notice')
+    assert.equals(errors[1].level, vim.log.levels.ERROR, 'at ERROR level')
+
+    calls = capture_notify(function()
+      assert.falsy(store.add({ filename = file_b, lnum = 1, kind = 'note', body = 'rho note' }), 'add refused')
+      assert.length(store.all(), 0, 'still empty')
+    end)
+    assert.length(mentioning(calls, 'will not be modified'), 0, 'not reported again')
+    if case == 'log' then
+      assert.equals(read_bytes(dir_b .. '/log.jsonl'), bad_log, 'bad log untouched')
+    else
+      assert.equals(vim.fn.filereadable(dir_b .. '/log.jsonl'), 0, 'no log created')
+    end
+
+    cd(a)
+    local list = store.all()
+    assert.length(list, 1, 'pi comment back')
+    assert.equals(list[1].body, 'pi note', 'its own comment')
+    assert.truthy(extmarks(buf) > 0, 'sign back after :cd to pi')
+    pcall(vim.api.nvim_buf_delete, buf, { force = true })
+  end)
+end
+
 storage_test(':lcd does not switch the project', function()
   local a, file_a = make_repo('eps')
   local b = make_repo('zeta')
@@ -292,6 +350,61 @@ for _, v1 in ipairs({ true, false }) do
     assert.equals(vim.fn.filereadable(legacy .. '.pre-log.bak'), 0, 'legacy not moved aside')
   end)
 end
+
+for _, v1 in ipairs({ true, false }) do
+  local label = v1 and 'v1' or 'v2'
+  storage_test('legacy ' .. label .. ' file with a string storage_dir: every comment imported once', function()
+    local a = make_repo('upsilon')
+    local b = make_repo('phi')
+    vim.fn.mkdir(a .. '2', 'p')
+    local legacy = seed_legacy(a, b, v1)
+    local bytes = read_bytes(legacy)
+    local target = vim.fn.tempname() .. '-shared'
+
+    cd(a)
+    local calls = capture_notify(function() restart({ storage_dir = target }) end)
+    local _, store = mods()
+    assert.length(store.all(), 3, 'every comment imported')
+    assert.length(mentioning(calls, 'imported 3 comments from ' .. legacy), 1, 'one import notice')
+    assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'one import event')
+
+    calls = capture_notify(function() cd(b) end)
+    assert.length(store.all(), 3, 'same shared review in b')
+    assert.length(mentioning(calls, 'imported'), 0, 'no second import notice')
+    assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'still one import event')
+    assert.equals(read_bytes(legacy), bytes, 'legacy bytes unchanged')
+  end)
+end
+
+storage_test('a storage_dir that cannot be created: setup and add report an error, never throw', function()
+  local a, file_a = make_repo('sigma')
+  local b = make_repo('tau')
+  seed_legacy(a, b, false)
+  local blocker = vim.fn.tempname() .. '-blocker'
+  vim.fn.writefile({ 'a file, not a dir' }, blocker)
+  local target = blocker .. '/sub/dir'
+  cd(a)
+  local ok, err
+  local calls = capture_notify(function()
+    ok, err = pcall(restart, { storage_dir = target })
+  end)
+  assert.truthy(ok, 'setup did not throw: ' .. tostring(err))
+  assert.truthy(#mentioning(calls, target) > 0, 'import failure names the dir')
+  local _, store = mods()
+  local added
+  calls = capture_notify(function()
+    ok, err = pcall(function()
+      added = store.add({ filename = file_a, lnum = 1, kind = 'note', body = 'sigma note' })
+    end)
+  end)
+  assert.truthy(ok, 'add did not throw: ' .. tostring(err))
+  assert.falsy(added, 'add failed')
+  local named = mentioning(calls, target)
+  assert.truthy(#named > 0, 'error names the dir')
+  assert.equals(named[1].level, vim.log.levels.ERROR, 'at ERROR level')
+  assert.length(store.all(), 0, 'nothing added')
+  assert.equals(vim.fn.isdirectory(target), 0, 'dir not created')
+end)
 
 storage_test('import happens once: a cleared review is not re-imported', function()
   local a = make_repo('lambda')

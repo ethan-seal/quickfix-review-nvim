@@ -31,6 +31,17 @@ assert.run_test('setup() leaves no ungrouped plugin autocmds', function()
   end
 end)
 
+assert.run_test('DirChanged follows :cd and autochdir, not :lcd or :tcd', function()
+  local patterns = {}
+  for _, au in ipairs(vim.api.nvim_get_autocmds({ group = 'QuickfixReview', event = 'DirChanged' })) do
+    patterns[au.pattern] = true
+  end
+  assert.truthy(patterns.global, 'global pattern')
+  assert.truthy(patterns.auto, 'auto pattern')
+  assert.falsy(patterns.window, 'no window pattern')
+  assert.falsy(patterns.tabpage, 'no tabpage pattern')
+end)
+
 assert.run_test('view_comment float close autocmd is grouped and removed on close', function()
   qf.clear_review()
   vim.fn.cursor(2, 1)

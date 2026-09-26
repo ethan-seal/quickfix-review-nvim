@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-q8lo
 title: 'Per-project storage: error paths on switch, mkdir failure, fixed storage_dir import'
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T06:10:52Z
-updated_at: 2026-09-26T06:10:52Z
+updated_at: 2026-09-26T08:44:25Z
 ---
 
 Follow-ups from l3ui review:

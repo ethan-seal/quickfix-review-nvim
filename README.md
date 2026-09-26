@@ -166,8 +166,8 @@ e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/log.jsonl`, readab
 - **`state.json`**: a cache of the replayed log next to it, written on exit and every 50 events. It is never needed: delete it and it is rebuilt from the log.
 
 - **Project root**: the git toplevel of Neovim's global working directory, or that directory itself outside git (symlinks resolved). Each git worktree has its own toplevel, so each worktree gets its own review.
-- **Switching projects**: after `:cd` into another project, the review is re-read from that project's directory and the quickfix view and signs follow. `:lcd` and `:tcd` don't switch projects. The root is looked up once per directory per session, so running `git init` in an open directory takes effect after a restart.
-- **`storage_dir`**: a function receives the resolved root and returns the directory to use; a string is used as-is, so every project shares it.
+- **Switching projects**: after `:cd` into another project (or when `'autochdir'` changes directory), the review is re-read from that project's directory and the quickfix view and signs follow. If that project's review can't be read, the list is emptied and it is not modified until the file is fixed. `:lcd` and `:tcd` don't switch projects. The root is looked up once per directory per session, so running `git init` in an open directory takes effect after a restart.
+- **`storage_dir`**: a function receives the resolved root and returns the directory to use; a string is used as-is, so every project shares it (and the import from the global file below takes every comment, not just one project's).
 
 **Migrating from `comments.json`.** Earlier versions kept the review in `comments.json` in the same directory. When a project has a `comments.json` but no log yet, its comments are copied into a new log as one `import` event and the file is renamed to `comments.json.pre-log.bak`, byte for byte as it was. From then on the log is the review: a `comments.json` that reappears next to it (written by an older version or another tool) is not read; you get one warning and the file is left alone.
 

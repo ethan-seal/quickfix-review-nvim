@@ -268,10 +268,12 @@ local function resolve()
 
   local root = utils.realpath(utils.git_toplevel(cwd) or cwd)
   local dir
+  -- A fixed string dir is one review shared by every project
+  local shared = nil
   if type(opt) == 'function' then
     dir = opt(root)
-  elseif type(opt) == 'string' then
-    dir = opt
+  elseif type(opt) == 'string' and opt ~= '' then
+    dir, shared = opt, true
   end
   if type(dir) ~= 'string' or dir == '' then
     dir = vim.fn.stdpath('data') .. '/quickfix-review/'
@@ -280,7 +282,7 @@ local function resolve()
   -- ~ and $VARS are expanded; the result is absolute, without a trailing slash
   dir = (vim.fn.fnamemodify(vim.fs.normalize(dir), ':p'):gsub('(.)/+$', '%1'))
   resolved = {
-    cwd = cwd, opt = opt, root = root, dir = dir, path = dir .. '/comments.json',
+    cwd = cwd, opt = opt, root = root, dir = dir, shared = shared, path = dir .. '/comments.json',
     log = dir .. '/log.jsonl', state = dir .. '/state.json', lock = dir .. '/lock',
     snapshots = dir .. '/snapshots',
   }
@@ -325,9 +327,14 @@ local MIGRATED = '.pre-log.bak'
 local FLUSH_EVERY = 50
 local JSON_NIL = { luanil = { object = true, array = true } }
 
+-- Create the directory of path if it is missing.
+-- Returns: ok (boolean), err (string or nil)
 local function mkdir_for(path)
   local parent = vim.fn.fnamemodify(path, ':h')
-  if vim.fn.isdirectory(parent) == 0 then pcall(vim.fn.mkdir, parent, 'p') end
+  if vim.fn.isdirectory(parent) == 1 then return true, nil end
+  local ok, err = pcall(vim.fn.mkdir, parent, 'p')
+  if vim.fn.isdirectory(parent) == 1 then return true, nil end
+  return false, ok and 'not a directory' or tostring(err)
 end
 
 local function read_bytes(path)
@@ -405,7 +412,8 @@ local lock_held = false
 
 local function locked(loc, fn)
   if lock_held then return true, fn() end
-  mkdir_for(loc.log)
+  local mk_ok, mk_err = mkdir_for(loc.log)
+  if not mk_ok then return false, 'Could not create ' .. vim.fn.fnamemodify(loc.log, ':h') .. ': ' .. mk_err end
   lock_held = true
   local ok, got, a, b = pcall(log.with_lock, loc.lock, fn)
   lock_held = false
@@ -607,7 +615,8 @@ local function import_legacy(loc)
   local imported, seen = {}, {}
   for _, item in ipairs(list) do
     local c = type(item) == 'table' and normalize(item) or nil
-    if c and utils.is_under(c.filename, loc.root) then
+    -- A shared dir is every project's review: import everything
+    if c and (loc.shared or utils.is_under(c.filename, loc.root)) then
       if seen[c.id] then c.id = new_id() end
       seen[c.id] = true
       table.insert(imported, storage.serialise(c))
@@ -670,6 +679,16 @@ local function sync(opts)
   opts = opts or {}
   local loc = resolve()
   local changed = false
+  -- A review that can't be read after a switch (or once its log is gone)
+  -- shows nothing, rather than the previous review's comments
+  local function fail(err)
+    if changed then
+      comments = {}
+      refresh_view()
+      on_change(comments)
+    end
+    return refuse(err)
+  end
   if synced.log ~= loc.log then
     flush()
     reset(loc)
@@ -683,12 +702,12 @@ local function sync(opts)
       changed = true
     end
     local ok, err = init_storage(loc)
-    if not ok then return refuse(err) end
+    if not ok then return fail(err) end
     stat = uv.fs_stat(loc.log)
   end
   if stat and stat.size > 0 then
     local ok, err, read_changed = read_log(loc, stat, opts)
-    if not ok then return refuse(err) end
+    if not ok then return fail(err) end
     changed = changed or read_changed
     check_reappeared(loc)
   end

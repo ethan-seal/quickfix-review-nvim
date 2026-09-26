@@ -147,14 +147,16 @@ log.
 The project root is the git toplevel of Neovim's global working directory,
 or that directory itself outside git, with symlinks resolved. Each git
 worktree has its own toplevel, so each worktree has its own review. After
-|:cd| into another project the review is re-read from that project's
-directory; the quickfix view and signs follow. |:lcd| and |:tcd| don't
-switch projects. The root is looked up once per directory per session, so
+|:cd| into another project (or a change by 'autochdir') the review is
+re-read from that project's directory; the quickfix view and signs follow.
+If that review can't be read, the list is emptied and the review is not
+modified until it is fixed. |:lcd| and |:tcd| don't switch projects. The root is looked up once per directory per session, so
 `git init` in an open directory takes effect after a restart.
 
                                                   *quickfix-review-storage_dir*
 `storage_dir` may be a function, called with the resolved root, returning
-the directory to use, or a string, used as-is (shared by every project).
+the directory to use, or a string, used as-is (shared by every project; its import from the
+legacy global file takes every comment, not only one project's).
 
                                                   *quickfix-review-snapshots*
 `snapshots/` in the storage directory holds copies of commented files, one

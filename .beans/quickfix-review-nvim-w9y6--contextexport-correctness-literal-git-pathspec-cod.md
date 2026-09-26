@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-w9y6
 title: 'Context/export correctness: literal git pathspec, code-fence collisions'
-status: todo
+status: in-progress
 type: bug
 priority: normal
 created_at: 2026-09-26T12:22:52Z
-updated_at: 2026-09-26T12:22:52Z
+updated_at: 2026-09-26T12:54:54Z
 ---
 
 From review cycle 2 (details and repros: /tmp/claude-1001/-home-ethans-Programming-quickfix-review-nvim/cfc4ea53-3598-4975-b59b-e35c5f93f346/scratchpad/review2/opus-edge.md).

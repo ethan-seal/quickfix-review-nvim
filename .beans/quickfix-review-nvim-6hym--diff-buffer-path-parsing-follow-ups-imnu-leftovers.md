@@ -18,3 +18,6 @@ Leftovers accepted in imnu (don't spawn further follow-ups from this bean).
 - [ ] Test: submodule-in-worktree diffview name resolves to <wt>/sub/f
 - [ ] Test: relative gitdir file resolves to the absolute worktree
 - [ ] Test: fugitive name with a .gitrepos-style git dir stays unresolved (add refused)
+
+## Also (leftover from sxwk)
+- test/test_relocate.lua refresh-cost test puts all 300 comments on unloaded files; add 1-3 comments per loaded buffer so the batched from_mark/place/draw_signs path is covered at scale (count calls, no wall clock).

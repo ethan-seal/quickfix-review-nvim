@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-6hym
 title: Diff-buffer path parsing follow-ups (imnu leftovers)
-status: todo
+status: in-progress
 type: bug
 priority: low
 created_at: 2026-09-26T12:47:07Z
-updated_at: 2026-09-26T13:09:34Z
+updated_at: 2026-09-26T15:11:35Z
 ---
 
 Leftovers accepted in imnu (don't spawn further follow-ups from this bean).
@@ -25,3 +25,6 @@ Leftovers accepted in imnu (don't spawn further follow-ups from this bean).
 ## Also (leftovers from w9y6)
 - context.lua:58: if the user's env has GIT_LITERAL_PATHSPECS=1, ':(literal)rel' is taken as a literal filename and the diff is empty. Instead set env GIT_LITERAL_PATHSPECS=1 on the vim.system call and pass bare rel.
 - store.lua view_item: quickfix rows use store.headline(c) raw; a multi-line body puts '\n' in qf text. Use the first line (as the edit picker now does).
+
+## Also (leftover from ir61)
+- store.lua:826-833 import_legacy merge: id-less records from a legacy file changed after the legacy log imported it get a fresh random id from normalize() each time, so they are imported again next to the log's copy (duplicates). Match id-less file records on (filename, lnum, body) instead.

@@ -1130,17 +1130,31 @@ local function relocate_buffer(bufnr, event)
   -- A change another Neovim logged refills the list after the read (see
   -- below), not during it
   local comments = store.all({ defer_view = true })
-  local relocated = track.relocate_buffer(bufnr, comments)
+  local moved_here = track.relocate_buffer(bufnr, comments)
+  local relocated = moved_here
   -- Relocation moves only this buffer's comments: redraw its signs now
   local name = utils.get_real_filepath(bufnr)
   if name ~= '' then draw_signs(bufnr, name, comments) end
-  if not relocated then return end
   local item = pending_jump(bufnr, fresh)
+  if item and not relocated and type(item.user_data) == 'table' then
+    -- A change another Neovim logged, synced above, redraws the signs and so
+    -- places this buffer's marks before relocation runs, which then reports
+    -- no move: the jump still lands on a stale line if the selected entry's
+    -- comment is elsewhere now
+    for _, c in ipairs(comments) do
+      if c.id == item.user_data.id then
+        local p = store.pos(c)
+        if p and p.lnum ~= item.lnum then relocated = true end
+        break
+      end
+    end
+  end
+  if not relocated then return end
   if item then
     local seen = { id = last_seen.id, idx = last_seen.idx }
     jump_finishing = true
     vim.schedule(function() finish_jump(bufnr, item, seen) end)
-  else
+  elseif moved_here then
     -- Never refill the list during a read: a quickfix jump may be reading
     -- the file, and refilling would abort it with E925 (the sync above
     -- defers its own refill likewise)
@@ -1173,8 +1187,12 @@ local function write_back(bufnr, file)
   -- A comment with a snapshot is relocated by diffing it against the saved
   -- content; one with none (from before anchors) can't be diffed, and its
   -- tracking extmark says where it is now
+  -- Every refill of the list here waits until after the write: with
+  -- 'autowrite', a quickfix jump (:cnext) writes the buffer mid-jump, and
+  -- refilling then would abort the jump with E925
+  local defer = { defer_view = true }
   local mine, snapshotted = {}, {}
-  for _, c in ipairs(store.all()) do
+  for _, c in ipairs(store.all(defer)) do
     if utils.files_match(c.filename, name) then
       table.insert(mine, c)
       if c.anchor and c.anchor.sha then table.insert(snapshotted, c) end
@@ -1203,13 +1221,13 @@ local function write_back(bufnr, file)
     end
   end
 
-  if #changes > 0 and (store.update(changes) or 0) > 0 then
+  if #changes > 0 and (store.update(changes, defer) or 0) > 0 then
     -- Place the marks from the new anchors (a changed record has a new view,
     -- whose pos starts at its anchor), then redraw
-    track.relocate_buffer(bufnr, store.all())
-    store.refresh()
+    track.relocate_buffer(bufnr, store.all(defer))
+    store.refresh(defer)
   elseif relocated then
-    store.refresh()
+    store.refresh(defer)
   end
 end
 
@@ -1237,10 +1255,13 @@ function M.setup(opts)
   -- The project follows the global cwd: after :cd, re-read the review from the
   -- new project's storage dir (the list view and signs refresh on change).
   -- 'autochdir' changes it too ('auto'); :lcd and :tcd leave the project alone.
+  -- 'autochdir' fires inside a quickfix jump (:cnext into another dir), where
+  -- refilling the list would abort the jump with E925: its refill waits
+  -- until after the jump. After :cd it is immediate.
   vim.api.nvim_create_autocmd('DirChanged', {
     group = augroup,
     pattern = { 'global', 'auto' },
-    callback = function() store.all() end,
+    callback = function(args) store.all({ defer_view = args.match == 'auto' }) end,
   })
 
   -- Cache the replayed log on exit, so the next start reads only its tail

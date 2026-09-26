@@ -86,6 +86,27 @@ assert.run_test('a comment added by another Neovim shows on the next BufEnter', 
   reset()
 end)
 
+assert.run_test('DirChanged from autochdir refills the list after the event, :cd at once', function()
+  reset()
+  qf.show_list()
+  local view = vim.fn.getqflist({ id = 0 }).id
+
+  -- 'autochdir' fires inside a quickfix jump: the refill waits
+  other_add(2)
+  local tick = view_tick(view)
+  vim.api.nvim_exec_autocmds('DirChanged', { pattern = 'auto' })
+  assert.truthy(has_sign_on_line(2), 'auto: sign drawn at once')
+  assert.equals(view_tick(view), tick, 'auto: list not refilled during the event')
+  vim.wait(100, function() return #vim.fn.getqflist({ id = view, items = 0 }).items > 0 end)
+  assert.length(vim.fn.getqflist({ id = view, items = 0 }).items, 1, 'auto: list refilled after')
+
+  -- :cd refills straight away
+  other_add(4)
+  vim.api.nvim_exec_autocmds('DirChanged', { pattern = 'global' })
+  assert.length(vim.fn.getqflist({ id = view, items = 0 }).items, 2, 'global: list refilled at once')
+  reset()
+end)
+
 assert.run_test('FocusGained and CursorHold pick up another Neovim\'s change', function()
   for _, event in ipairs({ 'FocusGained', 'CursorHold' }) do
     reset()

@@ -1186,10 +1186,11 @@ function M.schedule_startup_gc()
   end, 5000)
 end
 
-local function mutate(build)
+-- opts.defer_view: as for M.all, for every sync the change makes
+local function mutate(build, opts)
   local loc = resolve()
   -- Before locking: the lock can't be taken in a dir that is not writable
-  if readonly_error(loc) then sync() end
+  if readonly_error(loc) then sync(opts) end
   local ro_err = readonly_error(loc)
   if ro_err then
     vim.notify('quickfix-review: ' .. ro_err, vim.log.levels.ERROR)
@@ -1197,7 +1198,7 @@ local function mutate(build)
   end
   local partial = false
   local got, result, err = locked(loc, function()
-    if not sync() then return nil end
+    if not sync(opts) then return nil end
     local events, res = build()
     if #events == 0 then return res end
     local stat = uv.fs_stat(loc.log)
@@ -1205,12 +1206,12 @@ local function mutate(build)
     if header == 1 then table.insert(events, 1, log.new_header()) end
     local wrote, werr, landed = log.append(loc.log, events)
     -- Read back what was written: all of it, some or none
-    sync()
+    sync(opts)
     local grown = uv.fs_stat(loc.log)
     if wrote and grown and grown.size > rotate_limit(loc, grown) and rotate(loc) then
       -- The new log (another inode) is replayed from its checkpoint, and
       -- the cache keyed to it
-      sync()
+      sync(opts)
       flush(true)
       -- Outside this change: it reads every retained log, and takes the lock
       vim.schedule(function() gc(loc) end)
@@ -1248,9 +1249,10 @@ function M.set_on_refill(fn)
 end
 
 -- Redraw the quickfix view and call on_change after comments moved (a
--- relocation), without reading or writing the log: positions are never logged
-function M.refresh()
-  refresh_view()
+-- relocation), without reading or writing the log: positions are never logged.
+-- opts.defer_view refills the view after the current event (as for M.all).
+function M.refresh(opts)
+  if opts and opts.defer_view then refresh_view_later() else refresh_view() end
   on_change(comments)
 end
 
@@ -1361,8 +1363,9 @@ end
 -- top-level lnum/end_lnum to match (never pos, which is derived and kept in
 -- memory only), with the previous values in `prev`. A comment that is gone,
 -- or an anchor with no snapshot sha, is skipped.
+-- opts.defer_view: as for M.all.
 -- Returns: number of comments updated, or nil if the change was refused
-function M.update(changes)
+function M.update(changes, opts)
   return mutate(function()
     local events = {}
     for _, ch in ipairs(changes) do
@@ -1377,7 +1380,7 @@ function M.update(changes)
       end
     end
     return events, #events
-  end)
+  end, opts)
 end
 
 -- Change a comment's text: one update event setting its body, with the

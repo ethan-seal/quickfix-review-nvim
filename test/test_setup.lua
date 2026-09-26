@@ -126,6 +126,54 @@ assert.run_test('overlapping comments are shown together in one float, in line o
   qf.clear_review()
 end)
 
+assert.run_test('view_comment wraps long bodies at the float width', function()
+  local store = require('quickfix-review.store')
+  local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':p')
+  local width = math.min(80, vim.o.columns - 4)
+  local function view_lines(text)
+    qf.clear_review()
+    store.add({ filename = file, lnum = 2, text = text })
+    vim.fn.cursor(2, 1)
+    qf.view_comment()
+    local lines = only_float_lines()
+    local win = floats()[1]
+    local height = vim.api.nvim_win_get_height(win)
+    vim.api.nvim_exec_autocmds('CursorMoved', {})
+    return lines, store.headline(store.all()[1]), height
+  end
+
+  local ok, err = pcall(function()
+    -- Breaks at spaces: no line over width, nothing lost
+    local words = {}
+    for i = 1, 30 do words[i] = 'word' .. i end
+    local lines, headline = view_lines('[NOTE] ' .. table.concat(words, ' '))
+    assert.truthy(#lines > 1, 'long body wraps onto several lines')
+    for i, l in ipairs(lines) do
+      assert.truthy(#l <= width, 'line ' .. i .. ' fits width ' .. width .. ': ' .. #l)
+    end
+    local collapse = function(s) return (s:gsub('%s+', ' '):gsub('^ ', ''):gsub(' $', '')) end
+    assert.equals(collapse(table.concat(lines, ' ')), collapse(headline), 'wrapped text is the headline')
+
+    -- A token with no spaces is hard-cut at exactly width (after the label
+    -- breaks off at its space)
+    local token = string.rep('x', 2 * width + 5)
+    lines = view_lines('[NOTE] ' .. token)
+    assert.equals(table.concat(lines, '\n'),
+      table.concat({ '[NOTE] ', token:sub(1, width), token:sub(width + 1, 2 * width), 'xxxxx' }, '\n'),
+      'label, two width-long cuts, remainder')
+
+    -- The float is at most 20 rows high
+    local many = {}
+    for i = 1, 400 do many[i] = 'w' .. i end
+    local tall, _, height = view_lines('[NOTE] ' .. table.concat(many, ' '))
+    assert.truthy(#tall > 20, 'body needs more than 20 lines')
+    assert.equals(height, 20, 'float height capped at 20')
+  end)
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  qf.clear_review()
+  if not ok then error(err, 0) end
+end)
+
 assert.run_test('FileChangedShellPost relocates the changed buffer and never offers to clear', function()
   local changed_buf = vim.api.nvim_get_current_buf()
   local path = vim.api.nvim_buf_get_name(changed_buf)

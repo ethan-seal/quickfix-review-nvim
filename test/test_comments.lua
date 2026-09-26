@@ -292,6 +292,75 @@ assert.run_test('jump treats a comment made through a symlink as this file', fun
   if not ok then error(err, 0) end
 end)
 
+assert.run_test('jump crosses files in filename order and wraps across files', function()
+  qf.clear_review()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, 'p')
+  local body = {}
+  for i = 1, 10 do body[i] = 'line ' .. i end
+  local a, b = dir .. '/a.txt', dir .. '/b.txt'
+  vim.fn.writefile(body, a)
+  vim.fn.writefile(body, b)
+  local ok, err = pcall(function()
+    store.add({ filename = a, lnum = 2, text = '[NOTE] a2' })
+    store.add({ filename = a, lnum = 5, text = '[NOTE] a5' })
+    store.add({ filename = b, lnum = 4, text = '[NOTE] b4' })
+    vim.cmd('edit ' .. vim.fn.fnameescape(a))
+    vim.fn.cursor(1, 1)
+
+    local function step(direction)
+      qf.jump_comment(direction)
+      vim.wait(50, function() return false end)
+      vim.api.nvim_exec_autocmds('CursorMoved', {})
+      return vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':t'):sub(1, 1) .. ':' .. vim.fn.line('.')
+    end
+    local visited = {}
+    for _ = 1, 4 do table.insert(visited, step(1)) end
+    assert.equals(table.concat(visited, ','), 'a:2,a:5,b:4,a:2', 'next visits a, then b, then wraps to a')
+    assert.equals(step(-1), 'b:4', 'previous from the first comment wraps back to b')
+    assert.equals(step(-1), 'a:5', 'previous from b goes back to a')
+  end)
+  vim.api.nvim_set_current_buf(file_buf)
+  for _, path in ipairs({ a, b }) do
+    local buf = vim.fn.bufnr(path)
+    if buf > 0 then vim.cmd('bwipeout! ' .. buf) end
+  end
+  vim.fn.delete(dir, 'rf')
+  qf.clear_review()
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('comment-type cycling walks the configured order and wraps both ways', function()
+  local types = utils.get_comment_types()
+  local n = #types
+  assert.truthy(n > 1, 'several comment types configured')
+  local index_of = {}
+  for i, t in ipairs(types) do index_of[t] = i end
+
+  local seen = {}
+  for i = 1, n do seen[i] = qf.cycle_next_comment_type() end
+  local k = index_of[seen[1]]
+  assert.truthy(k, 'cycled to a configured type: ' .. tostring(seen[1]))
+  for i = 1, n do
+    assert.equals(seen[i], types[((k + i - 2) % n) + 1], 'next #' .. i .. ' follows the configured order')
+  end
+  -- n steps land one before the first: the walk wrapped round once
+  assert.equals(seen[n], types[((k - 2) % n) + 1], 'next wraps past the last type')
+
+  assert.equals(qf.cycle_previous_comment_type(), types[((k - 3) % n) + 1], 'previous steps back one')
+  local back = {}
+  for i = 1, n do back[i] = qf.cycle_previous_comment_type() end
+  assert.equals(back[n], types[((k - 3) % n) + 1], 'previous wraps round to the same type')
+
+  qf.clear_review()
+  vim.fn.cursor(4, 1)
+  qf.add_comment_cycle()
+  local list = qf.comments()
+  assert.length(list, 1, 'cycle comment added')
+  assert.equals(list[1].kind, back[n], 'comment uses the current cycle type')
+  qf.clear_review()
+end)
+
 assert.run_test('summary_data counts every configured type in a fixed order', function()
   qf.clear_review()
   vim.fn.cursor(1, 1)

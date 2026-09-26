@@ -505,6 +505,41 @@ assert.run_test('comment added through a symlink shows on the real path', functi
   assert.truthy(has_sign, 'sign on line 3 of the real-path buffer')
 end)
 
+assert.run_test('refresh_buffer_signs skips lines past the end of the buffer', function()
+  qf.clear_review()
+  local bufnr = vim.fn.bufnr()
+  local abs = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ':p')
+  local count = vim.api.nvim_buf_line_count(bufnr)
+  local function all_marks()
+    return vim.api.nvim_buf_get_extmarks(bufnr, utils.get_ns_id(), 0, -1, {})
+  end
+  local function refresh(records)
+    local ok, err = pcall(utils.refresh_buffer_signs, bufnr, abs, records)
+    assert.truthy(ok, 'refresh does not error: ' .. tostring(err))
+  end
+
+  -- Wholly beyond the end: no sign at all
+  refresh({ { filename = abs, lnum = count + 8, end_lnum = count + 8, kind = 'note', text = '[NOTE] x' } })
+  assert.length(all_marks(), 0, 'no sign for a comment past the end')
+
+  -- Straddling the end: signs only on the lines that exist
+  refresh({ { filename = abs, lnum = count - 1, end_lnum = count + 3, kind = 'note', text = '[NOTE] x' } })
+  assert.truthy(has_sign_on_line(bufnr, count - 1), 'sign on the start line')
+  assert.truthy(has_sign_on_line(bufnr, count), 'sign on the last line')
+  assert.length(all_marks(), 2, 'signs only on existing lines')
+
+  -- A valid comment alongside one past the end still gets its sign
+  refresh({
+    { filename = abs, lnum = count + 8, end_lnum = count + 8, kind = 'issue', text = '[ISSUE] x' },
+    { filename = abs, lnum = 3, end_lnum = 3, kind = 'note', text = '[NOTE] y' },
+  })
+  assert.length(all_marks(), 1, 'one sign placed')
+  assert.equals(get_sign_name_on_line(bufnr, 3), 'review_note', 'valid comment keeps its sign')
+
+  utils.refresh_buffer_signs(bufnr, abs, qf.comments())
+  qf.clear_review()
+end)
+
 test_helper.cleanup_test_environment()
 
 return assert

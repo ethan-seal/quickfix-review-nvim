@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-puwt
 title: Test coverage gaps
-status: todo
+status: completed
 type: task
 priority: normal
 created_at: 2026-09-26T04:31:20Z
-updated_at: 2026-09-26T04:57:50Z
+updated_at: 2026-09-26T08:35:23Z
 blocked_by:
     - quickfix-review-nvim-vj7e
     - quickfix-review-nvim-l6ht

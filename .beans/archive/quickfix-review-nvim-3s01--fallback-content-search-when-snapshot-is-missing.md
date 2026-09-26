@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-3s01
 title: Fallback content search when snapshot is missing
-status: todo
+status: completed
 type: task
 priority: normal
 created_at: 2026-09-26T04:57:59Z
-updated_at: 2026-09-26T06:43:25Z
+updated_at: 2026-09-26T07:39:21Z
 parent: quickfix-review-nvim-8oi5
 blocked_by:
     - quickfix-review-nvim-hdzw

@@ -46,6 +46,110 @@ assert.run_test('a single line maps through insertions and deletions', function(
   assert.truthy(touched, 'touched')
 end)
 
+-- search: finding an anchor's lines when its snapshot is missing
+local function check_search(name, lines, anchor, lnum, end_lnum, state)
+  assert.run_test('search: ' .. name, function()
+    local l, e, s = track.search(lines, anchor)
+    assert.equals(l, lnum, 'lnum')
+    assert.equals(e, end_lnum, 'end_lnum')
+    assert.equals(s, state, 'state')
+  end)
+end
+
+local function numbered(n, prefix)
+  local out = {}
+  for i = 1, n do out[i] = (prefix or 'line ') .. i end
+  return out
+end
+
+-- A comment on lines 4-5 of numbered(10)
+local A45 = {
+  lnum = 4, end_lnum = 5, lines = { 'line 4', 'line 5' },
+  before = { 'line 2', 'line 3' }, after = { 'line 6', 'line 7' },
+}
+
+check_search('unchanged: current', numbered(10), A45, 4, 5, 'current')
+do
+  local moved = numbered(10)
+  for _ = 1, 3 do table.insert(moved, 1, 'new') end
+  check_search('moved by +3: shifted', moved, A45, 7, 8, 'shifted')
+end
+do
+  local up = numbered(10)
+  table.remove(up, 1)
+  check_search('moved by -1: shifted', up, A45, 3, 4, 'shifted')
+end
+do
+  local removed = numbered(10)
+  table.remove(removed, 5)
+  check_search('a commented line removed: outdated at the old lines', removed, A45, 4, 5, 'outdated')
+end
+do
+  local changed = numbered(10)
+  changed[4] = 'line four'
+  check_search('a commented line changed: outdated', changed, A45, 4, 5, 'outdated')
+end
+do
+  local inside = numbered(10)
+  table.insert(inside, 5, 'inserted')
+  check_search('a line inserted inside: outdated', inside, A45, 4, 5, 'outdated')
+end
+check_search('file shorter than the anchor: outdated, clamped', { 'a', 'b', 'c' }, A45, 3, 3, 'outdated')
+check_search('empty file: outdated at line 1', {}, A45, 1, 1, 'outdated')
+check_search('no lines in the anchor: outdated', numbered(10),
+  { lnum = 4, end_lnum = 5 }, 4, 5, 'outdated')
+do
+  local far = numbered(300, 'x ')
+  far[250], far[251] = 'line 4', 'line 5'
+  check_search('beyond 200 lines away: not found', far, A45, 4, 5, 'outdated')
+end
+do
+  local crlf = { 'new', 'line 1\r', 'line 2\r', 'line 3\r', 'line 4\r', 'line 5\r', 'line 6\r' }
+  check_search('CR line endings match', crlf, A45, 5, 6, 'shifted')
+end
+
+-- Blocks of `end`: which one is meant comes from the context
+local ENDS = {
+  'function a()', '  if x then', '    one()', '  end', 'end',
+  '', 'function b()', '  if y then', '    two()', '  end', 'end',
+}
+local B_END = {
+  lnum = 10, end_lnum = 11, lines = { '  end', 'end' },
+  before = { '  if y then', '    two()' }, after = { '' },
+}
+do
+  local shifted = vim.deepcopy(ENDS)
+  table.insert(shifted, 1, '-- header')
+  table.insert(shifted, 1, '-- header')
+  check_search('block of end lines with distinct context: the right one', shifted, B_END, 12, 13, 'shifted')
+end
+do
+  -- b() moved above a(): the nearest `end end` is a()'s, but b()'s context wins
+  local swapped = {
+    'function b()', '  if y then', '    two()', '  end', 'end',
+    '', 'function a()', '  if x then', '    one()', '  end', 'end',
+  }
+  check_search('context beats nearness', swapped, B_END, 4, 5, 'shifted')
+end
+do
+  -- Both bodies changed: no context tells the `end end` blocks apart
+  local changed = vim.deepcopy(ENDS)
+  changed[1], changed[2], changed[3] = 'p', 'q', 'r'
+  changed[7], changed[8], changed[9] = 's', 't', 'u'
+  table.insert(changed, 1, 'new')
+  check_search('trivial lines with no context: ambiguous, outdated', changed,
+    { lnum = 10, end_lnum = 11, lines = { '  end', 'end' }, before = { 'zz', 'yy' }, after = {} },
+    10, 11, 'outdated')
+end
+do
+  -- A distinctive line repeated with equal context: the nearest one
+  local rep = { 'call(x)', 'a', 'call(x)', 'b', 'c', 'call(x)' }
+  check_search('non-trivial repeated line: nearest wins', rep,
+    { lnum = 5, end_lnum = 5, lines = { 'call(x)' }, before = {}, after = {} }, 6, 6, 'shifted')
+  check_search('non-trivial repeated line equidistant: outdated', rep,
+    { lnum = 2, end_lnum = 2, lines = { 'call(x)' }, before = {}, after = {} }, 2, 2, 'outdated')
+end
+
 -- The diff wrapper gives the hunk shapes the mapping assumes
 local function check_diff(label)
   assert.run_test('diff hunk shapes (' .. label .. ')', function()

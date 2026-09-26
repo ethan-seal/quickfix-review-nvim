@@ -5,11 +5,12 @@
 --   current   the lines are where the anchor says, unchanged
 --   shifted   the lines are unchanged but moved (lines added/removed above)
 --   outdated  a commented line was changed or deleted, or a line was
---             inserted inside the range, or the file or snapshot is missing
+--             inserted inside the range, or the file is missing
 -- pos is derived, kept in memory only and never logged: it is recomputed
 -- from the anchor, always by diffing the anchor's snapshot against the
 -- current content (never through intermediate versions), so an outdated
--- comment keeps its original anchor.
+-- comment keeps its original anchor. When the snapshot is missing, the
+-- anchor's own lines are searched for instead (M.search).
 --
 -- Loaded buffers of real files are relocated on BufReadPost and
 -- FileChangedShellPost; each comment then gets a tracking extmark (namespace
@@ -88,10 +89,92 @@ local function make_pos(sha, lnum, end_lnum, state)
   return { sha = sha, lnum = lnum, end_lnum = end_lnum, state = state }
 end
 
+-- How far from the anchor's line the fallback search looks
+local SEARCH_WINDOW = 200
+
+local function strip_cr(line) return (line:gsub('\r$', '')) end
+
+-- Whether a line says too little to identify a block by itself (`end`, `}`,
+-- blank): at most 4 characters once trimmed, or no letters or digits
+local function trivial(line)
+  local t = vim.trim(line)
+  return #t <= 4 or not t:find('%w')
+end
+
+-- Where the anchor's block is in `lines` when its snapshot is missing: the
+-- places within SEARCH_WINDOW lines of anchor.lnum holding exactly
+-- anchor.lines, ranked by how many of the anchor.before/after context lines
+-- still surround them, then by nearness to anchor.lnum. A unique best place
+-- is 'current' (same lines) or 'shifted'. No place, a tie, or a block of
+-- only trivial lines found in several places with no context to tell them
+-- apart is 'outdated', at the anchor's lines clamped to the file.
+-- Returns: lnum, end_lnum, state
+function M.search(lines, anchor)
+  local lnum = anchor.lnum
+  local end_lnum = math.max(anchor.end_lnum or lnum, lnum)
+  local span = end_lnum - lnum
+  local block = anchor.lines or {}
+  local before, after = anchor.before or {}, anchor.after or {}
+  local n = #block
+
+  local function outdated()
+    local count = math.max(#lines, 1)
+    local l = math.max(1, math.min(lnum, count))
+    return l, math.max(l, math.min(end_lnum, count)), 'outdated'
+  end
+  if n == 0 then return outdated() end
+
+  local function at(i) return lines[i] and strip_cr(lines[i]) end
+  -- The block is whole (not truncated) only when it covers the range; only
+  -- then does `after` directly follow it
+  local whole = n == span + 1
+
+  -- Every place holding the block, with its context score
+  local found = {}
+  for s = math.max(1, lnum - SEARCH_WINDOW), math.min(#lines - n + 1, lnum + SEARCH_WINDOW) do
+    local match = true
+    for k = 1, n do
+      if at(s + k - 1) ~= block[k] then match = false break end
+    end
+    if match then
+      local score = 0
+      for k = 1, #before do
+        if at(s - (#before - k + 1)) == before[k] then score = score + 1 end
+      end
+      if whole then
+        for k = 1, #after do
+          if at(s + n - 1 + k) == after[k] then score = score + 1 end
+        end
+      end
+      table.insert(found, { s = s, score = score, dist = math.abs(s - lnum) })
+    end
+  end
+  if #found == 0 then return outdated() end
+
+  table.sort(found, function(x, y)
+    if x.score ~= y.score then return x.score > y.score end
+    return x.dist < y.dist
+  end)
+  local best, second = found[1], found[2]
+  if second and second.score == best.score then
+    -- Context can't tell them apart: nearness decides, unless it ties too or
+    -- the block is only trivial lines, which say nothing on their own
+    local all_trivial = true
+    for _, l in ipairs(block) do
+      if not trivial(l) then all_trivial = false break end
+    end
+    if all_trivial or second.dist == best.dist then return outdated() end
+  end
+
+  local new_end = math.max(best.s, math.min(best.s + span, #lines))
+  local state = (best.s == lnum and new_end == end_lnum) and 'current' or 'shifted'
+  return best.s, new_end, state
+end
+
 -- The pos of comment `c` in content `lines` (whose sha is `sha`, computed
 -- when nil). A comment with no snapshot sha (from before anchors, or whose
--- snapshot couldn't be saved) stays at its anchor lines, as current. A
--- missing snapshot leaves it at its anchor, outdated.
+-- snapshot couldn't be saved) stays at its anchor lines, as current. When
+-- its snapshot is missing or corrupt, its lines are searched for (M.search).
 function M.relocate(c, lines, sha)
   local snapshots = require('quickfix-review.snapshots')
   local a = c.anchor or c
@@ -99,7 +182,10 @@ function M.relocate(c, lines, sha)
   if not a.sha then return make_pos(sha, a.lnum, a.end_lnum or a.lnum, 'current') end
   if sha == a.sha then return make_pos(sha, a.lnum, a.end_lnum or a.lnum, 'current') end
   local old = snapshots.get(a.sha)
-  if not old then return make_pos(sha, a.lnum, a.end_lnum or a.lnum, 'outdated') end
+  if not old then
+    local lnum, end_lnum, state = M.search(lines, a)
+    return make_pos(sha, lnum, end_lnum, state)
+  end
   local lnum, end_lnum, state = M.map_range(M.diff(old, lines), a.lnum, a.end_lnum or a.lnum)
   return make_pos(sha, lnum, end_lnum, state)
 end

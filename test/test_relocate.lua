@@ -264,19 +264,60 @@ assert.run_test('a legacy comment with no snapshot stays current at its line', f
   assert.equals((store.range(c)), 4, 'at its stored line')
 end)
 
-assert.run_test('a comment whose snapshot is missing is outdated at its anchor', function()
+-- A NOTE on line 6 of TEN whose snapshot is then deleted
+local function snapshotless_comment()
   fresh()
   vim.fn.cursor(6, 1)
   qf.add_comment('NOTE')
   local c = qf.comments()[1]
   os.remove(store.snapshots_dir() .. '/' .. c.anchor.sha)
   require('quickfix-review.snapshots')._clear_cache()
+end
+
+assert.run_test('a comment whose snapshot is missing is found by its lines, shifted', function()
+  snapshotless_comment()
   local lines = vim.deepcopy(TEN)
-  table.insert(lines, 1, 'top')
+  for _ = 1, 3 do table.insert(lines, 1, 'top') end
   rewrite(lines)
-  c = qf.comments()[1]
+  local c = qf.comments()[1]
+  assert.equals(store.pos(c).state, 'shifted', 'shifted')
+  assert.equals((store.range(c)), 9, 'moved down 3')
+end)
+
+assert.run_test('a comment whose snapshot is missing and whose lines are gone is outdated', function()
+  snapshotless_comment()
+  local lines = vim.deepcopy(TEN)
+  table.remove(lines, 6)
+  rewrite(lines)
+  local c = qf.comments()[1]
   assert.equals(store.pos(c).state, 'outdated', 'outdated')
   assert.equals((store.range(c)), 6, 'at its anchor line')
+end)
+
+assert.run_test('a comment whose snapshot is missing is found from disk too', function()
+  local path = vim.fn.tempname() .. '-nosnap.txt'
+  vim.fn.writefile(TEN, path)
+  vim.cmd('edit ' .. vim.fn.fnameescape(path))
+  local buf = vim.api.nvim_get_current_buf()
+  local ok, err = pcall(function()
+    qf.clear_review()
+    vim.fn.cursor(6, 1)
+    qf.add_comment('NOTE')
+    local c = qf.comments()[1]
+    os.remove(store.snapshots_dir() .. '/' .. c.anchor.sha)
+    require('quickfix-review.snapshots')._clear_cache()
+    vim.api.nvim_set_current_buf(file_buf)
+    vim.cmd('bwipeout! ' .. buf)
+
+    local lines = vim.deepcopy(TEN)
+    for _ = 1, 3 do table.insert(lines, 1, 'top') end
+    vim.fn.writefile(lines, path)
+    assert.equals(store.pos(c).state, 'shifted', 'shifted')
+    assert.equals((store.range(c)), 9, 'moved down 3')
+  end)
+  os.remove(path)
+  qf.clear_review()
+  if not ok then error(err, 0) end
 end)
 
 assert.run_test('deleting and clearing comments removes their tracking extmarks', function()

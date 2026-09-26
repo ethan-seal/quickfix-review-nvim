@@ -442,6 +442,154 @@ assert.run_test('a type that cannot name a command warns and gets none', functio
   if not ok2 then error(err2, 0) end
 end)
 
+-- Global maps (in mode) that setup() made: their desc ends in the marker
+local function plugin_maps(mode)
+  local marker = require('quickfix-review.commands').MARKER
+  local found = {}
+  for _, map in ipairs(vim.api.nvim_get_keymap(mode)) do
+    if type(map.desc) == 'string' and vim.endswith(map.desc, marker) then table.insert(found, map.lhs) end
+  end
+  return found
+end
+
+-- Run fn with vim.notify recorded; returns the WARN messages and fn's result
+local function capture_warnings(fn)
+  local warns = {}
+  local original = vim.notify
+  vim.notify = function(msg, level)
+    if level == vim.log.levels.WARN then table.insert(warns, msg) end
+  end
+  local ok, err = pcall(fn)
+  vim.notify = original
+  return ok, err, warns
+end
+
+assert.run_test('setup() twice with a map disabled the second time removes it', function()
+  local ok, err = pcall(function()
+    qf.setup({ storage_file = test_helper.storage_file, keymaps = { export = '<leader>ce' } })
+    assert.truthy(vim.fn.maparg('<leader>ce', 'n') ~= '', 'export map made')
+    qf.setup({ storage_file = test_helper.storage_file, keymaps = { export = false } })
+    assert.equals(vim.fn.maparg('<leader>ce', 'n'), '', 'export map gone after it is disabled')
+  end)
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('setup() without a type removes its add map', function()
+  local ok, err = pcall(function()
+    qf.setup({ storage_file = test_helper.storage_file, additional_comment_types = { nit = nit },
+      keymaps = { add_nit = '<leader>cN' } })
+    assert.truthy(vim.fn.maparg('<leader>cN', 'n') ~= '', 'normal map made')
+    assert.truthy(vim.fn.maparg('<leader>cN', 'v') ~= '', 'visual map made')
+    qf.setup({ storage_file = test_helper.storage_file })
+    assert.equals(vim.fn.maparg('<leader>cN', 'n'), '', 'normal map gone')
+    assert.equals(vim.fn.maparg('<leader>cN', 'v'), '', 'visual map gone')
+  end)
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test("setup() leaves a user's own map on a disabled key alone", function()
+  local ok, err = pcall(function()
+    qf.setup({ storage_file = test_helper.storage_file, keymaps = { export = false } })
+    vim.keymap.set('n', '<leader>ce', function() end, { desc = 'mine' })
+    qf.setup({ storage_file = test_helper.storage_file, keymaps = { export = false } })
+    assert.equals(vim.fn.maparg('<leader>ce', 'n', false, true).desc, 'mine', 'user map kept')
+  end)
+  pcall(vim.keymap.del, 'n', '<leader>ce')
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('keymaps = false: setup completes with no plugin maps', function()
+  local ok, err = pcall(function()
+    local done, setup_err = pcall(qf.setup, { storage_file = test_helper.storage_file,
+      additional_comment_types = { nit = nit }, keymaps = false })
+    assert.truthy(done, 'setup does not throw: ' .. tostring(setup_err))
+    assert.truthy(vim.api.nvim_get_commands({}).ReviewAddIssue, 'commands made')
+    assert.truthy(#vim.api.nvim_get_autocmds({ group = 'QuickfixReview' }) > 0, 'autocmds made')
+    assert.length(plugin_maps('n'), 0, 'no normal plugin maps')
+    assert.length(plugin_maps('v'), 0, 'no visual plugin maps')
+  end)
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('export = false warns and keeps the default export format', function()
+  local config = require('quickfix-review.config')
+  local ok, err, warns = capture_warnings(function()
+    qf.setup({ storage_file = test_helper.storage_file, export = false })
+  end)
+  local ok2, err2 = pcall(function()
+    assert.truthy(ok, 'setup does not throw: ' .. tostring(err))
+    assert.truthy(#warns > 0, 'warned')
+    assert.equals(config.options.export.item_format, config.defaults.export.item_format, 'default item_format')
+    assert.truthy(config.options.export.type_legend:find('ISSUE', 1, true), 'legend generated')
+  end)
+  test_helper.setup_test_environment()
+  if not ok2 then error(err2, 0) end
+end)
+
+assert.run_test('an uppercase type key is stored lowercase and usable', function()
+  local config = require('quickfix-review.config')
+  local ok, err, warns = capture_warnings(function()
+    qf.setup({ storage_file = test_helper.storage_file, additional_comment_types = { Bug = nit } })
+  end)
+  local ok2, err2 = pcall(function()
+    assert.truthy(ok, 'setup does not throw: ' .. tostring(err))
+    assert.truthy(config.options.comment_types.bug, 'stored as bug')
+    assert.falsy(config.options.comment_types.Bug, 'no Bug key')
+    local warned = false
+    for _, msg in ipairs(warns) do
+      if msg:find("'Bug'", 1, true) then warned = true end
+    end
+    assert.truthy(warned, 'warned about Bug')
+    assert.truthy(vim.api.nvim_get_commands({}).ReviewAddBug, ':ReviewAddBug made')
+    qf.clear_review()
+    vim.fn.cursor(1, 1)
+    qf.add_comment('BUG')
+    assert.length(qf.comments(), 1, 'BUG comment added')
+    qf.clear_review()
+  end)
+  test_helper.setup_test_environment()
+  if not ok2 then error(err2, 0) end
+end)
+
+assert.run_test('an uppercase type key colliding with a lowercase one warns', function()
+  local config = require('quickfix-review.config')
+  local other = { sign = 'b', highlight = 'DiagnosticHint', description = 'Other' }
+  local ok, err, warns = capture_warnings(function()
+    qf.setup({ storage_file = test_helper.storage_file, additional_comment_types = { Bug = other, bug = nit } })
+  end)
+  local ok2, err2 = pcall(function()
+    assert.truthy(ok, 'setup does not throw: ' .. tostring(err))
+    assert.equals(config.options.comment_types.bug.description, 'Nitpicks', 'lowercase key wins')
+    assert.falsy(config.options.comment_types.Bug, 'no Bug key')
+    assert.truthy(#warns > 0, 'warned')
+  end)
+  test_helper.setup_test_environment()
+  if not ok2 then error(err2, 0) end
+end)
+
+assert.run_test('setup() with defaults does not warn', function()
+  local ok, err, warns = capture_warnings(function()
+    qf.setup({ storage_file = test_helper.storage_file })
+  end)
+  test_helper.setup_test_environment()
+  assert.truthy(ok, 'setup does not throw: ' .. tostring(err))
+  assert.length(warns, 0, 'no warnings: ' .. vim.inspect(warns))
+end)
+
+assert.run_test('the cycle add map desc does not mention Tab', function()
+  local ok, err = pcall(function()
+    qf.setup({ storage_file = test_helper.storage_file })
+    local desc = vim.fn.maparg('<leader>ca', 'n', false, true).desc
+    assert.truthy(desc and not desc:find('Tab', 1, true), 'desc: ' .. tostring(desc))
+  end)
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
 test_helper.cleanup_test_environment()
 
 return assert

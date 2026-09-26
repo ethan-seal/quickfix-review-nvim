@@ -139,6 +139,26 @@ end
 -- Fill in the options derived from comment_types (the types themselves, their
 -- keymaps, signs and export legend), respecting what the user set explicitly
 local function derive(user_opts)
+  -- keymaps = false disables every plugin map; any other non-table is an
+  -- error. Checked first: everything below indexes M.options.keymaps.
+  local all_keymaps_off = false
+  if M.options.keymaps == false then
+    all_keymaps_off = true
+    M.options.keymaps = {}
+    for key, _ in pairs(M.defaults.keymaps) do M.options.keymaps[key] = false end
+    for key, _ in pairs(M.default_type_keymaps) do M.options.keymaps[key] = false end
+  elseif type(M.options.keymaps) ~= 'table' then
+    vim.notify('quickfix-review: keymaps must be a table or false; using the default keymaps',
+      vim.log.levels.WARN)
+    M.options.keymaps = vim.deepcopy(M.defaults.keymaps)
+  end
+  -- export has no "disabled" meaning: a non-table falls back to the default
+  if type(M.options.export) ~= 'table' then
+    vim.notify('quickfix-review: export must be a table; using the default export format',
+      vim.log.levels.WARN)
+    M.options.export = vim.deepcopy(M.defaults.export)
+  end
+
   -- Determine final comment_types:
   -- 1. If user provides comment_types, use it (replaces defaults)
   -- 2. Otherwise use default_comment_types
@@ -160,7 +180,52 @@ local function derive(user_opts)
     base_types = vim.tbl_deep_extend('force', base_types, user_opts.additional_comment_types)
   end
 
+  -- Type names are stored and looked up lowercased (store, storage, signs),
+  -- so a key with an uppercase letter is renamed to its lowercase form, along
+  -- with its add_<type> keymap and signs. On a collision the key that was
+  -- already lowercase wins, else the first in sorted order.
+  local user_signs = type(M.options.signs) == 'table' and M.options.signs or nil
+  local names = vim.tbl_keys(base_types)
+  table.sort(names, function(a, b) return tostring(a) < tostring(b) end)
+  local lowered = {}
+  for _, name in ipairs(names) do
+    if type(name) == 'string' and name == name:lower() then lowered[name] = base_types[name] end
+  end
+  for _, name in ipairs(names) do
+    local lower = type(name) == 'string' and name:lower() or name
+    if lower ~= name then
+      if lowered[lower] ~= nil then
+        vim.notify(string.format(
+          "quickfix-review: comment type '%s' is the same as '%s' (types are lowercase); ignoring '%s'",
+          name, lower, name), vim.log.levels.WARN)
+      else
+        vim.notify(string.format("quickfix-review: comment type '%s' is stored as '%s'", name, lower),
+          vim.log.levels.WARN)
+        lowered[lower] = base_types[name]
+        local keymaps = M.options.keymaps
+        if keymaps['add_' .. lower] == nil then
+          keymaps['add_' .. lower] = keymaps['add_' .. name]
+        end
+        keymaps['add_' .. name] = nil
+        if user_signs then
+          for _, suffix in ipairs({ '', '_continuation' }) do
+            if user_signs[lower .. suffix] == nil then
+              user_signs[lower .. suffix] = user_signs[name .. suffix]
+            end
+            user_signs[name .. suffix] = nil
+          end
+        end
+      end
+    end
+  end
+  base_types = lowered
+
   M.options.comment_types = base_types
+
+  -- With keymaps = false, add_<type> of custom types is off too
+  if all_keymaps_off then
+    for type_name, _ in pairs(base_types) do M.options.keymaps['add_' .. type_name] = false end
+  end
 
   -- Log rotation options: a bad value falls back to the default
   local max = user_opts.log_max_bytes

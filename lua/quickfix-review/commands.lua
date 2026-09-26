@@ -10,8 +10,9 @@ function M.range_of(o)
 end
 
 -- The CamelCase command suffix of a type key (needs_work -> NeedsWork), or
--- nil when the key cannot name a command. Lookups lowercase the type
--- (utils.get_comment_type_config), so only lowercase keys are usable anyway.
+-- nil when the key cannot name a command. Config lowercases type keys, so
+-- this is nil only for names with other characters (e.g. 'needs-work'),
+-- which stay reachable through :ReviewAdd {type}.
 local function camel(name)
   if not name:match('^%l[%l%d_]*$') then return nil end
   local parts = {}
@@ -23,7 +24,9 @@ end
 
 -- Ends the desc of every generated :ReviewAdd<Type>, so that only those are
 -- deleted when their type is no longer configured
+-- (and of every global keymap setup() makes, for the same reason)
 local MARKER = ' [quickfix-review]'
+M.MARKER = MARKER
 
 local function add(type_name, o)
   require('quickfix-review').add_comment(type_name:upper(), M.range_of(o))

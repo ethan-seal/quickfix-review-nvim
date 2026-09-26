@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-bpi7
 title: 'Setup/keymap config: uppercase types, stale maps on re-run, keymaps=false crash, qf delete map'
-status: in-progress
+status: completed
 type: bug
 priority: low
 created_at: 2026-09-26T12:22:52Z
-updated_at: 2026-09-26T15:22:32Z
+updated_at: 2026-09-26T15:29:25Z
 ---
 
 From review cycle 2 (details and repros: /tmp/claude-1001/-home-ethans-Programming-quickfix-review-nvim/cfc4ea53-3598-4975-b59b-e35c5f93f346/scratchpad/review2/opus-ui.md).

@@ -103,9 +103,10 @@ options are optional; defaults are shown below.
         item_format = '%d. **[%s]** `%s` - %s',
       },
 
-      -- Keymaps (set to false to disable)
-      -- Default type keymaps: add_issue, add_suggestion, add_note,
-      --   add_praise, add_question, add_insight
+      -- Keymaps (set one to false to disable it, or keymaps = false for none)
+      -- Default type keymaps: add_issue <leader>ci, add_suggestion <leader>cs,
+      --   add_note <leader>cn, add_praise <leader>cp, add_question <leader>cq,
+      --   add_insight <leader>ck
       keymaps = {
         -- Comment type cycling
         add_comment_cycle = '<leader>ca',  -- Add comment with current cycle type
@@ -351,6 +352,9 @@ To disable specific keymaps, set them to `false`: >lua
       },
     })
 <
+To disable every keymap the plugin makes, set `keymaps = false`. Commands
+still work. Calling setup() again removes maps that are no longer
+configured.
 ==============================================================================
 4. USAGE                                                 *quickfix-review-usage*
 
@@ -451,10 +455,12 @@ press `dd` to delete the comment under cursor.
 :[range]ReviewAdd<Type> setup() makes one such command for every configured
                         comment type, custom ones included, CamelCased from
                         the type name: `nit` gives `:ReviewAddNit`,
-                        `needs_work` gives `:ReviewAddNeedsWork`. Only names
-                        of lowercase letters, digits and `_` get a command;
-                        any other name warns and is reachable through
-                        |:ReviewAdd|. A type left out of the configuration
+                        `needs_work` gives `:ReviewAddNeedsWork`. Type
+                        names are lowercased at setup (with a warning), so
+                        `Bug` becomes `bug`. Only names of lowercase
+                        letters, digits and `_` get a command; any other
+                        name (such as `needs-work`) warns and is reachable
+                        through |:ReviewAdd|. A type left out of the configuration
                         (e.g. when `comment_types` replaces the defaults)
                         loses its command.
 
@@ -573,7 +579,8 @@ Default keymaps (normal and visual mode where applicable):
 
 Quickfix window keymaps:
   `dd`            Delete comment under cursor
-  `<leader>cd`    Delete comment under cursor
+  `<leader>cd`    Delete comment under cursor (the global
+                  `keymaps.delete_comment`; `false` leaves only `dd`)
   `<leader>cm`    Edit comment under cursor (the global `keymaps.edit`)
 
 All keymaps can be customized or disabled via configuration.

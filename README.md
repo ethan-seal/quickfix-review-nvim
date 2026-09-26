@@ -133,9 +133,10 @@ require('quickfix-review').setup({
     item_format = '%d. **[%s]** `%s` - %s',
   },
 
-  -- Keymaps (set to false to disable)
-  -- Default type keymaps: add_issue, add_suggestion, add_note,
-  --   add_praise, add_question, add_insight (all <leader>c + first letter)
+  -- Keymaps (set one to false to disable it, or keymaps = false for none)
+  -- Default type keymaps: add_issue <leader>ci, add_suggestion <leader>cs,
+  --   add_note <leader>cn, add_praise <leader>cp, add_question <leader>cq,
+  --   add_insight <leader>ck
   keymaps = {
     -- Comment type cycling
     add_comment_cycle = '<leader>ca',  -- Add comment with current cycle type
@@ -279,7 +280,7 @@ A pattern that doesn't accept those four values falls back to the default with a
 | `:ReviewSummary` | Show comment summary |
 | `:ReviewGoto` | Jump to real file from diff |
 
-With a range (`:3,5ReviewAddNote`, or `:'<,'>` from visual mode) a comment covers those lines; without one, the current line. `setup()` makes a `:ReviewAdd<Type>` command for every configured comment type, custom ones included, CamelCased from the type name (`nit` gives `:ReviewAddNit`, `needs_work` gives `:ReviewAddNeedsWork`). Only type names of lowercase letters, digits and `_` get one; any other name warns and is reachable through `:ReviewAdd {type}`. A type left out of the config (for example when `comment_types` replaces the defaults) loses its command.
+With a range (`:3,5ReviewAddNote`, or `:'<,'>` from visual mode) a comment covers those lines; without one, the current line. `setup()` makes a `:ReviewAdd<Type>` command for every configured comment type, custom ones included, CamelCased from the type name (`nit` gives `:ReviewAddNit`, `needs_work` gives `:ReviewAddNeedsWork`). Type names are lowercased at setup (with a warning), so `Bug` becomes `bug` and gets `:ReviewAddBug`. Only type names of lowercase letters, digits and `_` get one; any other name (such as `needs-work`) warns and is reachable through `:ReviewAdd {type}`. A type left out of the config (for example when `comment_types` replaces the defaults) loses its command.
 
 ## Documentation
 

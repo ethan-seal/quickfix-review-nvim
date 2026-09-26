@@ -844,9 +844,26 @@ function M.delete_comment_visual()
   M.delete_comment({ start_line, end_line })
 end
 
--- Setup keymaps based on configuration
+-- Setup keymaps based on configuration. Every map's desc ends in the
+-- commands.lua marker, so a re-run can first delete the maps an earlier run
+-- made (a key now disabled, a type now dropped) without touching the user's
+-- own maps. Read back from Neovim, not tracked here: the module may be
+-- reloaded between setup() calls.
 local function setup_keymaps()
   local keymaps = config.options.keymaps
+  local marker = require('quickfix-review.commands').MARKER
+
+  for _, mode in ipairs({ 'n', 'v' }) do
+    for _, map in ipairs(vim.api.nvim_get_keymap(mode)) do
+      if type(map.desc) == 'string' and vim.endswith(map.desc, marker) then
+        pcall(vim.keymap.del, mode, map.lhs)
+      end
+    end
+  end
+
+  local function map(mode, lhs, rhs, desc)
+    vim.keymap.set(mode, lhs, rhs, { desc = desc .. marker })
+  end
 
   -- Dynamically set up keymaps for each comment type
   for type_name, _ in pairs(config.options.comment_types) do
@@ -854,91 +871,73 @@ local function setup_keymaps()
     local keymap = keymaps[keymap_key]
     if keymap then
       local type_upper = type_name:upper()
-      vim.keymap.set('n', keymap, function() M.add_comment(type_upper) end,
-        { desc = 'Add ' .. type_upper .. ' comment' })
-      vim.keymap.set('v', keymap, function() M.add_comment_visual(type_upper) end,
-        { desc = 'Add ' .. type_upper .. ' comment for selection' })
+      map('n', keymap, function() M.add_comment(type_upper) end, 'Add ' .. type_upper .. ' comment')
+      map('v', keymap, function() M.add_comment_visual(type_upper) end,
+        'Add ' .. type_upper .. ' comment for selection')
     end
   end
 
   -- Add keymaps for comment type cycling
   if keymaps.add_comment_cycle then
-    vim.keymap.set('n', keymaps.add_comment_cycle, M.add_comment_cycle,
-      { desc = 'Add comment (cycle types with Tab)' })
-    vim.keymap.set('v', keymaps.add_comment_cycle, function() M.add_comment_visual(get_current_cycle_type()) end,
-      { desc = 'Add comment for selection (cycle types with Tab)' })
+    map('n', keymaps.add_comment_cycle, M.add_comment_cycle, 'Add comment of the current cycle type')
+    map('v', keymaps.add_comment_cycle, function() M.add_comment_visual(get_current_cycle_type()) end,
+      'Add comment of the current cycle type for selection')
   end
-  
+
   if keymaps.cycle_next then
-    vim.keymap.set('n', keymaps.cycle_next, M.cycle_next_comment_type,
-      { desc = 'Cycle to next comment type' })
+    map('n', keymaps.cycle_next, M.cycle_next_comment_type, 'Cycle to next comment type')
   end
-  
+
   if keymaps.cycle_previous then
-    vim.keymap.set('n', keymaps.cycle_previous, M.cycle_previous_comment_type,
-      { desc = 'Cycle to previous comment type' })
+    map('n', keymaps.cycle_previous, M.cycle_previous_comment_type, 'Cycle to previous comment type')
   end
-  
+
   -- Add keymaps for comment deletion
   if keymaps.delete_comment then
-    vim.keymap.set('n', keymaps.delete_comment, function() M.delete_comment() end,
-      { desc = 'Delete comment at current line' })
-    vim.keymap.set('v', keymaps.delete_comment, M.delete_comment_visual,
-      { desc = 'Delete comments in selection' })
+    map('n', keymaps.delete_comment, function() M.delete_comment() end, 'Delete comment at current line')
+    map('v', keymaps.delete_comment, M.delete_comment_visual, 'Delete comments in selection')
   end
 
   if keymaps.export then
-    vim.keymap.set('n', keymaps.export, M.export_review,
-      { desc = 'Export review to markdown' })
+    map('n', keymaps.export, M.export_review, 'Export review to markdown')
   end
   if keymaps.clear then
-    vim.keymap.set('n', keymaps.clear, function() M.clear_review({ confirm = true }) end,
-      { desc = 'Clear all review comments' })
+    map('n', keymaps.clear, function() M.clear_review({ confirm = true }) end, 'Clear all review comments')
   end
   if keymaps.summary then
-    vim.keymap.set('n', keymaps.summary, M.summary,
-      { desc = 'Show review summary' })
+    map('n', keymaps.summary, M.summary, 'Show review summary')
   end
 
   if keymaps.save then
-    vim.keymap.set('n', keymaps.save, M.save_review,
-      { desc = 'Save review to disk' })
+    map('n', keymaps.save, M.save_review, 'Save review to disk')
   end
   if keymaps.load then
-    vim.keymap.set('n', keymaps.load, M.load_review,
-      { desc = 'Load review from disk' })
+    map('n', keymaps.load, M.load_review, 'Load review from disk')
   end
 
   if keymaps.open_list then
-    vim.keymap.set('n', keymaps.open_list, M.open_list,
-      { desc = 'Open review comments list' })
+    map('n', keymaps.open_list, M.open_list, 'Open review comments list')
   end
   if keymaps.next_comment then
-    vim.keymap.set('n', keymaps.next_comment, function() M.jump_comment(1) end,
-      { desc = 'Next review comment' })
+    map('n', keymaps.next_comment, function() M.jump_comment(1) end, 'Next review comment')
   end
   if keymaps.prev_comment then
-    vim.keymap.set('n', keymaps.prev_comment, function() M.jump_comment(-1) end,
-      { desc = 'Previous review comment' })
+    map('n', keymaps.prev_comment, function() M.jump_comment(-1) end, 'Previous review comment')
   end
 
   if keymaps.goto_real_file then
-    vim.keymap.set('n', keymaps.goto_real_file, M.goto_real_file,
-      { desc = 'Go to real file from diff' })
+    map('n', keymaps.goto_real_file, M.goto_real_file, 'Go to real file from diff')
   end
 
   if keymaps.view then
-    vim.keymap.set('n', keymaps.view, M.view_comment,
-      { desc = 'View comment on current line' })
+    map('n', keymaps.view, M.view_comment, 'View comment on current line')
   end
   if keymaps.edit then
-    vim.keymap.set('n', keymaps.edit, M.edit_comment,
-      { desc = 'Edit review comment' })
+    map('n', keymaps.edit, M.edit_comment, 'Edit review comment')
   end
 
   if keymaps.reanchor then
-    vim.keymap.set('n', keymaps.reanchor, M.reanchor,
-      { desc = 'Re-anchor the outdated comment on current line' })
+    map('n', keymaps.reanchor, M.reanchor, 'Re-anchor the outdated comment on current line')
   end
 end
 
@@ -1032,8 +1031,6 @@ function M.edit_comment()
   end
 end
 
--- Buffer-local keys in the quickfix window that delete a review comment
-local QF_DELETE_KEYS = { 'dd', '<leader>cd' }
 -- Marks the maps this plugin made, so only those are removed again
 local QF_DELETE_DESC = 'Delete comment from quickfix list'
 
@@ -1043,18 +1040,18 @@ local function shows_review(buf)
 end
 
 -- Map the delete keys and set display options when the quickfix buffer shows
--- the review; otherwise remove the maps and leave the window options alone.
+-- the review; otherwise leave the maps removed and the window options alone.
 local function configure_qf_buffer(buf)
-  if not shows_review(buf) then
-    -- Only the plugin's own maps: another plugin's qf maps stay. Delete by
-    -- the reported lhs, which has <leader> already expanded.
-    for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, 'n')) do
-      if map.desc == QF_DELETE_DESC then
-        pcall(vim.keymap.del, 'n', map.lhs, { buffer = buf })
-      end
+  -- Remove the previous maps first, so a delete_comment key changed by a
+  -- later setup() does not linger. Only the plugin's own maps: another
+  -- plugin's qf maps stay. Delete by the reported lhs, which has <leader>
+  -- already expanded.
+  for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, 'n')) do
+    if map.desc == QF_DELETE_DESC then
+      pcall(vim.keymap.del, 'n', map.lhs, { buffer = buf })
     end
-    return
   end
+  if not shows_review(buf) then return end
 
   -- Better display of multiline comments
   for _, win in ipairs(vim.fn.win_findbuf(buf)) do
@@ -1063,7 +1060,11 @@ local function configure_qf_buffer(buf)
     vim.wo[win][0].relativenumber = false
   end
 
-  for _, lhs in ipairs(QF_DELETE_KEYS) do
+  -- dd always; keymaps.delete_comment too (false leaves only dd)
+  local keys = { 'dd' }
+  local configured = config.options.keymaps.delete_comment
+  if configured and configured ~= 'dd' then table.insert(keys, configured) end
+  for _, lhs in ipairs(keys) do
     vim.keymap.set('n', lhs, M.delete_comment_from_qf, {
       buffer = buf,
       desc = QF_DELETE_DESC,

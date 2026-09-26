@@ -17,3 +17,6 @@ From review cycle 2 (details and repros: /tmp/claude-1001/-home-ethans-Programmi
 ## Done when
 - [ ] Test: NUL line → same state loaded and from disk
 - [ ] Test: dd on a commented line → sign and view agree without a save
+
+## Also (leftover from 1mns)
+- init.lua DirChanged: only pattern 'auto' defers the qf refill. A ':cd' run by a plugin (vim-rooter etc.) from BufEnter/BufReadPost during :cnext fires DirChanged 'global' and can still abort the jump with E925. Defer whenever a qf jump is pending (or always defer from DirChanged; the sign redraw stays immediate).

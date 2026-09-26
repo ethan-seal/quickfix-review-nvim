@@ -15,3 +15,7 @@ From review cycle 2 (details and repros: /tmp/claude-1001/-home-ethans-Programmi
 ## Done when
 - [ ] Test: file with [id] in its path next to a matching sibling → only its own hunk captured
 - [ ] Test: snippet containing a ``` line → export fence stays balanced
+
+## Also (leftover from aonk)
+- export.lua:36-39: a body/response containing '\n' is emitted raw into one markdown list item line, breaking the export layout. Indent continuation lines under the item. Same for the edit picker label (init.lua ~990): use the first line only (store.headline).
+- [ ] Test: multi-line body → export item continuation lines are indented under the item

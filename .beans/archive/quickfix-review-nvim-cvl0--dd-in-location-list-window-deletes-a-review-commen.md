@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-cvl0
 title: dd in location-list window deletes a review comment
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-09-26T04:31:20Z
-updated_at: 2026-09-26T04:57:49Z
+updated_at: 2026-09-26T05:08:55Z
 blocked_by:
     - quickfix-review-nvim-nep3
 ---

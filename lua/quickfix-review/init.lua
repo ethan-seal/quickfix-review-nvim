@@ -509,7 +509,7 @@ end
 -- Delete the comment under the cursor in the quickfix window. The review
 -- view lists the comments in store order, so the row is the comment's index.
 function M.delete_comment_from_qf()
-  if not store.is_current_view() then
+  if vim.fn.win_gettype() ~= 'quickfix' or not store.is_current_view() then
     print('This quickfix list is not the review')
     return
   end
@@ -521,6 +521,39 @@ function M.delete_comment_from_qf()
   end
 
   store.remove(function(c) return c == target end)
+end
+
+-- Buffer-local keys in the quickfix window that delete a review comment
+local QF_DELETE_KEYS = { 'dd', '<leader>cd' }
+
+-- Whether buf is the quickfix (not location list) buffer showing the review
+local function shows_review(buf)
+  return vim.fn.getqflist({ qfbufnr = 0 }).qfbufnr == buf and store.is_current_view()
+end
+
+-- Map the delete keys and set display options when the quickfix buffer shows
+-- the review; otherwise remove the maps and leave the window options alone.
+local function configure_qf_buffer(buf)
+  if not shows_review(buf) then
+    for _, lhs in ipairs(QF_DELETE_KEYS) do
+      pcall(vim.keymap.del, 'n', lhs, { buffer = buf })
+    end
+    return
+  end
+
+  -- Better display of multiline comments
+  for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+    vim.wo[win][0].wrap = false
+    vim.wo[win][0].number = true
+    vim.wo[win][0].relativenumber = false
+  end
+
+  for _, lhs in ipairs(QF_DELETE_KEYS) do
+    vim.keymap.set('n', lhs, M.delete_comment_from_qf, {
+      buffer = buf,
+      desc = 'Delete comment from quickfix list'
+    })
+  end
 end
 
 -- Redraw signs in every loaded buffer from the current comments
@@ -591,34 +624,14 @@ function M.setup(opts)
     })
   end
 
-  -- Set up quickfix window configuration and keymaps
+  -- Configure the quickfix window and add the delete keymaps, but only while
+  -- it shows the review. FileType qf fires again on every refill (setqflist,
+  -- :colder), so the maps are removed when another list replaces the review.
   vim.api.nvim_create_autocmd('FileType', {
     group = augroup,
     pattern = 'qf',
-    callback = function()
-      -- Configure quickfix window for better display of multiline comments
-      vim.opt_local.wrap = false
-      vim.opt_local.number = true
-      vim.opt_local.relativenumber = false
-
-      -- Add keymaps for comment deletion
-      vim.keymap.set('n', 'dd', M.delete_comment_from_qf, {
-        buffer = true,
-        desc = 'Delete comment from quickfix list'
-      })
-      vim.keymap.set('n', '<leader>cd', M.delete_comment_from_qf, {
-        buffer = true,
-        desc = 'Delete comment from quickfix list'
-      })
-      
-      -- Add keymap to refresh quickfix display
-      vim.keymap.set('n', '<leader>cr', function()
-        vim.cmd('copen')
-        print('Quickfix list refreshed')
-      end, {
-        buffer = true,
-        desc = 'Refresh quickfix list'
-      })
+    callback = function(args)
+      configure_qf_buffer(args.buf)
     end
   })
 end

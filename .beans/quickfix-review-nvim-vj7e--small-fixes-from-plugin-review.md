@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-09-26T04:31:28Z
-updated_at: 2026-09-26T04:57:50Z
+updated_at: 2026-09-26T05:08:55Z
 blocked_by:
     - quickfix-review-nvim-0edn
 ---
@@ -32,3 +32,6 @@ Grab-bag of small, local fixes from the multi-model review. Items that overlappe
 ## Docs
 - [ ] Document `signs` and `export.{header,type_legend,item_format}` options in README and doc/quickfix-review.txt; regenerate doc/tags (`nvim --headless --clean -c 'helptags doc' -c q`).
 - [ ] Document `open_list()` and `jump_comment()` in help §7 FUNCTIONS; README commands table lists all add commands.
+
+
+- [ ] qf hook (configure_qf_buffer in init.lua): only delete buffer-local `dd`/`<leader>cd` maps that the plugin created (check `desc`/callback via `nvim_buf_get_keymap`), so another plugin's qf maps survive. (from cvl0 review)

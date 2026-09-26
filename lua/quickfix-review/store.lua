@@ -159,8 +159,11 @@ function M.show()
       vim.cmd('silent ' .. (nr > current and 'cnewer ' or 'colder ') .. math.abs(nr - current))
     end
   else
-    vim.fn.setqflist({}, ' ', { items = comments, title = QF_TITLE })
+    -- Record the id before filling, so the FileType event fired by the fill
+    -- already sees the review as the current list
+    vim.fn.setqflist({}, ' ', { title = QF_TITLE })
     qf_id = vim.fn.getqflist({ id = 0 }).id
+    vim.fn.setqflist({}, 'r', { id = qf_id, items = comments, title = QF_TITLE })
   end
 end
 

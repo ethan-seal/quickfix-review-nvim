@@ -39,6 +39,9 @@ run_file('test/test_persistence.lua')
 -- Run setup idempotency tests
 run_file('test/test_setup.lua')
 
+-- Run quickfix window hook tests
+run_file('test/test_qf_window.lua')
+
 -- Final summary
 print('')
 print(string.rep('=', 50))

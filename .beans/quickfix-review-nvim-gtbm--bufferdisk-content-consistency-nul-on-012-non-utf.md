@@ -20,3 +20,4 @@ From review cycle 2 (details and repros: /tmp/claude-1001/-home-ethans-Programmi
 
 ## Also (leftover from 1mns)
 - init.lua DirChanged: only pattern 'auto' defers the qf refill. A ':cd' run by a plugin (vim-rooter etc.) from BufEnter/BufReadPost during :cnext fires DirChanged 'global' and can still abort the jump with E925. Defer whenever a qf jump is pending (or always defer from DirChanged; the sign redraw stays immediate).
+- store.lua view_item (leftover from 6hym): a multi-line response still puts '\n' into qf text ('| Response: r1\nr2'). Use only the response's first line (or join with ' ⏎ ') in the qf row.

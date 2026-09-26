@@ -383,7 +383,10 @@ require('quickfix-review').comments()                 *quickfix-review.comments(
     record `{ id, filename, kind, body, response, lnum, end_lnum, context,
     created_at }`: `kind` is the lowercase comment type, `body` the text
     without any `[KIND]` prefix, and `response` and `context` (the captured
-    commit and snippet) may be nil.
+    commit and snippet) may be nil. A record may also carry `extra`: a
+    table of fields from the storage file that the plugin does not know
+    (written by other tools), preserved and written back at the top level
+    of the record.
 
 require('quickfix-review').summary()                   *quickfix-review.summary()*
     Print a summary of comment counts.

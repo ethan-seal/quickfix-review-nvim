@@ -190,6 +190,12 @@ assert.run_test('a v1 file loads as v2, is backed up once and rewritten', functi
     assert.equals(list[3].end_lnum, 4, 'end_lnum 0 clamped')
     assert.equals(list[4].kind, 'note', 'unprefixed text is a note')
     assert.equals(list[4].body, 'no prefix here', 'unprefixed body')
+    for i, c in ipairs(list) do
+      assert.equals(c.extra, nil, 'comment ' .. i .. ': quickfix-only fields are not extras')
+      assert.equals(c.col, nil, 'comment ' .. i .. ' has no col')
+      assert.equals(c.type, nil, 'comment ' .. i .. ' has no type')
+      assert.equals(c.bufnr, nil, 'comment ' .. i .. ' has no bufnr')
+    end
 
     assert.equals(read_bytes(path .. '.pre-v2.bak'), V1, 'backup holds the original bytes')
     local doc = decode(read_bytes(path))
@@ -310,6 +316,164 @@ assert.run_test('view_comment shows the response on its own line', function()
     assert.equals(lines[1], '[SUGGESTION:L3-5] extract this', 'headline without the response')
     assert.equals(lines[2], '', 'blank separator')
     assert.equals(lines[3], 'Response: done in abc123', 'response line')
+  end)
+end)
+
+-- Run fn with vim.notify replaced by a recorder; returns the recorded calls
+local function capture_notify(fn)
+  local calls = {}
+  local original = vim.notify
+  vim.notify = function(msg, level) table.insert(calls, { msg = msg, level = level }) end
+  local ok, err = pcall(fn)
+  vim.notify = original
+  if not ok then error(err, 0) end
+  return calls
+end
+
+local function warnings(calls)
+  local found = {}
+  for _, c in ipairs(calls) do
+    if c.level == vim.log.levels.WARN then table.insert(found, c) end
+  end
+  return found
+end
+
+-- A v2 file holding `records` (Lua tables, encoded as JSON)
+local function v2_json(records)
+  return vim.json.encode({ version = 2, comments = records })
+end
+
+assert.run_test('a legacy text field in a v2 record is merged and dropped', function()
+  local json = v2_json({ {
+    id = '00000000000000b1', filename = abs, lnum = 1, end_lnum = 2, kind = 'issue', body = 'foo',
+    created_at = 1700000000, text = '[ISSUE:L1-2] foo | Response: fixed',
+  } })
+  with_file(json, function(path)
+    qf = restart(path)
+    local list = qf.comments()
+    assert.length(list, 1, 'loaded')
+    assert.equals(list[1].response, 'fixed', 'response taken from text')
+    assert.equals(list[1].body, 'foo', 'body kept')
+    assert.equals(list[1].extra, nil, 'text is not an extra')
+    local doc = decode(read_bytes(path))
+    assert.equals(doc.comments[1].text, nil, 'text dropped from the file')
+    assert.equals(doc.comments[1].response, 'fixed', 'response written')
+    assert.truthy(export(list):find(' | Response: fixed', 1, true), 'export shows the response')
+    assert.falsy(vim.uv.fs_stat(path .. '.pre-v2.bak'), 'no upgrade backup')
+    assert.falsy(vim.uv.fs_stat(path .. '.pre-repair.bak'), 'no repair backup')
+
+    local bytes = read_bytes(path)
+    qf = restart(path)
+    assert.equals(qf.comments()[1].response, 'fixed', 'response after restart')
+    assert.equals(read_bytes(path), bytes, 'not rewritten again')
+  end)
+
+  -- Text without a headline keeps the record's kind and body
+  json = v2_json({ {
+    id = '00000000000000b2', filename = abs, lnum = 1, end_lnum = 1, kind = 'issue', body = 'b',
+    created_at = 1700000000, text = ' | Response: x',
+  } })
+  with_file(json, function(path)
+    qf = restart(path)
+    local c = qf.comments()[1]
+    assert.equals(c.kind, 'issue', 'kind kept')
+    assert.equals(c.body, 'b', 'body kept')
+    assert.equals(c.response, 'x', 'response from headline-less text')
+  end)
+
+  -- A response in the text replaces the record's
+  json = v2_json({ {
+    id = '00000000000000b3', filename = abs, lnum = 1, end_lnum = 1, kind = 'note', body = 'b',
+    response = 'old', created_at = 1700000000, text = '[NOTE] b | Response: new',
+  } })
+  with_file(json, function(path)
+    qf = restart(path)
+    assert.equals(qf.comments()[1].response, 'new', 'text response wins')
+  end)
+
+  -- A record with only text gets its kind and body from it
+  json = v2_json({ {
+    id = '00000000000000b4', filename = abs, lnum = 1, end_lnum = 1, created_at = 1700000000,
+    text = '[ISSUE] bar',
+  } })
+  with_file(json, function(path)
+    qf = restart(path)
+    local c = qf.comments()[1]
+    assert.equals(c.kind, 'issue', 'kind from text')
+    assert.equals(c.body, 'bar', 'body from text')
+    assert.equals(c.response, nil, 'no response')
+  end)
+end)
+
+assert.run_test('an unknown record field survives load and save', function()
+  local json = v2_json({ {
+    id = '00000000000000c1', filename = abs, lnum = 1, end_lnum = 1, kind = 'note', body = 'a',
+    created_at = 1700000000, foo = 1,
+  } })
+  with_file(json, function(path)
+    qf = restart(path)
+    assert.equals(qf.comments()[1].extra.foo, 1, 'kept in memory as an extra')
+    assert.equals(read_bytes(path), json, 'loading alone does not rewrite')
+
+    vim.cmd('edit ' .. test_file)
+    vim.fn.cursor(2, 1)
+    qf.add_comment('NOTE')
+    local doc = decode(read_bytes(path))
+    assert.length(doc.comments, 2, 'saved')
+    assert.equals(doc.comments[1].foo, 1, 'written back at the top level')
+    assert.equals(doc.comments[1].extra, nil, 'no extra key on disk')
+    assert.equals(doc.comments[2].extra, nil, 'no extra key on a new comment')
+
+    qf = restart(path)
+    vim.fn.cursor(3, 1)
+    qf.add_comment('NOTE')
+    doc = decode(read_bytes(path))
+    assert.length(doc.comments, 3, 'saved again')
+    assert.equals(doc.comments[1].foo, 1, 'still at the top level')
+    assert.equals(doc.comments[1].extra, nil, 'still no extra key')
+  end)
+end)
+
+assert.run_test('a record with a bad lnum is dropped with a warning after a backup', function()
+  local json = v2_json({
+    { id = '00000000000000d1', filename = abs, lnum = 'x', end_lnum = 1, kind = 'note', body = 'bad',
+      created_at = 1700000000 },
+    { id = '00000000000000d2', filename = abs, lnum = '12', end_lnum = '13', kind = 'issue', body = 'str',
+      created_at = 1700000000 },
+    { id = '00000000000000d3', filename = abs, lnum = 2, end_lnum = 2, kind = 'note', body = 'ok',
+      created_at = 1700000000 },
+  })
+  with_file(json, function(path)
+    local list
+    local calls = capture_notify(function()
+      qf = restart(path)
+      list = qf.comments()
+    end)
+    assert.length(list, 2, 'the other records load')
+    local warns = warnings(calls)
+    assert.length(warns, 1, 'one warning')
+    assert.truthy(warns[1].msg:find(path, 1, true), 'warning names the file')
+    assert.equals(read_bytes(path .. '.pre-repair.bak'), json, 'backup holds the original bytes')
+
+    assert.equals(list[1].lnum, 12, 'numeric string lnum coerced')
+    assert.equals(list[1].end_lnum, 13, 'numeric string end_lnum coerced')
+    local doc = decode(read_bytes(path))
+    assert.length(doc.comments, 2, 'file rewritten without the bad record')
+    assert.equals(doc.comments[1].lnum, 12, 'lnum written as a number')
+    assert.equals(doc.comments[1].end_lnum, 13, 'end_lnum written as a number')
+
+    qf.show_list()
+    assert.length(vim.fn.getqflist(), 2, 'quickfix view built')
+    vim.fn.setqflist({}, 'f')
+    assert.truthy(export(list), 'export works')
+
+    local bytes = read_bytes(path)
+    calls = capture_notify(function()
+      qf = restart(path)
+      assert.length(qf.comments(), 2, 'reloads')
+    end)
+    assert.length(warnings(calls), 0, 'no warning on the second load')
+    assert.equals(read_bytes(path), bytes, 'not rewritten again')
   end)
 end)
 

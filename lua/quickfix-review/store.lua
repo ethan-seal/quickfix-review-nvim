@@ -39,29 +39,65 @@ local function has_id(item)
   return type(item.id) == 'string' and item.id ~= ''
 end
 
+-- The fields normalize() understands; any other field of a record is kept in
+-- its `extra` table. `text` is a legacy field that is parsed, then dropped.
+local KNOWN = {
+  id = true, filename = true, kind = true, body = true, response = true, lnum = true,
+  end_lnum = true, context = true, created_at = true, text = true,
+}
+
+-- A line number (1 or more), or nil. A numeric string ("12", as an external
+-- tool may write) is accepted.
+local function to_line(v)
+  if type(v) == 'string' then v = tonumber(v) end
+  if type(v) ~= 'number' or v ~= math.floor(v) or v < 1 then return nil end
+  return v
+end
+
+local function nonempty(s)
+  return type(s) == 'string' and s ~= '' and s or nil
+end
+
 -- Keep only the fields of a comment record, giving it an id if it has none
--- (comments saved before ids existed)
+-- (comments saved before ids existed). Returns nil for a record that has no
+-- file or no valid line number.
 local function normalize(item)
   local filename = item.filename
   if type(filename) ~= 'string' or filename == '' then return nil end
+  local lnum = to_line(item.lnum)
+  if not lnum then return nil end
   -- Older saves were raw getqflist() items, where end_lnum 0 means "unset";
   -- an end before the start is never valid, so treat it as a single line.
-  local end_lnum = item.end_lnum
-  if type(end_lnum) ~= 'number' or type(item.lnum) ~= 'number' or end_lnum < item.lnum then
-    end_lnum = item.lnum
+  local end_lnum = to_line(item.end_lnum)
+  if not end_lnum or end_lnum < lnum then end_lnum = lnum end
+
+  local kind, body = nonempty(item.kind), nonempty(item.body)
+  local response = nonempty(item.response)
+  -- An external tool (or an older one) may write the v1 text into a v2
+  -- record, e.g. appending " | Response: ..." to it; merge it in
+  if type(item.text) == 'string' then
+    local t_kind, t_body, t_response = storage.parse_text(item.text)
+    kind = kind or t_kind
+    body = body or nonempty(t_body)
+    if t_response then response = t_response end
   end
-  local kind = type(item.kind) == 'string' and item.kind ~= '' and item.kind:lower() or 'note'
-  local response = type(item.response) == 'string' and item.response ~= '' and item.response or nil
+
+  local extra = {}
+  for k, v in pairs(item) do
+    if not KNOWN[k] then extra[k] = v end
+  end
+
   return {
     id = has_id(item) and item.id or new_id(),
     filename = vim.fn.fnamemodify(filename, ':p'),
-    kind = kind,
-    body = type(item.body) == 'string' and item.body or '',
+    kind = kind and kind:lower() or 'note',
+    body = body or '',
     response = response,
-    lnum = item.lnum,
+    lnum = lnum,
     end_lnum = end_lnum,
     context = type(item.context) == 'table' and item.context or nil,
     created_at = type(item.created_at) == 'number' and item.created_at or os.time(),
+    extra = next(extra) ~= nil and extra or nil,
   }
 end
 
@@ -124,25 +160,33 @@ local function sync()
     local backed_up, berr = storage.backup_once(path, '.pre-v' .. storage.VERSION .. '.bak')
     if not backed_up then list, err = nil, berr end
   end
-  if not list then
+  local function refuse(e)
     local key = path .. ':' .. tostring(current)
     if key ~= bad_file_notified then
       bad_file_notified = key
-      vim.notify('quickfix-review: ' .. err .. '; the review will not be modified until the file is fixed',
+      vim.notify('quickfix-review: ' .. e .. '; the review will not be modified until the file is fixed',
         vim.log.levels.ERROR)
     end
-    return false, err
+    return false, e
   end
-  bad_file_notified = nil
+  if not list then return refuse(err) end
 
-  comments = {}
+  local loaded = {}
   -- An upgraded file is rewritten in the current schema, once
   local rewrite = upgraded
+  local dropped = 0
   local seen = {}
   for _, item in ipairs(list) do
     local c = normalize(item)
-    if c then
+    if not c then
+      dropped = dropped + 1
+    else
       if not has_id(item) or type(item.created_at) ~= 'number' then rewrite = true end
+      -- A legacy text field (merged by normalize) and numeric-string line
+      -- numbers are rewritten in the current schema, once
+      if type(item.text) == 'string' or type(item.lnum) == 'string' or type(item.end_lnum) == 'string' then
+        rewrite = true
+      end
       -- A hand-copied comment shares its id; give the copy its own, so
       -- remove(id) never deletes both
       if seen[c.id] then
@@ -150,9 +194,22 @@ local function sync()
         rewrite = true
       end
       seen[c.id] = true
-      table.insert(comments, c)
+      table.insert(loaded, c)
     end
   end
+  -- Records that can't be shown (no file, or no valid line number) are
+  -- dropped, and the file rewritten without them: keep the original first.
+  -- If that backup fails the review stays read-only, so nothing is lost.
+  if dropped > 0 then
+    local bak_suffix = '.pre-repair.bak'
+    local backed_up, berr = storage.backup_once(path, bak_suffix)
+    if not backed_up then return refuse(berr) end
+    vim.notify(string.format('quickfix-review: dropped %d comment(s) with an invalid line number or no file in %s;'
+      .. ' original kept at %s', dropped, path, path .. bak_suffix), vim.log.levels.WARN)
+    rewrite = true
+  end
+  bad_file_notified = nil
+  comments = loaded
   synced = { path = path, mtime = current }
   -- Persist ids (and creation times) given to comments that had none, once,
   -- so they stay stable.

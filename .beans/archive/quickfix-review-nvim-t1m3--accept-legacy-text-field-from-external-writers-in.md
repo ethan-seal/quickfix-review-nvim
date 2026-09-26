@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-t1m3
 title: Accept legacy text field from external writers in v2 records
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-09-26T05:52:19Z
-updated_at: 2026-09-26T05:52:19Z
+updated_at: 2026-09-26T05:59:32Z
 ---
 
 The live storage file is also written by tools outside this repo: `~/.claude/commands/rv.md` tells an agent to append ` | Response: ...` to a comment's `text`, and `rv-done.sh` writes `[]`. After the v2 rewrite (hffh), `store.normalize` builds records only from kind/body/response, so a `text` field written by such a tool is silently dropped on the next save — data loss, which the storage design forbids.

@@ -50,6 +50,8 @@ end
 -- The schema version this code reads and writes. The file is
 -- { "version": 2, "comments": [ comment... ] }, where a comment is
 -- { id, filename, kind, body, response?, lnum, end_lnum, context?, created_at }.
+-- Other fields a record carries in the file (written by external tools) are
+-- kept in memory as `extra` and written back at the top level of the record.
 -- Version 1 was a bare list of quickfix-shaped items.
 M.VERSION = 2
 
@@ -83,17 +85,23 @@ local function v1_context(ud)
   return next(ctx) ~= nil and ctx or nil
 end
 
--- v1 encoded kind, range and response in the text:
--- "[ISSUE:L1-5] body | Response: reply". The range is dropped (lnum/end_lnum
--- are authoritative); text without a leading [KIND] prefix is a note.
-local function v1_comment(item)
-  local text = type(item.text) == 'string' and item.text or ''
+-- Parse a v1-style comment text: "[ISSUE:L1-5] body | Response: reply". The
+-- range is dropped (lnum/end_lnum are authoritative). Also used for a `text`
+-- field that an external tool writes into a v2 record.
+-- Returns: kind (lowercase, or nil without a leading [KIND] prefix), body,
+-- response (or nil)
+function M.parse_text(text)
   local kind, rest = text:match('^%[([^:%]]+)[^%]]*%]%s*(.*)$')
-  if not kind then
-    kind, rest = 'note', text
-  end
+  if not kind then rest = text end
   local body, response = rest:match('^(.-)%s*|%s*Response:%s*(.+)$')
   if not body then body = rest end
+  return kind and kind:lower() or nil, body, response
+end
+
+-- v1 encoded kind, range and response in the text; text without a leading
+-- [KIND] prefix is a note.
+local function v1_comment(item)
+  local kind, body, response = M.parse_text(type(item.text) == 'string' and item.text or '')
 
   -- Very old saves were raw getqflist() items that may have only a bufnr
   local filename = item.filename
@@ -104,7 +112,7 @@ local function v1_comment(item)
   return {
     id = item.id,
     filename = filename,
-    kind = kind:lower(),
+    kind = kind or 'note',
     body = body,
     response = response,
     lnum = item.lnum,
@@ -150,10 +158,28 @@ function M.backup_once(path, suffix)
   return true, nil
 end
 
+-- A record as written: its `extra` fields flattened back to the top level,
+-- where known fields win a clash. The in-memory record is not changed.
+local function serialise(c)
+  if c.extra == nil then return c end
+  local out = {}
+  for k, v in pairs(c) do
+    if k ~= 'extra' then out[k] = v end
+  end
+  for k, v in pairs(c.extra) do
+    if out[k] == nil then out[k] = v end
+  end
+  return out
+end
+
 -- Save comments to file (an empty list is saved too, so clearing persists)
 -- Returns: success (boolean), message (string)
 function M.save(comments, filepath)
-  local ok, encoded = pcall(vim.json.encode, { version = M.VERSION, comments = comments })
+  local records = {}
+  for i, c in ipairs(comments) do
+    records[i] = serialise(c)
+  end
+  local ok, encoded = pcall(vim.json.encode, { version = M.VERSION, comments = records })
   if not ok then
     return false, 'Failed to encode comments as JSON'
   end

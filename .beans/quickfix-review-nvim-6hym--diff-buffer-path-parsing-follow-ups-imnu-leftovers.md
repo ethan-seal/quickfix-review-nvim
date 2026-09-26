@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-6hym
 title: Diff-buffer path parsing follow-ups (imnu leftovers)
-status: todo
+status: in-progress
 type: bug
 priority: low
 created_at: 2026-09-26T12:47:07Z
-updated_at: 2026-09-26T12:47:07Z
+updated_at: 2026-09-26T13:09:31Z
 ---
 
 Leftovers accepted in imnu (don't spawn further follow-ups from this bean).

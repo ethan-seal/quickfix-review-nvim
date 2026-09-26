@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: normal
 created_at: 2026-09-26T07:36:01Z
-updated_at: 2026-09-26T07:36:01Z
+updated_at: 2026-09-26T07:58:17Z
 parent: quickfix-review-nvim-8oi5
 ---
 
@@ -22,3 +22,7 @@ Follow-ups from uv21 (write-back on save + :ReviewReanchor).
 - [ ] Test: a synced anchor update from another instance clears the outdated state in this instance
 - [ ] :ReviewHistory shows anchor updates readably
 - [ ] :saveas and :w !cmd do not write anchors for the wrong file
+
+
+
+Note (ck1d): the unloaded-file cache in track.lua now keys on inode and mtime nsec, is capped at 32 entries (LRU), and has a drop_file helper. forget() still does not clear files[path].pos[id], so use drop_file or the per-id clear for the stale-cache fix here.

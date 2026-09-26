@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-ck1d
 title: 'Relocation follow-ups: whole-buffer replace, ColorScheme, in-session outdated, diff-buffer signs'
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T07:00:39Z
-updated_at: 2026-09-26T07:00:39Z
+updated_at: 2026-09-26T07:58:17Z
 ---
 
 Follow-ups from hdzw review (track.lua, utils.lua):

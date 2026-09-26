@@ -499,9 +499,10 @@ function M.view_comment()
   local line = vim.fn.line('.')
   local comments = {}
   local start_of = {}
+  local bufnr = vim.api.nvim_get_current_buf()
   for _, item in ipairs(store.all()) do
-    local lnum, end_lnum = store.range(item)
-    if lnum <= line and end_lnum >= line and utils.files_match(item.filename, file) then
+    local lnum, end_lnum = utils.range_in(item, bufnr)
+    if lnum and lnum <= line and end_lnum >= line and utils.files_match(item.filename, file) then
       table.insert(comments, item)
       start_of[item] = lnum
     end
@@ -620,9 +621,10 @@ function M.delete_comment(range)
   end
   
   -- Remove comments overlapping the specified range
+  local bufnr = vim.api.nvim_get_current_buf()
   local comments_deleted = store.remove_if(function(item)
-    local item_start, item_end = store.range(item)
-    return utils.files_match(item.filename, file) and
+    local item_start, item_end = utils.range_in(item, bufnr)
+    return item_start ~= nil and utils.files_match(item.filename, file) and
            item_start <= end_line and item_end >= start_line
   end)
 
@@ -1005,6 +1007,11 @@ function M.setup(opts)
   vim.api.nvim_create_autocmd('BufWritePost', {
     group = augroup,
     callback = function(args) write_back(args.buf, args.file) end,
+  })
+  -- A colorscheme clears every highlight group: define the plugin's again
+  vim.api.nvim_create_autocmd('ColorScheme', {
+    group = augroup,
+    callback = function() utils.init_highlights() end,
   })
   vim.api.nvim_create_autocmd('BufWipeout', {
     group = augroup,

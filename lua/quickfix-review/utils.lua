@@ -56,6 +56,12 @@ function M.init_signs(opts)
   for type_name, sign_def in pairs(opts.signs or {}) do
     M.sign_config[type_name] = sign_def
   end
+  M.init_highlights()
+end
+
+-- Define the plugin's highlight groups (default links, so a user's own
+-- definition wins). Called again on ColorScheme, which clears them.
+function M.init_highlights()
   -- The sign highlight of a comment whose code changed since it was made
   vim.api.nvim_set_hl(0, M.OUTDATED_HL, { link = 'DiagnosticWarn', default = true })
 end
@@ -128,13 +134,19 @@ function M.refresh_buffer_signs(bufnr, file, comments)
   -- Track: line -> { count = N, types = {type1, type2, ...}, is_continuation = bool }
   local line_info = {}
 
+  -- Required here: store requires utils
+  local store = require('quickfix-review.store')
+  local special = M.is_special_buffer(bufnr)
   for _, item in ipairs(comments) do
+    local start_line, end_line
     if M.files_match(item.filename, file) then
+      start_line, end_line = M.range_in(item, bufnr)
+    end
+    if start_line then
       local comment_type = item.kind
-      -- Required here: store requires utils
-      local store = require('quickfix-review.store')
-      local start_line, end_line = store.range(item)
-      local outdated = store.is_outdated(item)
+      -- A diff buffer shows a comment only where it holds the comment's
+      -- snapshot, so it is never outdated there
+      local outdated = not special and store.is_outdated(item)
 
       -- Track start line
       if not line_info[start_line] then
@@ -288,6 +300,33 @@ function M.get_real_filepath(bufnr)
   end
 
   return bufname
+end
+
+-- Per diff buffer: { name, tick, sha } of its content at changedtick `tick`
+local special_sha = {}
+
+-- The lines comment `item` covers in buffer `bufnr`. In a file's own buffer:
+-- store.range (where its anchor's lines are now). In a diff buffer showing a
+-- revision (fugitive, diffview): its anchor's lines when that buffer holds
+-- exactly the anchor's snapshot, else nil (the comment is not shown there).
+-- Returns: lnum, end_lnum, or nil
+function M.range_in(item, bufnr)
+  -- Required here: store requires utils
+  local store = require('quickfix-review.store')
+  if not M.is_special_buffer(bufnr) then return store.range(item) end
+  local a = item.anchor or item
+  if not a.sha or not vim.api.nvim_buf_is_loaded(bufnr) then return nil end
+  local tick = vim.api.nvim_buf_get_changedtick(bufnr)
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  local cached = special_sha[bufnr]
+  if not cached or cached.tick ~= tick or cached.name ~= name then
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    cached = { name = name, tick = tick, sha = require('quickfix-review.snapshots').hash(lines) }
+    special_sha[bufnr] = cached
+  end
+  if cached.sha ~= a.sha then return nil end
+  local lnum = a.lnum or item.lnum
+  return lnum, a.end_lnum or lnum
 end
 
 -- Check if a buffer (default: current) is a diff/special buffer

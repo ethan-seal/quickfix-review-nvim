@@ -405,6 +405,77 @@ assert.run_test('signs appear in a fugitive buffer for the real file', function(
   assert.truthy(has_sign, 'sign on line 5 of the fugitive buffer')
 end)
 
+assert.run_test('a fugitive buffer holding the snapshot shows the sign at the anchor line', function()
+  qf.clear_review()
+  local bufnr = vim.fn.bufnr()
+  clear_extmarks(bufnr)
+
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+  -- The working buffer moves on: the tracked position becomes line 7
+  vim.api.nvim_buf_set_lines(bufnr, 0, 0, false, { 'new a', 'new b' })
+  local store = require('quickfix-review.store')
+  assert.equals((store.range(qf.comments()[1])), 7, 'tracked at line 7 in the working buffer')
+
+  local fugbuf = vim.api.nvim_create_buf(true, true)
+  vim.api.nvim_buf_set_lines(fugbuf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_name(fugbuf, 'fugitive://' .. vim.fn.getcwd() .. '/.git//0/' .. test_file)
+  vim.cmd('buffer ' .. fugbuf)
+  local on5, on7 = has_sign_on_line(fugbuf, 5), has_sign_on_line(fugbuf, 7)
+  -- view_comment in the diff buffer finds it at its anchor line too
+  vim.fn.cursor(5, 1)
+  local before = {}
+  for _, w in ipairs(vim.api.nvim_list_wins()) do before[w] = true end
+  qf.view_comment()
+  local float
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if not before[w] and vim.api.nvim_win_get_config(w).relative ~= '' then float = w end
+  end
+  if float then vim.api.nvim_win_close(float, true) end
+  vim.cmd('buffer ' .. bufnr)
+  vim.cmd('bwipeout! ' .. fugbuf)
+  vim.api.nvim_buf_set_lines(bufnr, 0, 2, false, {})
+  vim.bo[bufnr].modified = false
+
+  assert.truthy(on5, 'sign on line 5 of the fugitive buffer')
+  assert.falsy(on7, 'no sign on line 7 of the fugitive buffer')
+  assert.truthy(float, 'view_comment opens a float at line 5 of the fugitive buffer')
+end)
+
+assert.run_test('a comment added in a fugitive buffer holding the snapshot keeps its sign at the anchor line there', function()
+  qf.clear_review()
+  local bufnr = vim.fn.bufnr()
+  clear_extmarks(bufnr)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+  local fugbuf = vim.api.nvim_create_buf(true, true)
+  vim.api.nvim_buf_set_lines(fugbuf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_name(fugbuf, 'fugitive://' .. vim.fn.getcwd() .. '/.git//0/' .. test_file)
+  vim.cmd('buffer ' .. fugbuf)
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local added = #qf.comments()
+
+  -- The working buffer moves on: the tracked position becomes line 7
+  vim.api.nvim_buf_set_lines(bufnr, 0, 0, false, { 'new a', 'new b' })
+  local store = require('quickfix-review.store')
+  local working = added == 1 and (store.range(qf.comments()[1])) or nil
+  vim.api.nvim_exec_autocmds('BufEnter', { buffer = fugbuf })
+  local on5, on7 = has_sign_on_line(fugbuf, 5), has_sign_on_line(fugbuf, 7)
+
+  vim.cmd('buffer ' .. bufnr)
+  vim.cmd('bwipeout! ' .. fugbuf)
+  vim.api.nvim_buf_set_lines(bufnr, 0, 2, false, {})
+  vim.bo[bufnr].modified = false
+
+  assert.equals(added, 1, 'comment added from the fugitive buffer')
+  assert.equals(working, 7, 'tracked at line 7 in the working buffer')
+  assert.truthy(on5, 'sign on line 5 of the fugitive buffer')
+  assert.falsy(on7, 'no sign on line 7 of the fugitive buffer')
+end)
+
 assert.run_test('comment added through a symlink shows on the real path', function()
   qf.clear_review()
   local orig_buf = vim.fn.bufnr()

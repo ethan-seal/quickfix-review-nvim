@@ -106,6 +106,58 @@ assert.run_test('in-session edits move the comment and BufEnter does not snap it
   vim.cmd('silent edit!')
 end)
 
+assert.run_test('replacing every line with the same content keeps the comment current', function()
+  fresh()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local logged = log_size()
+
+  -- As :%!cat or a formatter would: every line replaced, the content as it was
+  vim.cmd('silent %!cat')
+  local c = qf.comments()[1]
+  assert.equals(store.pos(c).state, 'current', 'still current')
+  assert.equals((store.range(c)), 5, 'still on line 5')
+  store.refresh()
+  local signs = signs_on(file_buf, 5)
+  assert.length(signs, 1, 'sign on line 5')
+  assert.truthy(signs[1] and signs[1].sign_hl_group ~= utils.OUTDATED_HL, 'not the outdated highlight')
+  assert.equals(log_size(), logged, 'nothing logged')
+
+  -- Replaced with other content: diffed against the snapshot
+  local shifted = { 'a', 'b' }
+  vim.list_extend(shifted, TEN)
+  vim.api.nvim_buf_set_lines(file_buf, 0, -1, false, shifted)
+  c = qf.comments()[1]
+  assert.equals(store.pos(c).state, 'shifted', 'shifted after a replace that inserts lines')
+  assert.equals((store.range(c)), 7, 'on line 7')
+  vim.cmd('silent edit!')
+end)
+
+assert.run_test('deleting a commented line then undoing makes it current again', function()
+  fresh()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+
+  vim.cmd('normal! 5Gdd')
+  local c = qf.comments()[1]
+  assert.equals(store.pos(c).state, 'outdated', 'outdated after dd')
+
+  vim.cmd('silent undo')
+  c = qf.comments()[1]
+  local pos = store.pos(c)
+  local lnum, end_lnum = store.range(c)
+  vim.cmd('silent edit!')
+  assert.equals(pos.state, 'current', 'current after undo')
+  assert.equals(lnum, 5, 'on line 5 after undo')
+  assert.equals(end_lnum, 5, 'ends on line 5 after undo')
+end)
+
+assert.run_test(':colorscheme keeps QuickfixReviewOutdated linked', function()
+  vim.cmd('colorscheme default')
+  local hl = vim.api.nvim_get_hl(0, { name = 'QuickfixReviewOutdated' })
+  assert.equals(hl.link, 'DiagnosticWarn', 'linked after :colorscheme')
+end)
+
 assert.run_test('a commented line changed on disk: outdated everywhere', function()
   fresh()
   vim.fn.cursor(5, 1)
@@ -242,6 +294,7 @@ assert.run_test('opening a diff buffer with other lines never moves the comment'
   vim.cmd('buffer ' .. fugbuf)
   vim.api.nvim_exec_autocmds('BufReadPost', { buffer = fugbuf })
   vim.api.nvim_exec_autocmds('FileChangedShellPost', { buffer = fugbuf })
+  local fug_signs = #vim.api.nvim_buf_get_extmarks(fugbuf, utils.get_ns_id(), 0, -1, {})
   vim.cmd('buffer ' .. file_buf)
   vim.cmd('bwipeout! ' .. fugbuf)
 
@@ -250,6 +303,7 @@ assert.run_test('opening a diff buffer with other lines never moves the comment'
   assert.equals(after.end_lnum, before.end_lnum, 'end_lnum unchanged')
   assert.equals(after.state, 'current', 'still current')
   assert.equals(log_size(), logged, 'nothing logged')
+  assert.equals(fug_signs, 0, 'no sign in a diff buffer that differs from the snapshot')
 end)
 
 assert.run_test('a legacy comment with no snapshot stays current at its line', function()
@@ -638,6 +692,19 @@ assert.run_test(':ReviewReanchor with nothing outdated logs nothing', function()
   assert.equals(log_size(), logged, 'nothing logged')
   assert.truthy(msgs[1] and msgs[1]:find('no outdated comment', 1, true), 'says the comment is not outdated')
   assert.truthy(msgs[2] and msgs[2]:find('no comment', 1, true), 'says there is no comment')
+end)
+
+assert.run_test('the unloaded-file cache keeps at most 32 files', function()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, 'p')
+  for i = 1, 40 do
+    local path = dir .. '/f' .. i .. '.txt'
+    vim.fn.writefile({ 'x' .. i }, path)
+    track.pos({ id = 'lru' .. i, filename = path, anchor = { lnum = 1, end_lnum = 1 } })
+  end
+  local count = track._files_count()
+  vim.fn.delete(dir, 'rf')
+  assert.equals(count, 32, 'capped at 32')
 end)
 
 rewrite(TEN)

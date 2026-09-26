@@ -205,14 +205,45 @@ end
 local marks = {}
 -- Per buffer: { tick, lines, sha } of its content at changedtick `tick`
 local contents = {}
--- Per file path: { size, sec, nsec, lines, sha, pos = { id -> pos } } of an
--- unloaded file, as last read
+-- Per file path: { size, sec, nsec, ino, used, lines, sha, pos = { id -> pos } }
+-- of an unloaded file, as last read. At most FILES_MAX are kept; the least
+-- recently used (lowest `used`) is dropped to make room.
 local files = {}
+local FILES_MAX = 32
+local files_count, files_clock = 0, 0
 
 -- Forget everything (for tests); tracking extmarks are removed
 function M._reset()
   for id in pairs(marks) do M.forget(id) end
   marks, contents, files = {}, {}, {}
+  files_count, files_clock = 0, 0
+end
+
+-- The number of cached unloaded files (for tests)
+function M._files_count() return files_count end
+
+-- Drop the cache entry of `path`, if any
+local function drop_file(path)
+  if files[path] then
+    files[path] = nil
+    files_count = files_count - 1
+  end
+end
+
+-- Cache `f` as `path`'s entry, evicting the least recently used entry
+-- when the cache is full
+local function store_file(path, f)
+  if not files[path] then
+    if files_count >= FILES_MAX then
+      local oldest, oldest_used
+      for p, e in pairs(files) do
+        if not oldest_used or e.used < oldest_used then oldest, oldest_used = p, e.used end
+      end
+      drop_file(oldest)
+    end
+    files_count = files_count + 1
+  end
+  files[path] = f
 end
 
 -- Whether `buf` is a loaded buffer holding a real file (not a diff buffer)
@@ -313,7 +344,22 @@ local function from_mark(c)
   local count = vim.api.nvim_buf_line_count(m.buf)
   local base = m.pos
   if d.invalid then
-    -- The whole range was deleted: the line before the gap
+    -- Every line of the range was replaced or deleted. With a snapshot,
+    -- diff the buffer's content against it again: a whole-buffer replace
+    -- such as :%!fmt may leave the lines as they were, and then the mark
+    -- is forgotten so place() makes a new one. When the diff says outdated
+    -- (the range really was deleted), the invalid mark is kept so an undo
+    -- revalidates it and m.pos gives current/shifted again. Without a
+    -- snapshot, the line before the gap.
+    if (c.anchor or c).sha then
+      local lines, sha = content_of(m.buf)
+      local pos = M.relocate(c, lines, sha)
+      if pos.state ~= 'outdated' then
+        M.forget(c.id)
+        return place(c, m.buf)
+      end
+      return pos
+    end
     local l = math.max(1, math.min(row + 1, d.end_row or row + 1, count))
     return make_pos(base.sha, l, l, 'outdated')
   end
@@ -327,26 +373,29 @@ local function from_mark(c)
   return make_pos(base.sha, lnum, end_lnum, state)
 end
 
--- The pos of `c` in its file on disk, cached by (path, size, mtime). A
--- missing file makes a comment with a snapshot outdated.
+-- The pos of `c` in its file on disk, cached by (path, size, mtime, inode).
+-- A missing file makes a comment with a snapshot outdated.
 local function from_disk(c)
   local path = c.filename
   local st = uv.fs_stat(path)
   if not st or st.type ~= 'file' then
-    files[path] = nil
+    drop_file(path)
     local a = c.anchor or c
     return make_pos(nil, a.lnum, a.end_lnum or a.lnum, a.sha and 'outdated' or 'current')
   end
   local f = files[path]
-  if not f or f.size ~= st.size or f.sec ~= st.mtime.sec or f.nsec ~= st.mtime.nsec then
+  if not f or f.size ~= st.size or f.sec ~= st.mtime.sec or f.nsec ~= st.mtime.nsec
+      or f.ino ~= st.ino then
     local ok, lines = pcall(vim.fn.readfile, path)
     if not ok then lines = {} end
     f = {
-      size = st.size, sec = st.mtime.sec, nsec = st.mtime.nsec,
+      size = st.size, sec = st.mtime.sec, nsec = st.mtime.nsec, ino = st.ino,
       lines = lines, sha = require('quickfix-review.snapshots').hash(lines), pos = {},
     }
-    files[path] = f
+    store_file(path, f)
   end
+  files_clock = files_clock + 1
+  f.used = files_clock
   local pos = f.pos[c.id]
   if not pos then
     pos = M.relocate(c, f.lines, f.sha)

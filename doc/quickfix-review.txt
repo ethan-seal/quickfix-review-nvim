@@ -338,7 +338,11 @@ Working with diff buffers:~
 
 When reviewing in diffview or fugitive diff buffers, comments are
 automatically associated with the real file path. You can use
-`<leader>cg` to jump from a diff buffer to the actual file.
+`<leader>cg` to jump from a diff buffer to the actual file. A diff buffer
+shows a comment's signs at its original lines only when it holds exactly
+the revision the comment was written against; otherwise it shows none.
+Saving the working file re-anchors the comment to the saved content, so
+after that a buffer holding the older revision no longer shows it.
 
 Navigating comments:~
 

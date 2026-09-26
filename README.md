@@ -270,7 +270,7 @@ A pattern that doesn't accept those four values falls back to the default with a
 | `:[range]ReviewAddInsight` | Add an INSIGHT comment |
 | `:[range]ReviewDelete` | Delete comment(s) at cursor, or overlapping the range |
 | `:ReviewView` | View comment at cursor |
-| `:ReviewEdit` | Edit the text of the comment at cursor, or of the row under the cursor in the review's quickfix window (single line; the change shows in `:ReviewHistory`) |
+| `:ReviewEdit` | Edit the text of the comment at cursor, or of the row under the cursor in the review's quickfix window (single line: a multi-line comment is shown with breaks as `\n` and backslashes as `\\`; the change shows in `:ReviewHistory`) |
 | `:ReviewExport` | Export to markdown and clipboard |
 | `:ReviewClear` | Clear all comments (asks first; `:ReviewClear!` doesn't) |
 | `:ReviewTrash` | List deleted and cleared comments, newest first, in a quickfix list titled "Review trash" |

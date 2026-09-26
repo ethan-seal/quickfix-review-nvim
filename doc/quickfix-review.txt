@@ -484,7 +484,11 @@ press `dd` to delete the comment under cursor.
                         first. In the review's quickfix window, edits the
                         comment on the row under the cursor. Its id, kind
                         and position are unchanged. Comment text is a
-                        single line. Cancelling (or an empty input)
+                        single line; a comment whose text has line breaks
+                        (from an import or another tool) is shown with each
+                        break as `\n` and each backslash as `\\`, and typing
+                        `\n` makes a break. Accepting the text unchanged
+                        logs nothing. Cancelling (or an empty input)
                         changes nothing. The edit is logged as one
                         `update` event, shown by |:ReviewHistory| with the
                         old and new text; it is not undone by

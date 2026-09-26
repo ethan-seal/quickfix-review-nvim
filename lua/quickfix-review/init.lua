@@ -969,11 +969,39 @@ function M.delete_comment_from_qf()
   end
 end
 
+-- A multi-line body (one from an import or an external tool) is edited in a
+-- single-line prompt as escaped text: a line break is `\n` and a backslash
+-- `\\`. Single-line bodies are edited as they are, backslashes and all.
+local function escape_body(body)
+  return (body:gsub('\\', '\\\\'):gsub('\n', '\\n'))
+end
+
+-- Inverse of escape_body: `\n` is a line break, `\\` a backslash; any other
+-- backslash is kept as typed
+local function unescape_body(text)
+  return (text:gsub('\\(.)', function(ch)
+    if ch == 'n' then return '\n' end
+    if ch == '\\' then return '\\' end
+    return '\\' .. ch
+  end))
+end
+
 -- Ask for a new body for the comment with this id, prefilled with its current
--- one, and save it. A cancelled or empty input changes nothing.
+-- one, and save it. A cancelled or empty input changes nothing. A multi-line
+-- body is prefilled escaped (see escape_body) and the answer unescaped, so
+-- accepting the prefill unchanged keeps its line breaks and logs nothing.
 local function prompt_edit(id, old)
-  vim.ui.input({ prompt = 'Edit comment: ', default = old or '' }, function(input)
+  old = old or ''
+  local multiline = old:find('\n', 1, true) ~= nil
+  local opts = { prompt = 'Edit comment: ', default = old }
+  if multiline then
+    opts = { prompt = 'Edit comment (\\n = line break): ', default = escape_body(old) }
+  end
+  vim.ui.input(opts, function(input)
     if input == nil or input == '' then return end
+    if multiline then
+      input = unescape_body(input)
+    end
     local result = store.edit(id, input)
     if result == nil then
       vim.notify('quickfix-review: the review could not be changed; the comment was not edited',

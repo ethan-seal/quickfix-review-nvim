@@ -174,6 +174,52 @@ assert.run_test('view_comment wraps long bodies at the float width', function()
   if not ok then error(err, 0) end
 end)
 
+assert.run_test('view_comment wraps multibyte bodies by display width', function()
+  local store = require('quickfix-review.store')
+  local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':p')
+  local width = math.min(80, vim.o.columns - 4)
+  local function view_lines(text)
+    qf.clear_review()
+    store.add({ filename = file, lnum = 2, text = text })
+    vim.fn.cursor(2, 1)
+    qf.view_comment()
+    local lines = only_float_lines()
+    vim.api.nvim_exec_autocmds('CursorMoved', {})
+    return lines
+  end
+  -- token is `char` repeated: after the label, every line must be whole
+  -- copies of char (no split bytes) and fit the float in display cells
+  local function check(lines, char, token, label)
+    assert.equals(lines[1], '[NOTE] ', label .. ' label breaks off at its space')
+    assert.truthy(#lines > 2, label .. ' body wraps onto several lines')
+    for i, l in ipairs(lines) do
+      local cells = vim.fn.strdisplaywidth(l)
+      assert.truthy(cells <= width, label .. ' line ' .. i .. ' fits ' .. width .. ' cells: ' .. cells)
+      if i > 1 then
+        assert.equals(l:gsub(char, ''), '', label .. ' line ' .. i .. ' holds only whole characters')
+      end
+    end
+    assert.equals(table.concat(lines, ''), '[NOTE] ' .. token, label .. ' nothing lost')
+  end
+
+  local ok, err = pcall(function()
+    -- 2-byte, 1-cell characters: pieces are width cells, not width bytes
+    local accents = string.rep('é', 2 * width + 5)
+    local lines = view_lines('[NOTE] ' .. accents)
+    check(lines, 'é', accents, 'é')
+    assert.equals(vim.fn.strchars(lines[2]), width, 'é piece fills the float width')
+
+    -- 3-byte, 2-cell characters: pieces hold width/2 characters
+    local cjk = string.rep('漢', width + 3)
+    lines = view_lines('[NOTE] ' .. cjk)
+    check(lines, '漢', cjk, 'CJK')
+    assert.equals(vim.fn.strdisplaywidth(lines[2]), width - width % 2, 'CJK piece fills the float width')
+  end)
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  qf.clear_review()
+  if not ok then error(err, 0) end
+end)
+
 assert.run_test('FileChangedShellPost relocates the changed buffer and never offers to clear', function()
   local changed_buf = vim.api.nvim_get_current_buf()
   local path = vim.api.nvim_buf_get_name(changed_buf)

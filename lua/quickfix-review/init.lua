@@ -21,6 +21,20 @@ local function reset_cycle_state()
   cycle_state.current_index = 1
 end
 
+-- Re-read the configured types after setup(): keep the current type when it
+-- is still configured, otherwise fall back to the first one
+local function sync_cycle_state()
+  if not cycle_state.comment_types then return end
+  local current = cycle_state.comment_types[cycle_state.current_index]
+  reset_cycle_state()
+  for i, name in ipairs(cycle_state.comment_types) do
+    if name == current then
+      cycle_state.current_index = i
+      break
+    end
+  end
+end
+
 -- Get current comment type for cycling
 local function get_current_cycle_type()
   if not cycle_state.comment_types then
@@ -533,6 +547,32 @@ function M.reanchor()
     vim.log.levels.INFO)
 end
 
+-- Split `line` into pieces at most `width` display cells wide, breaking at the
+-- last whitespace that fits (kept on the piece) or else hard-cutting. Widths
+-- are measured in cells and cuts fall on character boundaries, so multibyte
+-- and double-width text wraps without splitting a character.
+local function wrap_line(line, width)
+  local out = {}
+  while vim.fn.strdisplaywidth(line) > width do
+    -- The longest character prefix that fits in width cells
+    local nchars, n, cells = vim.fn.strchars(line), 0, 0
+    while n < nchars do
+      local w = vim.fn.strdisplaywidth(vim.fn.strcharpart(line, n, 1))
+      if cells + w > width then break end
+      cells, n = cells + w, n + 1
+    end
+    -- A single character wider than the float still makes progress
+    if n == 0 then n = 1 end
+    local head = vim.fn.strcharpart(line, 0, n)
+    -- %s only matches ASCII bytes, so a cut after one is a character boundary
+    local cut = head:match('.*()%s') or #head
+    table.insert(out, line:sub(1, cut))
+    line = line:sub(cut + 1):gsub('^%s+', '')
+  end
+  table.insert(out, line)
+  return out
+end
+
 -- Show every comment whose range covers the current line, in line order
 function M.view_comment()
   local file = utils.get_real_filepath()
@@ -572,16 +612,7 @@ function M.view_comment()
   -- Word-wrap lines to fit width
   local wrapped = {}
   for _, line in ipairs(lines) do
-    if line == '' then
-      table.insert(wrapped, '')
-    else
-      while #line > width do
-        local cut = line:sub(1, width):match('.*()%s') or width
-        table.insert(wrapped, line:sub(1, cut))
-        line = line:sub(cut + 1):gsub('^%s+', '')
-      end
-      table.insert(wrapped, line)
-    end
+    vim.list_extend(wrapped, wrap_line(line, width))
   end
 
   -- One float at a time: replace any float still open
@@ -1034,6 +1065,7 @@ function M.setup(opts)
   local augroup = vim.api.nvim_create_augroup('QuickfixReview', { clear = true })
 
   config.setup(opts)
+  sync_cycle_state()
   utils.init_signs(config.options)
   setup_keymaps()
 

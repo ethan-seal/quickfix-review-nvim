@@ -361,6 +361,43 @@ assert.run_test('comment-type cycling walks the configured order and wraps both 
   qf.clear_review()
 end)
 
+assert.run_test('setup() with fewer types resets a cycle past the end', function()
+  local base = { sign = 'X', highlight = 'DiagnosticInfo' }
+  local function types(names)
+    local t = {}
+    for _, name in ipairs(names) do t[name] = vim.tbl_extend('force', base, { description = name }) end
+    return t
+  end
+  local ok, err = pcall(function()
+    qf.setup({ storage_file = test_helper.storage_file, comment_types = types({ 'aaa', 'bbb', 'ccc' }) })
+    -- Walk the cycle round to ccc
+    local current
+    for _ = 1, 3 do
+      current = qf.cycle_next_comment_type()
+      if current == 'ccc' then break end
+    end
+    assert.equals(current, 'ccc', 'cycled to the last type')
+
+    qf.setup({ storage_file = test_helper.storage_file, comment_types = types({ 'aaa', 'bbb' }) })
+    assert.equals(qf.cycle_next_comment_type(), 'bbb', 'next from the first type after the reset')
+    assert.equals(qf.cycle_previous_comment_type(), 'aaa', 'previous works too')
+    qf.clear_review()
+    vim.fn.cursor(4, 1)
+    qf.add_comment_cycle()
+    local list = qf.comments()
+    assert.length(list, 1, 'cycle comment added')
+    assert.equals(list[1].kind, 'aaa', 'comment uses a still-configured type')
+
+    -- A current type that is still configured survives setup()
+    qf.cycle_next_comment_type()
+    qf.setup({ storage_file = test_helper.storage_file, comment_types = types({ 'aaa', 'bbb', 'ccc' }) })
+    assert.equals(qf.cycle_next_comment_type(), 'ccc', 'kept bbb across setup()')
+  end)
+  qf.clear_review()
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
 assert.run_test('summary_data counts every configured type in a fixed order', function()
   qf.clear_review()
   vim.fn.cursor(1, 1)

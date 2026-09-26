@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-ejzu
 title: setup() re-run leaves stale cycle_state; float wrap splits UTF-8
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T08:35:23Z
-updated_at: 2026-09-26T08:35:23Z
+updated_at: 2026-09-26T08:38:21Z
 ---
 
 Found during puwt:

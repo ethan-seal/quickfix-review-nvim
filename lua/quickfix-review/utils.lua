@@ -84,12 +84,15 @@ local function realpath(path)
   return path
 end
 
+-- The absolute, symlink-resolved form of `p`: two paths name the same file
+-- when their keys are equal (see files_match)
+function M.path_key(p)
+  return realpath(vim.fn.fnamemodify(p, ':p'))
+end
+
 -- Check if two file paths refer to the same file (symlinks resolved)
 function M.files_match(file1, file2)
-  if file1 == file2 then return true end
-  local abs1 = realpath(vim.fn.fnamemodify(file1, ':p'))
-  local abs2 = realpath(vim.fn.fnamemodify(file2, ':p'))
-  return abs1 == abs2
+  return file1 == file2 or M.path_key(file1) == M.path_key(file2)
 end
 
 M.realpath = realpath

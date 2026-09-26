@@ -1091,14 +1091,28 @@ end
 -- the tracking extmarks of comments that are gone
 local function refresh_all_signs(comments)
   track.prune(comments)
-  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_loaded(bufnr) then
-      local name = utils.get_real_filepath(bufnr)
-      if name ~= '' then
-        draw_signs(bufnr, name, comments)
+  -- Each buffer is given only the comments on its file (by path_key, as
+  -- files_match compares), so the pass is not comments x buffers
+  local groups, keys = {}, {}
+  for _, c in ipairs(comments) do
+    local key = keys[c.filename]
+    if not key then
+      key = utils.path_key(c.filename)
+      keys[c.filename] = key
+    end
+    groups[key] = groups[key] or {}
+    table.insert(groups[key], c)
+  end
+  track.batch(function()
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_loaded(bufnr) then
+        local name = utils.get_real_filepath(bufnr)
+        if name ~= '' then
+          draw_signs(bufnr, name, groups[utils.path_key(name)] or {})
+        end
       end
     end
-  end
+  end)
 end
 
 -- Whether `bufnr` holds a real file (not a diff buffer or a special one)
@@ -1383,6 +1397,7 @@ function M.setup(opts)
       drawn_at[args.buf] = nil
       read_once[args.buf] = nil
       utils.forget_buffer(args.buf)
+      track.forget_buffer(args.buf)
     end,
   })
 

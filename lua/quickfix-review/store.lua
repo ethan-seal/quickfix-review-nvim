@@ -255,12 +255,17 @@ local function view_item(c)
   }
 end
 
+-- In a track batch, so each comment's three M.range/is_outdated lookups
+-- compute its pos once and buffers are looked up in one map
 local function view_items()
-  local items = {}
-  for i, c in ipairs(comments) do
-    items[i] = view_item(c)
-  end
-  return items
+  -- Required here: track requires snapshots, which requires the store
+  return require('quickfix-review.track').batch(function()
+    local items = {}
+    for i, c in ipairs(comments) do
+      items[i] = view_item(c)
+    end
+    return items
+  end)
 end
 
 -- Refill the review's quickfix list, keeping its selected entry: the same

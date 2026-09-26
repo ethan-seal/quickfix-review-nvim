@@ -182,6 +182,14 @@ function M.search(lines, anchor)
   return best.s, new_end, state
 end
 
+-- The diff hunks from a snapshot to a content, keyed by
+-- '<snapshot sha>:<content sha>'. Hunks depend only on the two contents, so
+-- entries never go stale; comments sharing an anchor sha share one diff.
+-- Bounded: wiped when HUNKS_MAX entries are held.
+local hunks = {}
+local HUNKS_MAX = 16
+local hunks_count = 0
+
 -- The pos of comment `c` in content `lines` (whose sha is `sha`, computed
 -- when nil). A comment with no snapshot sha (from before anchors, or whose
 -- snapshot couldn't be saved) stays at its anchor lines, as current. When
@@ -192,12 +200,20 @@ function M.relocate(c, lines, sha)
   sha = sha or snapshots.hash(lines)
   if not a.sha then return make_pos(sha, a.lnum, a.end_lnum or a.lnum, 'current') end
   if sha == a.sha then return make_pos(sha, a.lnum, a.end_lnum or a.lnum, 'current') end
-  local old = snapshots.get(a.sha)
-  if not old then
-    local lnum, end_lnum, state = M.search(lines, a)
-    return make_pos(sha, lnum, end_lnum, state)
+  local key = a.sha .. ':' .. sha
+  local h = hunks[key]
+  if not h then
+    local old = snapshots.get(a.sha)
+    if not old then
+      local lnum, end_lnum, state = M.search(lines, a)
+      return make_pos(sha, lnum, end_lnum, state)
+    end
+    h = M.diff(old, lines)
+    if hunks_count >= HUNKS_MAX then hunks, hunks_count = {}, 0 end
+    hunks[key] = h
+    hunks_count = hunks_count + 1
   end
-  local lnum, end_lnum, state = M.map_range(M.diff(old, lines), a.lnum, a.end_lnum or a.lnum)
+  local lnum, end_lnum, state = M.map_range(h, a.lnum, a.end_lnum or a.lnum)
   return make_pos(sha, lnum, end_lnum, state)
 end
 
@@ -224,12 +240,38 @@ local contents = {}
 local files = {}
 local FILES_MAX = 32
 local files_count, files_clock = 0, 0
+-- Inside M.batch: its depth, the buffer map ({ exact = name -> buf,
+-- bykey = path_key -> buf }, built on first use) and the pos memo
+-- (id -> { key, pos })
+local batch_depth, batch_bufs, batch_pos = 0, nil, nil
 
 -- Forget everything (for tests); tracking extmarks are removed
 function M._reset()
   for id in pairs(marks) do M.forget(id) end
   marks, contents, files = {}, {}, {}
   files_count, files_clock = 0, 0
+  hunks, hunks_count = {}, 0
+  batch_depth, batch_bufs, batch_pos = 0, nil, nil
+end
+
+-- Forget the cached content of `buf` (when it is wiped out)
+function M.forget_buffer(buf) contents[buf] = nil end
+
+-- Whether the content of `buf` is cached (for tests)
+function M._has_contents(buf) return contents[buf] ~= nil end
+
+-- Run fn(...) as a batch: until it returns, buffers are looked up in a map
+-- built once, and each comment's pos is computed once. Only for loops that
+-- read positions and never change a buffer. Reentrant.
+-- Returns: fn's results (an error is raised again)
+function M.batch(fn, ...)
+  batch_depth = batch_depth + 1
+  if batch_depth == 1 then batch_pos = {} end
+  local res = vim.F.pack_len(pcall(fn, ...))
+  batch_depth = batch_depth - 1
+  if batch_depth == 0 then batch_bufs, batch_pos = nil, nil end
+  if not res[1] then error(res[2], 0) end
+  return unpack(res, 2, res.n)
 end
 
 -- The number of cached unloaded files (for tests)
@@ -269,6 +311,20 @@ end
 
 -- The loaded real buffer holding `file`, or nil
 local function buf_for(file)
+  if batch_depth > 0 then
+    if not batch_bufs then
+      batch_bufs = { exact = {}, bykey = {} }
+      for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+        if is_real(buf) then
+          local name = vim.api.nvim_buf_get_name(buf)
+          if not batch_bufs.exact[name] then batch_bufs.exact[name] = buf end
+          local key = utils.path_key(name)
+          if not batch_bufs.bykey[key] then batch_bufs.bykey[key] = buf end
+        end
+      end
+    end
+    return batch_bufs.exact[file] or batch_bufs.bykey[utils.path_key(file)]
+  end
   local fallback
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(buf) then
@@ -426,6 +482,15 @@ end
 -- extmark in a loaded buffer of its file (relocating and placing one if it
 -- has none there yet), else from the file on disk.
 function M.pos(c)
+  local key = batch_depth > 0 and anchor_key(c)
+  if key then
+    local memo = batch_pos[c.id]
+    if memo and memo.key == key then
+      local p = memo.pos
+      c.pos = make_pos(p.sha, p.lnum, p.end_lnum, p.state)
+      return c.pos
+    end
+  end
   local pos = from_mark(c)
   if not pos then
     local buf = buf_for(c.filename)
@@ -436,6 +501,7 @@ function M.pos(c)
     end
   end
   c.pos = make_pos(pos.sha, pos.lnum, pos.end_lnum, pos.state)
+  if key then batch_pos[c.id] = { key = key, pos = make_pos(pos.sha, pos.lnum, pos.end_lnum, pos.state) } end
   return c.pos
 end
 

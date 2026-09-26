@@ -861,6 +861,154 @@ assert.run_test('the unloaded-file cache keeps at most 32 files', function()
   assert.equals(count, 32, 'capped at 32')
 end)
 
+-- Replace the live diff (vim.text.diff on 0.11+, vim.diff on 0.10: M.diff
+-- looks it up per call) with a counting wrapper during fn()
+-- Returns: how many diffs fn() ran
+local function count_diffs(fn)
+  local holder, name = vim, 'diff'
+  if vim.text and vim.text.diff then holder, name = vim.text, 'diff' end
+  local orig = holder[name]
+  local n = 0
+  holder[name] = function(...)
+    n = n + 1
+    return orig(...)
+  end
+  local ok, err = pcall(fn)
+  holder[name] = orig
+  if not ok then error(err, 0) end
+  return n
+end
+
+assert.run_test('a refresh with 300 comments over 100 buffers is not comments x buffers', function()
+  qf.clear_review()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, 'p')
+  local bufs = {}
+  for i = 1, 100 do
+    local path = dir .. '/loaded' .. i .. '.txt'
+    vim.fn.writefile({ 'a' .. i, 'b' .. i, 'c' .. i }, path)
+    local buf = vim.fn.bufadd(path)
+    vim.fn.bufload(buf)
+    table.insert(bufs, buf)
+  end
+  for i = 1, 100 do
+    local path = dir .. '/unloaded' .. i .. '.txt'
+    vim.fn.writefile({ 'a' .. i, 'b' .. i, 'c' .. i }, path)
+    for l = 1, 3 do
+      store.add({ filename = path, lnum = l, kind = 'note', body = 'n' .. i .. ':' .. l })
+    end
+  end
+  qf.show_list()
+
+  local orig_match, orig_list = utils.files_match, vim.api.nvim_list_bufs
+  local matches, lists = 0, 0
+  utils.files_match = function(...)
+    matches = matches + 1
+    return orig_match(...)
+  end
+  vim.api.nvim_list_bufs = function()
+    lists = lists + 1
+    return orig_list()
+  end
+  local ok, err = pcall(store.refresh)
+  utils.files_match, vim.api.nvim_list_bufs = orig_match, orig_list
+  local rows = #vim.fn.getqflist()
+
+  vim.fn.setqflist({}, 'f')
+  for _, buf in ipairs(bufs) do vim.cmd('silent! bwipeout! ' .. buf) end
+  vim.fn.delete(dir, 'rf')
+  qf.clear_review()
+
+  assert.truthy(ok, 'refreshed: ' .. tostring(err))
+  assert.equals(rows, 300, 'all 300 comments listed')
+  assert.truthy(matches < 400, 'files_match calls: ' .. matches .. ' (over 100000 unbatched)')
+  assert.truthy(lists <= 5, 'buffer list scans: ' .. lists)
+end)
+
+assert.run_test('comments sharing one anchor sha are relocated through one diff', function()
+  qf.clear_review()
+  local path = vim.fn.fnamemodify(vim.fn.tempname() .. '-shared.txt', ':p')
+  vim.fn.writefile(TEN, path)
+  vim.cmd('silent edit ' .. vim.fn.fnameescape(path))
+  local buf = vim.api.nvim_get_current_buf()
+  for l = 1, 10 do
+    vim.fn.cursor(l, 1)
+    qf.add_comment('NOTE')
+  end
+  local sha = qf.comments()[1].anchor.sha
+  local shared = true
+  for _, c in ipairs(qf.comments()) do
+    if c.anchor.sha ~= sha then shared = false end
+  end
+
+  -- Loaded: the reload relocates every comment (relocate_buffer)
+  local lines = { 'sxwk top' }
+  vim.list_extend(lines, TEN)
+  vim.fn.writefile(lines, path)
+  local loaded = count_diffs(function() vim.cmd('silent edit!') end)
+  local states = {}
+  for _, c in ipairs(qf.comments()) do
+    local lnum = store.range(c)
+    if c.pos.state ~= 'shifted' or lnum ~= c.anchor.lnum + 1 then
+      table.insert(states, c.anchor.lnum .. '->' .. lnum .. ' ' .. c.pos.state)
+    end
+  end
+
+  -- Unloaded: each comment is relocated from disk
+  vim.cmd('silent! bwipeout! ' .. buf)
+  lines = { 'sxwk top', 'sxwk second' }
+  vim.list_extend(lines, TEN)
+  vim.fn.writefile(lines, path)
+  local unloaded, ranged = count_diffs(function()
+    for _, c in ipairs(qf.comments()) do store.range(c) end
+  end), {}
+  for _, c in ipairs(qf.comments()) do
+    if (store.range(c)) ~= c.anchor.lnum + 2 then table.insert(ranged, c.anchor.lnum) end
+  end
+
+  qf.clear_review()
+  vim.fn.delete(path)
+
+  assert.truthy(shared, 'the comments share one anchor sha')
+  assert.equals(loaded, 1, 'one diff on reload')
+  assert.length(states, 0, 'every comment shifted by one: ' .. table.concat(states, ', '))
+  assert.equals(unloaded, 1, 'one diff from disk')
+  assert.length(ranged, 0, 'every comment shifted by two from disk')
+end)
+
+assert.run_test('a deleted commented range is not diffed again on every pos', function()
+  fresh()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  vim.cmd('normal! 5Gdd')
+  local c = qf.comments()[1]
+  local states = {}
+  local n = count_diffs(function()
+    for i = 1, 3 do states[i] = store.pos(c).state end
+  end)
+  vim.cmd('silent edit!')
+  assert.equals(states[3], 'outdated', 'outdated after dd')
+  assert.truthy(n <= 1, 'diffs over 3 pos calls: ' .. n)
+end)
+
+assert.run_test('BufWipeout forgets the cached content of the buffer', function()
+  qf.clear_review()
+  local path = vim.fn.fnamemodify(vim.fn.tempname() .. '-wipe.txt', ':p')
+  vim.fn.writefile(TEN, path)
+  vim.cmd('silent edit ' .. vim.fn.fnameescape(path))
+  local buf = vim.api.nvim_get_current_buf()
+  vim.fn.cursor(3, 1)
+  qf.add_comment('NOTE')
+  store.pos(qf.comments()[1])
+  local cached = track._has_contents(buf)
+  vim.cmd('silent! bwipeout! ' .. buf)
+  local after = track._has_contents(buf)
+  qf.clear_review()
+  vim.fn.delete(path)
+  assert.truthy(cached, 'content cached while loaded')
+  assert.falsy(after, 'content forgotten after wipeout')
+end)
+
 rewrite(TEN)
 test_helper.cleanup_test_environment()
 

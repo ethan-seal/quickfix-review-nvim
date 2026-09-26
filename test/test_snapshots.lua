@@ -197,6 +197,10 @@ assert.run_test('lines holding a NUL (or a CR CR) round-trip as one line each', 
   same_lines(snapshots.get(sha), { 'a', 'x\ny', 'b\r\nc', 'z', 'cr\r', '\n' }, 'one line each (one CR stripped)')
   assert.equals(snapshots.hash(lines), sha, 'hash matches put')
   assert.equals(snapshots.hash({ 'a', 'b\r' }), vim.fn.sha256('a\nb\n'), 'ordinary lines hash as before')
+  -- NVIM 0.12 buffers give a NUL as "\0", readfile() as "\n": both hash as
+  -- the escape stored before, "\r0"
+  assert.equals(snapshots.hash({ 'x\0y' }), snapshots.hash({ 'x\ny' }), 'a NUL as "\\0" or "\\n" hashes alike')
+  assert.equals(snapshots.hash({ 'x\ny' }), vim.fn.sha256('x\r0y\r\n'), 'the NUL escape is unchanged')
 end)
 
 -- GC: snapshots unreferenced by the review's logs and untouched for a day

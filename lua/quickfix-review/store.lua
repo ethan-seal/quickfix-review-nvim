@@ -238,10 +238,10 @@ end
 -- when it has one. The row carries only the comment's id in user_data; the
 -- context stays in the store.
 local function view_item(c)
-  -- First line only: a newline would break the quickfix row
+  -- First lines only: a newline would break the quickfix row
   local text = M.headline(c):match('^[^\n]*')
   if c.response then
-    text = text .. ' | Response: ' .. c.response
+    text = text .. ' | Response: ' .. c.response:match('^[^\n]*')
   end
   if M.is_outdated(c) then text = '[outdated] ' .. text end
   local lnum, end_lnum = M.range(c)

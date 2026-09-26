@@ -103,7 +103,17 @@ end
 -- How far from the anchor's line the fallback search looks
 local SEARCH_WINDOW = 200
 
-local function strip_cr(line) return (line:gsub('\r$', '')) end
+-- A line as compared by the search: without a trailing CR, and with a NUL
+-- as "\n" (NVIM 0.12's nvim_buf_get_lines gives a NUL as "\0", readfile()
+-- and older buffers as "\n"; a stored anchor line may hold either)
+local function norm(line) return (line:gsub('%z', '\n'):gsub('\r$', '')) end
+
+-- `list` with every line normalised (see norm)
+local function norm_all(list)
+  local out = {}
+  for i, l in ipairs(list) do out[i] = norm(l) end
+  return out
+end
 
 -- Whether a line says too little to identify a block by itself (`end`, `}`,
 -- blank): at most 4 characters once trimmed, or no letters or digits
@@ -124,8 +134,8 @@ function M.search(lines, anchor)
   local lnum = anchor.lnum
   local end_lnum = math.max(anchor.end_lnum or lnum, lnum)
   local span = end_lnum - lnum
-  local block = anchor.lines or {}
-  local before, after = anchor.before or {}, anchor.after or {}
+  local block = norm_all(anchor.lines or {})
+  local before, after = norm_all(anchor.before or {}), norm_all(anchor.after or {})
   local n = #block
 
   local function outdated()
@@ -135,7 +145,7 @@ function M.search(lines, anchor)
   end
   if n == 0 then return outdated() end
 
-  local function at(i) return lines[i] and strip_cr(lines[i]) end
+  local function at(i) return lines[i] and norm(lines[i]) end
   -- The block is whole (not truncated) only when it covers the range; only
   -- then does `after` directly follow it
   local whole = n == span + 1

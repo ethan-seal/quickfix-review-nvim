@@ -152,6 +152,40 @@ assert.run_test('deleting a commented line then undoing makes it current again',
   assert.equals(end_lnum, 5, 'ends on line 5 after undo')
 end)
 
+assert.run_test('dd on a commented line: sign and view agree without a save', function()
+  fresh()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  -- Run what the reload in fresh() scheduled (a refresh, which redraws every
+  -- buffer's signs), so only the TextChanged redraw can fix the sign
+  local drained = false
+  vim.schedule(function() drained = true end)
+  vim.wait(1000, function() return drained end)
+
+  vim.cmd('normal! 5Gdd')
+  assert.length(signs_on(file_buf, 5), 1, 'the sign slid onto line 5 (precondition)')
+  -- Headless 'normal!' may not fire TextChanged: fire it, then wait out the
+  -- debounced redraw
+  local tick = vim.api.nvim_buf_get_changedtick(file_buf)
+  vim.api.nvim_exec_autocmds('TextChanged', { buffer = file_buf })
+  local c = qf.comments()[1]
+  local l = store.range(c)
+  local ok_wait = vim.wait(2000, function() return #signs_on(file_buf, l) > 0 end, 20)
+  local marks = vim.api.nvim_buf_get_extmarks(file_buf, utils.get_ns_id(), 0, -1, {})
+  local lines = float_lines(l)
+  local after_tick = vim.api.nvim_buf_get_changedtick(file_buf)
+  local state = store.pos(c).state
+  vim.cmd('silent edit!')
+
+  assert.equals(state, 'outdated', 'outdated after dd')
+  assert.truthy(ok_wait, 'sign redrawn on the line store.range reports')
+  assert.equals(after_tick, tick, 'no further change made')
+  for _, m in ipairs(marks) do
+    assert.equals(m[2] + 1, l, 'every sign on the line store.range reports')
+  end
+  assert.truthy(#lines > 0, 'the float shows the comment on its line')
+end)
+
 assert.run_test(':colorscheme keeps QuickfixReviewOutdated linked', function()
   vim.cmd('colorscheme default')
   local hl = vim.api.nvim_get_hl(0, { name = 'QuickfixReviewOutdated' })
@@ -304,6 +338,7 @@ check_eol('a CRLF file is not outdated', 'a\r\nb\r\nc\r\n', 'edit')
 check_eol('a CRLF file read as unix (CRs in the buffer) is not outdated', 'a\r\nb\r\nc\r\n', 'edit ++ff=unix')
 check_eol('a file without a final newline is not outdated', 'a\nb\nc', 'edit')
 check_eol('a CRLF file without a final newline is not outdated', 'a\r\nb\r\nc', 'edit')
+check_eol('a file with a NUL on the commented line is current loaded and from disk', 'a\nb\0x\nc\n', 'edit')
 
 assert.run_test('opening a diff buffer with other lines never moves the comment', function()
   fresh()

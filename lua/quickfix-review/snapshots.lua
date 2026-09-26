@@ -11,9 +11,11 @@
 -- but not the CR of a last line without a NL; a buffer with 'ff' unix keeps
 -- every CR. Both are stripped here.)
 --
--- A line holding a NUL (which nvim_buf_get_lines and readfile() give as
--- "\n") would split in two when read back, so the anchor's lnum no longer
--- indexes the snapshot. Such a line is escaped: "\r" -> "\r1", "\n" -> "\r0",
+-- A line holding a NUL would split in two when read back, so the anchor's
+-- lnum no longer indexes the snapshot. readfile() gives a NUL as "\n", and so
+-- does nvim_buf_get_lines before NVIM 0.12; from 0.12 it gives "\0". Both are
+-- taken as "\n" first, so a buffer and the file on disk hash alike. Such a
+-- line is escaped: "\r" -> "\r1", "\n" -> "\r0",
 -- plus a final "\r" marking it as escaped. So is a line that still ends in a
 -- CR after the one stripped (a CR CR LF), to keep the marker unambiguous:
 -- every other stored line ends in anything but a CR. Lines without either
@@ -36,7 +38,7 @@ local warned = {}
 local function canonical(lines)
   local out = {}
   for i, line in ipairs(lines) do
-    line = line:gsub('\r$', '')
+    line = line:gsub('%z', '\n'):gsub('\r$', '')
     if line:find('\n', 1, true) or line:sub(-1) == '\r' then
       line = line:gsub('\r', '\r1'):gsub('\n', '\r0') .. '\r'
     end

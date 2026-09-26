@@ -627,6 +627,53 @@ assert.run_test('cnext with autochdir after another Neovim logged: no E925', fun
   if not ok then error(err, 0) end
 end)
 
+-- A plugin running :cd from the jump's BufEnter (vim-rooter and the like)
+-- fires DirChanged 'global' mid-jump. Simulated: another Neovim logs a
+-- comment, then DirChanged 'global' fires, from BufEnter of the jump's
+-- target; refilling the list then would abort the jump with E925.
+assert.run_test('cnext with a :cd from BufEnter after another Neovim logged: no E925', function()
+  local path = vim.fn.tempname() .. '-rooter.txt'
+  vim.fn.writefile({ 'a', 'b', 'c', 'd', 'e' }, path)
+  local group = vim.api.nvim_create_augroup('QuickfixReviewTestRooter', { clear = true })
+  local ok, err = pcall(function()
+    qf.clear_review()
+    vim.cmd('only')
+    vim.fn.cursor(1, 1)
+    qf.add_comment('NOTE')
+    local home = vim.api.nvim_get_current_buf()
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    local target = vim.api.nvim_get_current_buf()
+    vim.fn.cursor(4, 1)
+    qf.add_comment('ISSUE')
+    vim.api.nvim_set_current_buf(home)
+    qf.show_list()
+    navigate('cc 1')
+    local id
+    vim.api.nvim_create_autocmd('BufEnter', {
+      group = group,
+      buffer = target,
+      once = true,
+      callback = function()
+        id = append_external(path)
+        vim.api.nvim_exec_autocmds('DirChanged', { pattern = 'global' })
+      end,
+    })
+    local jumped, jump_err = pcall(navigate, 'cnext')
+    assert.truthy(jumped, 'cnext succeeded: ' .. tostring(jump_err))
+    assert.equals(selected(), 2, 'on the second entry')
+    assert.equals(vim.api.nvim_get_current_buf(), target, 'in the other file')
+    assert.truthy(id, 'the BufEnter hook ran')
+    vim.wait(100, function() return listed(id) end)
+    assert.truthy(listed(id), 'external comment listed after the jump')
+  end)
+  pcall(vim.api.nvim_del_augroup_by_id, group)
+  pcall(reset_nav)
+  pcall(vim.cmd, 'bwipeout! ' .. vim.fn.fnameescape(path))
+  os.remove(path)
+  qf.clear_review()
+  if not ok then error(err, 0) end
+end)
+
 -- With 'autowrite' and 'nohidden', :cnext out of a modified buffer writes it
 -- mid-jump: the anchors are written back, and the list refilled after
 assert.run_test('cnext with autowrite out of a modified buffer: no E925, anchors written', function()

@@ -26,7 +26,7 @@ assert.run_test('setup() twice keeps the same QuickfixReview autocmds', function
 end)
 
 assert.run_test('setup() leaves no ungrouped plugin autocmds', function()
-  for _, event in ipairs({ 'BufEnter', 'CursorMoved', 'FileChangedShellPost', 'FileType', 'DirChanged', 'BufWritePost', 'ShellFilterPost', 'BufWipeout' }) do
+  for _, event in ipairs({ 'BufEnter', 'CursorMoved', 'FileChangedShellPost', 'FileType', 'DirChanged', 'BufWritePost', 'ShellFilterPost', 'BufWipeout', 'TextChanged' }) do
     assert.length(ungrouped(event), 0, 'ungrouped ' .. event .. ' handlers')
   end
 end)
@@ -206,6 +206,8 @@ assert.run_test('view_comment shows a body and response containing newlines', fu
     local text = vim.fn.getqflist()[1].text
     assert.truthy(vim.startswith(text, '[NOTE] first | Response: '), 'qf text: ' .. text)
     assert.falsy(text:find('second', 1, true), 'second body line not in qf text: ' .. text)
+    assert.falsy(text:find('\n', 1, true), 'no newline in qf text: ' .. text)
+    assert.falsy(text:find('r2', 1, true), 'second response line not in qf text: ' .. text)
   end)
   vim.api.nvim_exec_autocmds('CursorMoved', {})
   qf.clear_review()

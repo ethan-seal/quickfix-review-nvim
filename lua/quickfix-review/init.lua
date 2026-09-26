@@ -1084,6 +1084,11 @@ local drawn_at = {}
 -- the autocmd never saw.
 local read_once = {}
 
+-- The pending TextChanged redraw of each buffer: a generation number, so
+-- only the last of a burst of changes redraws (see the autocmd in setup)
+local redraw_gen = {}
+local REDRAW_DELAY = 150
+
 local function draw_signs(bufnr, name, comments)
   utils.refresh_buffer_signs(bufnr, name, comments)
   drawn_at[bufnr] = vim.api.nvim_buf_get_changedtick(bufnr)
@@ -1301,11 +1306,17 @@ function M.setup(opts)
   -- 'autochdir' changes it too ('auto'); :lcd and :tcd leave the project alone.
   -- 'autochdir' fires inside a quickfix jump (:cnext into another dir), where
   -- refilling the list would abort the jump with E925: its refill waits
-  -- until after the jump. After :cd it is immediate.
+  -- until after the jump. So does the refill after a :cd a plugin runs from
+  -- the jump's BufEnter or BufReadPost (vim-rooter and the like), which
+  -- fires 'global'. After any other :cd it is immediate.
   vim.api.nvim_create_autocmd('DirChanged', {
     group = augroup,
     pattern = { 'global', 'auto' },
-    callback = function(args) store.all({ defer_view = args.match == 'auto' }) end,
+    callback = function(args)
+      local in_jump = jump_finishing
+        or pending_jump(vim.api.nvim_get_current_buf(), false) ~= nil
+      store.all({ defer_view = args.match == 'auto' or in_jump })
+    end,
   })
 
   -- Cache the replayed log on exit, so the next start reads only its tail
@@ -1353,6 +1364,26 @@ function M.setup(opts)
     end
   })
 
+  -- Redraw a changed buffer's signs once edits pause. Deleting a commented
+  -- line (dd) slides its sign onto the next line, while the comment is now
+  -- outdated at the line before the gap: until redrawn, the sign and the
+  -- view disagree, and the sign's line says there is no comment on it.
+  vim.api.nvim_create_autocmd('TextChanged', {
+    group = augroup,
+    callback = function(args)
+      local buf = args.buf
+      local gen = (redraw_gen[buf] or 0) + 1
+      redraw_gen[buf] = gen
+      vim.defer_fn(function()
+        if redraw_gen[buf] ~= gen or not vim.api.nvim_buf_is_loaded(buf) then return end
+        redraw_gen[buf] = nil
+        if drawn_at[buf] == vim.api.nvim_buf_get_changedtick(buf) then return end
+        local file = utils.get_real_filepath(buf)
+        if file ~= '' then draw_signs(buf, file, store.all()) end
+      end, REDRAW_DELAY)
+    end,
+  })
+
   -- Relocate a file's comments when it is read, and when it is reloaded
   -- after changing on disk
   vim.api.nvim_create_autocmd({ 'BufReadPost', 'FileChangedShellPost' }, {
@@ -1397,6 +1428,7 @@ function M.setup(opts)
     group = augroup,
     callback = function(args)
       drawn_at[args.buf] = nil
+      redraw_gen[args.buf] = nil
       read_once[args.buf] = nil
       utils.forget_buffer(args.buf)
       track.forget_buffer(args.buf)

@@ -195,7 +195,7 @@ A comment is **outdated** when one of its lines was changed or deleted, a line w
 - "outdated — code changed since comment" at the top of the comment float
 - ` (outdated)` after their location in the export
 
-Lines added or removed next to a range don't make it outdated, and neither do CRLF line endings or a missing final newline. While a file is open, a comment whose whole range you delete becomes outdated at once; other edits inside a range are checked when you save the file or it is next read from disk. Comments made before snapshots existed stay at their saved line and are never marked outdated; saving their file gives them a snapshot.
+Lines added or removed next to a range don't make it outdated, and neither do CRLF line endings or a missing final newline. Files not in UTF-8, and CR-only files read with `fileformat=mac`, are compared as raw bytes while not loaded, so a comment on them can show as outdated until the file is opened. While a file is open, a comment whose whole range you delete becomes outdated at once; other edits inside a range are checked when you save the file or it is next read from disk. Comments made before snapshots existed stay at their saved line and are never marked outdated; saving their file gives them a snapshot.
 
 To accept an outdated comment's new position, put the cursor on it and run `:ReviewReanchor` (or map `keymaps.reanchor`): it is re-anchored to the buffer's lines as they are now (unsaved edits included, as when adding a comment) and is current again.
 

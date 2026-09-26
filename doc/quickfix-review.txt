@@ -194,8 +194,14 @@ file per version, named by the SHA-256 of its content, so comments can
 follow later edits. Content is stored canonically: lines joined with LF,
 trailing CRs dropped, always ending in a newline, so CRLF and LF versions
 of a file (or one missing its final newline) share a snapshot. A snapshot
-whose content no longer matches its name is ignored with a warning. Files
-in an encoding other than UTF-8 may give noisy results. With
+whose content no longer matches its name is ignored with a warning. A NUL
+in a line hashes alike whether it is read from a buffer or from disk.
+Files in an encoding other than UTF-8 may give noisy results: while such a
+file is not loaded it is compared as raw bytes, so a comment on a
+non-ASCII line can show as outdated until the file is opened. Likewise a
+file with CR-only line endings read with 'fileformat' "mac" (from
+'fileformats' or `++ff=mac`) is read from disk as one line while not
+loaded, so its comments can show as outdated until it is opened. With
 |quickfix-review-storage_file| the directory is `<storage_file>.snapshots`.
 
 A snapshot no longer named by the review's event logs (the current log and

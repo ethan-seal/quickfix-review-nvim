@@ -107,6 +107,13 @@ do
   local crlf = { 'new', 'line 1\r', 'line 2\r', 'line 3\r', 'line 4\r', 'line 5\r', 'line 6\r' }
   check_search('CR line endings match', crlf, A45, 5, 6, 'shifted')
 end
+do
+  -- NVIM 0.12 gives a NUL in a buffer line as "\0", readfile() as "\n"
+  local anchor = { lnum = 2, end_lnum = 2, lines = { 'x\0y' }, before = { 'a' }, after = { 'c' } }
+  check_search('an anchor NUL as "\\0" matches a file line with "\\n"', { 'a', 'x\ny', 'c' }, anchor, 2, 2, 'current')
+  local anchor_nl = { lnum = 2, end_lnum = 2, lines = { 'x\ny' }, before = { 'a' }, after = { 'c' } }
+  check_search('an anchor NUL as "\\n" matches a buffer line with "\\0"', { 'a', 'x\0y', 'c' }, anchor_nl, 2, 2, 'current')
+end
 
 -- Blocks of `end`: which one is meant comes from the context
 local ENDS = {

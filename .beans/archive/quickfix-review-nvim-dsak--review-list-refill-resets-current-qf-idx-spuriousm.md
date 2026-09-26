@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-dsak
 title: Review list refill resets current qf idx (spurious/missed auto-show)
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T07:20:29Z
-updated_at: 2026-09-26T07:26:28Z
+updated_at: 2026-09-26T08:06:29Z
 ---
 
 Follow-up from iyuw review. store.lua refill `setqflist({}, 'r', {items=...})` (on add/edit/delete/relocation, store.lua ~204 and refresh_view ~704) passes no idx, so the current entry resets to 1:

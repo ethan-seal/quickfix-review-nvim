@@ -326,21 +326,45 @@ function M.save_review()
   end
 end
 
+-- The review list entry last seen by auto_show_check, whether or not a float
+-- opened for it: { id =, idx = }. Only a change of entry (quickfix
+-- navigation) may open the float, never plain cursor movement onto it, nor
+-- a refill or (re)creation of the list moving its selection.
+local last_seen
+
+-- Show the review as the current quickfix list, its selected entry seen:
+-- the list appearing is not navigation
+local function show_seen()
+  store.show()
+  if store.is_current_view() then
+    local info = vim.fn.getqflist({ id = 0, idx = 0 })
+    last_seen = { id = info.id, idx = info.idx }
+  end
+end
+
+-- A refill moved the list's selection (before_idx to after_idx). Seen, unless
+-- a navigation to before_idx hasn't been checked yet: that one still counts.
+local function refill_seen(id, before_idx, after_idx)
+  if last_seen and last_seen.id == id and last_seen.idx == before_idx then
+    last_seen.idx = after_idx
+  end
+end
+
 -- Replay the review's log (ignoring the cache) and show it in the quickfix list
 function M.load_review()
   local ok, message = store.reload()
-  if ok then store.show() end
+  if ok then show_seen() end
   print(message)
 end
 
 -- Make the review the current quickfix list, without opening the window
 function M.show_list()
-  store.show()
+  show_seen()
 end
 
 -- Show the review in the quickfix list and open the quickfix window
 function M.open_list()
-  store.show()
+  show_seen()
   vim.cmd('copen')
 end
 
@@ -427,15 +451,13 @@ local function close_float()
   float_state = nil
 end
 
--- The review list entry last seen by auto_show_check, whether or not a float
--- opened for it: { id =, idx = }. Only a change of entry (quickfix
--- navigation) may open the float, never plain cursor movement onto it.
-local last_seen
-
 -- Show the float if the cursor has just landed on a new entry of the review
 -- quickfix list (:cnext, :cprev, :cc, :cfirst, :clast). Runs scheduled, after
 -- the navigation's events, so everything is re-checked here.
+-- Waits while a jump's relocation refill is deferred (finish_jump checks).
+local jump_finishing = false
 local function auto_show_check()
+  if jump_finishing then return end
   if not config.options.auto_show then return end
   if not store.is_current_view() then return end
   if vim.fn.win_gettype() ~= '' or vim.bo.buftype == 'quickfix' then return end
@@ -855,11 +877,51 @@ end
 -- from its content (never from a diff buffer, which holds an old revision).
 -- Positions are kept in memory only; nothing is logged here (anchors are
 -- written back only when the file is saved, see write_back).
+-- The review list entry a quickfix jump into `bufnr` is heading for, if one
+-- is under way (:cnext/:cc reading the file): the selection is in `bufnr`
+-- and auto_show_check hasn't seen it yet
+local function pending_jump(bufnr)
+  if not last_seen or not store.is_current_view() then return nil end
+  local info = vim.fn.getqflist({ id = 0, idx = 0, items = 0 })
+  local item = info.items[info.idx]
+  if info.id ~= last_seen.id or info.idx == last_seen.idx
+      or not item or item.bufnr ~= bufnr then
+    return nil
+  end
+  return item
+end
+
+-- Finish a quickfix jump whose file relocated its comments on read, once the
+-- jump is done: refill the list (refilling during the jump would abort it
+-- with E925), move the cursor from the entry's old line to its new one, and
+-- show its float, as the jump alone would have
+local function finish_jump(bufnr, item, seen)
+  jump_finishing = false
+  store.refresh()
+  if vim.api.nvim_get_current_buf() ~= bufnr or not store.is_current_view() then return end
+  local info = vim.fn.getqflist({ id = 0, idx = 0, items = 0 })
+  local now = info.items[info.idx]
+  if now and now.bufnr == bufnr and vim.fn.line('.') == item.lnum then
+    pcall(vim.api.nvim_win_set_cursor, 0, { now.lnum, math.max(now.col - 1, 0) })
+  end
+  -- The navigation still counts, whichever of this and the jump's own
+  -- scheduled check runs first
+  last_seen = seen
+  pcall(auto_show_check)
+end
+
 local function relocate_buffer(bufnr)
   if vim.bo[bufnr].buftype ~= '' or utils.is_special_buffer(bufnr) then return end
   local comments = store.all()
   if track.relocate_buffer(bufnr, comments) then
-    store.refresh()
+    local item = pending_jump(bufnr)
+    if item then
+      local seen = { id = last_seen.id, idx = last_seen.idx }
+      jump_finishing = true
+      vim.schedule(function() finish_jump(bufnr, item, seen) end)
+    else
+      store.refresh()
+    end
   else
     local name = utils.get_real_filepath(bufnr)
     if name ~= '' then draw_signs(bufnr, name, comments) end
@@ -942,6 +1004,7 @@ function M.setup(opts)
 
   -- Load the saved review now, so it's in place before any change is made
   store.set_on_change(refresh_all_signs)
+  store.set_on_refill(refill_seen)
   refresh_all_signs(store.all())
 
   -- The project follows the global cwd: after :cd, re-read the review from the

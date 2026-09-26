@@ -26,6 +26,8 @@ local reduced = reduce.new()
 -- Id of the quickfix list showing the review, if one has been published
 local qf_id = nil
 local on_change = function(_) end
+-- Called after every refill of the list view: (qf_id, idx before, idx after)
+local on_refill = function(_, _, _) end
 
 
 -- A stable identity for a comment: 16 hex chars from the OS RNG. Not
@@ -219,6 +221,7 @@ local function refresh_view()
   end
   vim.fn.setqflist({}, 'r', { id = qf_id, items = items, title = QF_TITLE })
   if idx > 1 then vim.fn.setqflist({}, 'a', { id = qf_id, idx = idx }) end
+  on_refill(qf_id, before.idx, vim.fn.getqflist({ id = qf_id, idx = 0 }).idx)
 end
 
 -- Where the review lives. Per project: log.jsonl (the review), state.json
@@ -717,6 +720,12 @@ end
 -- Called after any change to the comments, including ones read from disk
 function M.set_on_change(fn)
   on_change = fn
+end
+
+-- Called after every refill of the list view with (qf_id, idx before,
+-- idx after), so a selection the refill moved isn't taken for navigation
+function M.set_on_refill(fn)
+  on_refill = fn
 end
 
 -- Redraw the quickfix view and call on_change after comments moved (a

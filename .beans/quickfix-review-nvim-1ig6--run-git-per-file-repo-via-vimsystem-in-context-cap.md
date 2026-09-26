@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: normal
 created_at: 2026-09-26T04:31:20Z
-updated_at: 2026-09-26T04:57:49Z
+updated_at: 2026-09-26T05:27:42Z
 blocked_by:
     - quickfix-review-nvim-46kf
 ---
@@ -23,3 +23,7 @@ context.capture (lua/quickfix-review/context.lua) runs git in nvim's cwd via thr
 - [ ] Test: file in a temp git repo while cwd is a different temp repo → commit equals the file's repo HEAD
 - [ ] Test: non-git file → no commit fields, buffer snippet present, no error
 - [ ] Test: unsaved buffer edit → snippet matches buffer lines
+
+
+
+Note (from 0edn): `utils.git_toplevel(dir_or_file)` already exists (vim.system, 1000ms timeout, cached per argument). Diff buffers now pass an ABSOLUTE toplevel-based path to context.capture (previously repo-relative) — verify capture handles it.

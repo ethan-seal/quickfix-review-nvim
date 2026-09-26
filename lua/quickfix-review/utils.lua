@@ -60,11 +60,26 @@ function M.init_signs(config)
   end
 end
 
--- Check if two file paths refer to the same file
+-- Resolved (symlink-free) paths; only hits are cached, so a file created
+-- later in the session is still resolved once it exists
+local realpath_cache = {}
+
+local function realpath(path)
+  local cached = realpath_cache[path]
+  if cached then return cached end
+  local resolved = vim.uv.fs_realpath(path)
+  if resolved then
+    realpath_cache[path] = resolved
+    return resolved
+  end
+  return path
+end
+
+-- Check if two file paths refer to the same file (symlinks resolved)
 function M.files_match(file1, file2)
   if file1 == file2 then return true end
-  local abs1 = vim.fn.fnamemodify(file1, ':p')
-  local abs2 = vim.fn.fnamemodify(file2, ':p')
+  local abs1 = realpath(vim.fn.fnamemodify(file1, ':p'))
+  local abs2 = realpath(vim.fn.fnamemodify(file2, ':p'))
   return abs1 == abs2
 end
 
@@ -210,41 +225,79 @@ function M.refresh_buffer_signs(bufnr, file, comments)
   end
 end
 
--- Extract real file path from special diff buffers
-function M.get_real_filepath()
-  local bufname = vim.fn.expand('%:p')
+-- git toplevel per directory; false marks "not in a git repo" so misses are cached too
+local toplevel_cache = {}
 
-  -- Handle diffview buffers: diffview:///path/.git//hash/file.txt
-  local diffview_match = bufname:match('diffview://.*//[^/]+/(.*)')
-  if diffview_match then
-    return diffview_match
+-- Return the git toplevel containing `dir` (a file path uses its directory),
+-- or nil outside git. Results are cached per argument for the session.
+function M.git_toplevel(dir)
+  if not dir or dir == '' then return nil end
+  local cached = toplevel_cache[dir]
+  if cached ~= nil then return cached or nil end
+
+  local query = dir
+  if vim.fn.isdirectory(query) == 0 then
+    query = vim.fn.fnamemodify(query, ':h')
   end
 
-  -- Handle fugitive buffers: fugitive:///path/.git//hash/file.txt
-  local fugitive_match = bufname:match('fugitive://.*//[^/]+/(.*)')
-  if fugitive_match then
-    return fugitive_match
+  local root = false
+  local ok, result = pcall(function()
+    return vim.system({ 'git', '-C', query, 'rev-parse', '--show-toplevel' }, { text = true }):wait(1000)
+  end)
+  if ok and result and result.code == 0 and result.stdout then
+    local trimmed = vim.trim(result.stdout)
+    if trimmed ~= '' then root = trimmed end
   end
 
-  -- Handle codediff buffers
+  toplevel_cache[dir] = root
+  return root or nil
+end
+
+-- Resolve `rel` against the repo containing `root` (or cwd when root is nil)
+local function resolve_repo_path(root, rel)
+  local base
+  if root and root ~= '' then
+    base = M.git_toplevel(root) or root
+  else
+    local cwd = vim.fn.getcwd()
+    base = M.git_toplevel(cwd) or cwd
+  end
+  return base .. '/' .. rel
+end
+
+-- Extract real file path from special diff buffers. Regular buffers (and names
+-- matching no known scheme) return the buffer name unchanged.
+function M.get_real_filepath(bufnr)
+  local bufname = vim.api.nvim_buf_get_name(bufnr or 0)
+
+  -- diffview:///repo/.git/<rev>/file.txt (also tolerates .git//<rev>/)
+  local root, rel = bufname:match('^diffview://(.-)/%.git/+[^/]+/(.+)$')
+  if rel then
+    return resolve_repo_path(root, rel)
+  end
+
+  -- fugitive:///repo/.git//<rev>/file.txt
+  root, rel = bufname:match('^fugitive://(.-)/%.git//[^/]+/(.+)$')
+  if rel then
+    return resolve_repo_path(root, rel)
+  end
+
+  -- codediff buffers carry a repo-relative path with no repo root
   local codediff_match = bufname:match('codediff://+(.+)')
   if codediff_match then
     local clean_path = codediff_match:match('//:[^/]+/(.*)')
+      or codediff_match:match('/+([^/].*)')
     if clean_path then
-      return clean_path
-    end
-    clean_path = codediff_match:match('/+([^/].*)')
-    if clean_path then
-      return clean_path
+      return resolve_repo_path(nil, clean_path)
     end
   end
 
   return bufname
 end
 
--- Check if current buffer is a diff/special buffer
-function M.is_special_buffer()
-  local bufname = vim.fn.expand('%:p')
+-- Check if a buffer (default: current) is a diff/special buffer
+function M.is_special_buffer(bufnr)
+  local bufname = vim.api.nvim_buf_get_name(bufnr or 0)
   return bufname:match('^diffview://')
       or bufname:match('^fugitive://')
       or bufname:match('^codediff://')

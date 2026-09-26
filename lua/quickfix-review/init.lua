@@ -568,7 +568,7 @@ end
 local function refresh_all_signs(comments)
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(bufnr) then
-      local name = vim.api.nvim_buf_get_name(bufnr)
+      local name = utils.get_real_filepath(bufnr)
       if name ~= '' then
         utils.refresh_buffer_signs(bufnr, name, comments)
       end
@@ -601,10 +601,10 @@ function M.setup(opts)
   -- Place signs when entering a buffer (also picks up changes made on disk)
   vim.api.nvim_create_autocmd('BufEnter', {
     group = augroup,
-    callback = function()
-      local file = vim.fn.expand('%:p')
+    callback = function(args)
+      local file = utils.get_real_filepath(args.buf)
       if file == '' then return end
-      utils.refresh_buffer_signs(vim.fn.bufnr(), file, store.all())
+      utils.refresh_buffer_signs(args.buf, file, store.all())
     end
   })
 
@@ -612,8 +612,8 @@ function M.setup(opts)
   if config.options.prompt_on_file_change then
     vim.api.nvim_create_autocmd('FileChangedShellPost', {
       group = augroup,
-      callback = function()
-        local file = utils.get_real_filepath()
+      callback = function(args)
+        local file = utils.get_real_filepath(args.buf)
         local function in_file(item) return utils.files_match(item.filename, file) end
         local has_comments = false
         for _, item in ipairs(store.all()) do

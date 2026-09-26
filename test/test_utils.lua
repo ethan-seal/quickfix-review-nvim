@@ -114,4 +114,83 @@ assert.run_test('get_real_filepath returns path for regular files', function()
   assert.matches(result, 'test_filepath%.txt', 'returns file path')
 end)
 
+-- Resolve `name` through a scratch buffer while a different buffer is current
+local function real_path_for_name(name)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(buf, name)
+  local ok, result = pcall(utils.get_real_filepath, buf)
+  vim.cmd('bwipeout! ' .. buf)
+  assert.truthy(ok, 'get_real_filepath did not error for ' .. name)
+  return result
+end
+
+local repo_root = vim.fn.getcwd()
+local expected_real = repo_root .. '/lua/quickfix-review/utils.lua'
+
+assert.run_test('git_toplevel returns repo root for the repo dir', function()
+  assert.equals(utils.git_toplevel(repo_root), repo_root, 'toplevel of repo root')
+end)
+
+assert.run_test('git_toplevel accepts a file path', function()
+  assert.equals(utils.git_toplevel(expected_real), repo_root, 'toplevel of a file in the repo')
+end)
+
+assert.run_test('git_toplevel returns nil outside git', function()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, 'p')
+  local result = utils.git_toplevel(dir)
+  vim.fn.delete(dir, 'rf')
+  assert.equals(result, nil, 'no toplevel outside git')
+end)
+
+assert.run_test('get_real_filepath resolves diffview names (single slash)', function()
+  local result = real_path_for_name('diffview://' .. repo_root .. '/.git/abc123/lua/quickfix-review/utils.lua')
+  assert.equals(result, expected_real, 'diffview single-slash form')
+end)
+
+assert.run_test('get_real_filepath resolves diffview names (double slash)', function()
+  local result = real_path_for_name('diffview://' .. repo_root .. '/.git//:0:/lua/quickfix-review/utils.lua')
+  assert.equals(result, expected_real, 'diffview double-slash form')
+end)
+
+assert.run_test('get_real_filepath resolves fugitive names', function()
+  local result = real_path_for_name('fugitive://' .. repo_root .. '/.git//0/lua/quickfix-review/utils.lua')
+  assert.equals(result, expected_real, 'fugitive form')
+end)
+
+assert.run_test('get_real_filepath resolves codediff names', function()
+  -- The two shapes the existing extraction accepts: a leading segment before
+  -- the repo-relative path, or a `//:<rev>/` marker
+  local result = real_path_for_name('codediff:///abc123/lua/quickfix-review/utils.lua')
+  assert.equals(result, expected_real, 'codediff <rev>/<path> form')
+  result = real_path_for_name('codediff:///x//:0/lua/quickfix-review/utils.lua')
+  assert.equals(result, expected_real, 'codediff //:<rev>/<path> form')
+end)
+
+assert.run_test('get_real_filepath uses the repo root from a subdirectory cwd', function()
+  vim.cmd('lcd lua')
+  local ok, result = pcall(real_path_for_name,
+    'fugitive://' .. repo_root .. '/.git//0/lua/quickfix-review/utils.lua')
+  vim.cmd('lcd ' .. vim.fn.fnameescape(repo_root))
+  assert.truthy(ok, 'resolution did not error')
+  assert.equals(result, expected_real, 'fugitive path resolved against repo root, not cwd')
+end)
+
+assert.run_test('files_match treats a symlink and its target as the same file', function()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, 'p')
+  local real = dir .. '/real.txt'
+  local link = dir .. '/link.txt'
+  local f = io.open(real, 'w')
+  if f then
+    f:write('x')
+    f:close()
+  end
+  local linked = vim.uv.fs_symlink(real, link)
+  local result = utils.files_match(link, real)
+  vim.fn.delete(dir, 'rf')
+  assert.truthy(linked, 'symlink created')
+  assert.truthy(result, 'symlink matches its target')
+end)
+
 return assert

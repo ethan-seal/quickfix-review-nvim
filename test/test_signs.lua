@@ -372,6 +372,57 @@ assert.run_test('review signs coexist with git gutter signs on the same line', f
   end
 end)
 
+assert.run_test('signs appear in a fugitive buffer for the real file', function()
+  qf.clear_review()
+  local bufnr = vim.fn.bufnr()
+  clear_extmarks(bufnr)
+
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local fugbuf = vim.api.nvim_create_buf(true, true)
+  vim.api.nvim_buf_set_lines(fugbuf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_name(fugbuf, 'fugitive://' .. vim.fn.getcwd() .. '/.git//0/' .. test_file)
+
+  -- Entering the buffer fires BufEnter, which refreshes its signs
+  vim.cmd('buffer ' .. fugbuf)
+  local has_sign = has_sign_on_line(fugbuf, 5)
+  vim.cmd('buffer ' .. bufnr)
+  vim.cmd('bwipeout! ' .. fugbuf)
+
+  assert.truthy(has_sign, 'sign on line 5 of the fugitive buffer')
+end)
+
+assert.run_test('comment added through a symlink shows on the real path', function()
+  qf.clear_review()
+  local orig_buf = vim.fn.bufnr()
+
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, 'p')
+  local real = dir .. '/real.txt'
+  local link = dir .. '/link.txt'
+  vim.fn.writefile({ 'a', 'b', 'c', 'd' }, real)
+  assert.truthy(vim.uv.fs_symlink(real, link), 'symlink created')
+
+  vim.cmd('edit ' .. vim.fn.fnameescape(link))
+  local link_buf = vim.fn.bufnr()
+  vim.fn.cursor(3, 1)
+  qf.add_comment('ISSUE')
+  vim.cmd('buffer ' .. orig_buf)
+  vim.cmd('bwipeout! ' .. link_buf)
+
+  vim.cmd('edit ' .. vim.fn.fnameescape(real))
+  local real_buf = vim.fn.bufnr()
+  local has_sign = has_sign_on_line(real_buf, 3)
+  vim.cmd('buffer ' .. orig_buf)
+  vim.cmd('bwipeout! ' .. real_buf)
+  qf.clear_review()
+  vim.fn.delete(dir, 'rf')
+
+  assert.truthy(has_sign, 'sign on line 3 of the real-path buffer')
+end)
+
 test_helper.cleanup_test_environment()
 
 return assert

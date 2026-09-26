@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-09-26T04:31:28Z
-updated_at: 2026-09-26T05:22:28Z
+updated_at: 2026-09-26T05:27:41Z
 blocked_by:
     - quickfix-review-nvim-0edn
 ---
@@ -41,3 +41,5 @@ Grab-bag of small, local fixes from the multi-model review. Items that overlappe
 
 - [ ] (from n9cc review) When the storage file is unreadable, qf `dd` prints "Comment no longer exists" because `update()` returns nil → `remove_if` returns 0. Distinguish refused (nil) from not-found (0) and say the file is unreadable. Test.
 - [ ] (from n9cc review) normalize: if two loaded comments share an id (hand-copied JSON), give the later one a fresh id so `remove(id)` never deletes both. Test.
+
+- [ ] (from 0edn review) jump_comment (]r/[r) compares `c.filename` to the buffer path as raw strings; use `utils.files_match` so symlinked paths navigate. Test.

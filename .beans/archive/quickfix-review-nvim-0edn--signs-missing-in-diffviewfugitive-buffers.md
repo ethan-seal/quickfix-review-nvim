@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-0edn
 title: Signs missing in diffview/fugitive buffers
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T04:31:20Z
-updated_at: 2026-09-26T04:57:49Z
+updated_at: 2026-09-26T05:27:42Z
 blocked_by:
     - quickfix-review-nvim-nep3
 ---

@@ -688,7 +688,11 @@ function M.view_comment()
   -- Word-wrap lines to fit width
   local wrapped = {}
   for _, line in ipairs(lines) do
-    vim.list_extend(wrapped, wrap_line(line, width))
+    -- Bodies and responses may contain newlines (Lua API, external tools,
+    -- imports); buffer lines cannot, so split before wrapping
+    for _, part in ipairs(vim.split(line, '\n', { plain = true })) do
+      vim.list_extend(wrapped, wrap_line(part, width))
+    end
   end
 
   -- One float at a time: replace any float still open

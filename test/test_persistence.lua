@@ -1092,6 +1092,50 @@ assert.run_test('an export that cannot be written fails with a message', functio
   if not ok then error(err, 0) end
 end)
 
+-- Run fn with has('clipboard') forced to `clip` and setreg recording the
+-- register it was given
+local function with_clipboard(clip, fn)
+  local original_has, original_setreg = vim.fn.has, vim.fn.setreg
+  local regs = {}
+  vim.fn.has = function(feature)
+    if feature == 'clipboard' then return clip end
+    return original_has(feature)
+  end
+  vim.fn.setreg = function(reg) table.insert(regs, reg) end
+  local ok, err = pcall(fn, regs)
+  vim.fn.has, vim.fn.setreg = original_has, original_setreg
+  if not ok then error(err, 0) end
+end
+
+assert.run_test('export without a clipboard provider uses the unnamed register and says so', function()
+  local export = require('quickfix-review.export')
+  with_clipboard(0, function(regs)
+    local success, message = export.to_clipboard_and_file('# x')
+    assert.equals(success, true, 'succeeds')
+    assert.equals(regs[1], '"', 'unnamed register used')
+    assert.falsy(message:find('copied to clipboard', 1, true), 'does not claim the clipboard: ' .. message)
+    assert.truthy(message:find('unnamed register', 1, true), 'names the register: ' .. message)
+
+    local out = vim.fn.tempname() .. '.md'
+    success, message = export.to_clipboard_and_file('# x', out)
+    assert.equals(success, true, 'succeeds with a file')
+    assert.equals(regs[2], '"', 'unnamed register used with a file')
+    assert.falsy(message:find('to clipboard', 1, true), 'does not claim the clipboard: ' .. message)
+    assert.truthy(message:find(out, 1, true), 'names the file: ' .. message)
+    vim.fn.delete(out)
+  end)
+end)
+
+assert.run_test('export with a clipboard provider uses the + register', function()
+  local export = require('quickfix-review.export')
+  with_clipboard(1, function(regs)
+    local success, message = export.to_clipboard_and_file('# x')
+    assert.equals(success, true, 'succeeds')
+    assert.equals(regs[1], '+', 'clipboard register used')
+    assert.equals(message, 'Review copied to clipboard', 'message')
+  end)
+end)
+
 assert.run_test('a state.json without `removed` (older cache) is replayed from the log', function()
   reset()
   vim.fn.cursor(1, 1)

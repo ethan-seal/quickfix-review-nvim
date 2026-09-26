@@ -125,6 +125,17 @@ function M.type_order(types)
   return ordered
 end
 
+-- Longest character prefix of text that is at most 2 display cells wide
+local function fit_sign_text(text)
+  local fitted = ''
+  for i = 1, vim.fn.strchars(text) do
+    local candidate = vim.fn.strcharpart(text, 0, i)
+    if vim.fn.strdisplaywidth(candidate) > 2 then break end
+    fitted = candidate
+  end
+  return fitted
+end
+
 -- Fill in the options derived from comment_types (the types themselves, their
 -- keymaps, signs and export legend), respecting what the user set explicitly
 local function derive(user_opts)
@@ -193,6 +204,16 @@ local function derive(user_opts)
         text = '│',
         texthl = type_config.highlight
       }
+    end
+  end
+
+  -- Sign text must fit in 2 cells or placing the sign throws. Replace the
+  -- entry rather than mutating it: it may be the user's own table.
+  for key, def in pairs(M.options.signs) do
+    if type(def) == 'table' and type(def.text) == 'string' and vim.fn.strdisplaywidth(def.text) > 2 then
+      vim.notify(string.format("quickfix-review: sign '%s' for %s is wider than 2 cells; truncating",
+        def.text, key), vim.log.levels.WARN)
+      M.options.signs[key] = vim.tbl_extend('force', def, { text = fit_sign_text(def.text) })
     end
   end
 

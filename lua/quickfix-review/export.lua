@@ -93,19 +93,25 @@ function M.to_clipboard_and_file(content, filename)
     return false, 'No content to export'
   end
 
-  -- Copy to clipboard
-  vim.fn.setreg('+', content)
+  -- Copy to the clipboard; without a clipboard provider setreg('+') stores
+  -- nothing, so fall back to the unnamed register and say so
+  local has_clip = vim.fn.has('clipboard') == 1
+  vim.fn.setreg(has_clip and '+' or '"', content)
+  local target = has_clip and 'clipboard' or 'the unnamed register (no clipboard provider)'
 
   -- Try to write to file
   if filename then
     local ok, err = storage.atomic_write(filename, content)
     if not ok then
-      return false, 'Review copied to clipboard, but could not write ' .. filename .. ': ' .. (err or 'unknown error')
+      return false, 'Review copied to ' .. target .. ', but could not write ' .. filename .. ': ' .. (err or 'unknown error')
     end
-    return true, string.format('Review exported to clipboard and %s', filename)
+    if has_clip then
+      return true, string.format('Review exported to clipboard and %s', filename)
+    end
+    return true, string.format('Review exported to %s and the unnamed register (no clipboard provider)', filename)
   end
 
-  return true, 'Review copied to clipboard'
+  return true, 'Review copied to ' .. target
 end
 
 return M

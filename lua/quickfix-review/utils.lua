@@ -218,7 +218,8 @@ function M.refresh_buffer_signs(bufnr, file, comments)
         local sign_text
         if info.count > 1 then
           -- Multiple comments - show count
-          sign_text = tostring(info.count)
+          -- Sign text is at most 2 cells, so clamp large counts
+          sign_text = info.count > 9 and '9+' or tostring(info.count)
         else
           -- Single comment - show symbol
           sign_text = sign_cfg.text

@@ -117,6 +117,53 @@ assert.run_test('bad log rotation options fall back with a warning; good ones ar
   config.setup({ storage_file = test_helper.storage_file })
 end)
 
+assert.run_test('a comment type sign wider than 2 cells warns and is truncated', function()
+  local ok, err = pcall(function()
+    local calls = capture_notify(function()
+      config.setup({ storage_file = test_helper.storage_file,
+        additional_comment_types = { nit = { sign = 'NIT', highlight = 'DiagnosticHint', description = 'Nits' } } })
+    end)
+    local warned = warnings(calls)
+    assert.length(warned, 1, 'warned once')
+    assert.truthy(warned[1].msg:find("'NIT'", 1, true), 'names the sign: ' .. warned[1].msg)
+    assert.truthy(warned[1].msg:find('nit', 1, true), 'names the key: ' .. warned[1].msg)
+    assert.equals(config.options.signs.nit.text, 'NI', 'truncated to 2 cells')
+    assert.equals(config.options.signs.issue.text, config.options.comment_types.issue.sign, 'other signs untouched')
+  end)
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('a user signs table with a wide sign warns and is truncated, not mutated', function()
+  local ok, err = pcall(function()
+    local user_signs = { note = { text = 'NIT', texthl = 'DiagnosticInfo' }, issue = { text = '!', texthl = 'DiagnosticError' } }
+    local calls = capture_notify(function()
+      config.setup({ storage_file = test_helper.storage_file, signs = user_signs })
+    end)
+    local warned = warnings(calls)
+    assert.length(warned, 1, 'warned once')
+    assert.truthy(warned[1].msg:find("'NIT'", 1, true), 'names the sign: ' .. warned[1].msg)
+    assert.truthy(vim.fn.strdisplaywidth(config.options.signs.note.text) <= 2, 'fits 2 cells')
+    assert.equals(config.options.signs.note.texthl, 'DiagnosticInfo', 'other fields kept')
+    assert.equals(user_signs.note.text, 'NIT', "user's table not mutated")
+  end)
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('wide multibyte signs are truncated by display width', function()
+  local ok, err = pcall(function()
+    capture_notify(function()
+      config.setup({ storage_file = test_helper.storage_file,
+        signs = { note = { text = '💬💬', texthl = 'X' }, issue = { text = '🔥', texthl = 'X' } } })
+    end)
+    assert.equals(config.options.signs.note.text, '💬', 'keeps whole wide characters')
+    assert.equals(config.options.signs.issue.text, '🔥', 'a 2-cell emoji is kept')
+  end)
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
 assert.run_test('auto_show = false: navigating the review list opens no float', function()
   local qf = require('quickfix-review')
   local ok, err = pcall(function()

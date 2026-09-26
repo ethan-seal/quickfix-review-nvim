@@ -252,6 +252,47 @@ assert.run_test('multiple comments on same line shows count', function()
   assert.equals(sign_text, '3', 'three comments shows count 3')
 end)
 
+assert.run_test('ten or more comments on a line show 9+', function()
+  qf.clear_review()
+  clear_extmarks(vim.fn.bufnr())
+  local bufnr = vim.fn.bufnr()
+  local ok, err = pcall(function()
+    for _ = 1, 12 do
+      vim.fn.cursor(5, 1)
+      qf.add_comment('NOTE')
+    end
+  end)
+  assert.truthy(ok, 'adding 12 comments does not error: ' .. tostring(err))
+  assert.equals(get_sign_text_on_line(bufnr, 5), '9+', 'count clamped to 9+')
+  qf.clear_review()
+end)
+
+assert.run_test('a comment type with a 3-letter sign adds and redraws without error', function()
+  local ok, err = pcall(function()
+    local original = vim.notify
+    vim.notify = function() end
+    local set_ok, set_err = pcall(qf.setup, { storage_file = test_helper.storage_file,
+      additional_comment_types = { nit = { sign = 'NIT', highlight = 'DiagnosticHint', description = 'Nits' } } })
+    vim.notify = original
+    if not set_ok then error(set_err, 0) end
+    vim.cmd('edit ' .. vim.fn.fnameescape(test_file))
+    qf.clear_review()
+    clear_extmarks(vim.fn.bufnr())
+    local bufnr = vim.fn.bufnr()
+    vim.fn.cursor(4, 1)
+    local added, add_err = pcall(qf.add_comment, 'NIT')
+    assert.truthy(added, 'add does not error: ' .. tostring(add_err))
+    local refreshed, refresh_err = pcall(require('quickfix-review.store').refresh)
+    assert.truthy(refreshed, 'redraw does not error: ' .. tostring(refresh_err))
+    local text = get_sign_text_on_line(bufnr, 4)
+    assert.truthy(text and vim.fn.strdisplaywidth(text) <= 2, 'sign fits 2 cells: ' .. tostring(text))
+  end)
+  qf.clear_review()
+  test_helper.setup_test_environment()
+  vim.cmd('edit ' .. vim.fn.fnameescape(test_file))
+  if not ok then error(err, 0) end
+end)
+
 assert.run_test('single comment shows symbol not count', function()
   qf.clear_review()
   clear_extmarks(vim.fn.bufnr())

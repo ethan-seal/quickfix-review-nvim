@@ -185,6 +185,28 @@ assert.run_test('view_comment wraps long bodies at the float width', function()
   if not ok then error(err, 0) end
 end)
 
+assert.run_test('view_comment shows a body and response containing newlines', function()
+  local store = require('quickfix-review.store')
+  local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':p')
+  local ok, err = pcall(function()
+    qf.clear_review()
+    store.add({ filename = file, lnum = 2, kind = 'note', body = 'first\nsecond', response = 'r1\nr2' })
+    vim.fn.cursor(2, 1)
+    local viewed, view_err = pcall(qf.view_comment)
+    assert.truthy(viewed, 'view_comment does not throw: ' .. tostring(view_err))
+    local lines = only_float_lines()
+    assert.truthy(lines[1]:match('first$'), 'headline ends with the first body line: ' .. lines[1])
+    local set = {}
+    for _, l in ipairs(lines) do set[l] = true end
+    assert.truthy(set['second'], 'second body line on its own line')
+    assert.truthy(set['Response: r1'], 'first response line')
+    assert.truthy(set['r2'], 'second response line on its own line')
+  end)
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  qf.clear_review()
+  if not ok then error(err, 0) end
+end)
+
 assert.run_test('view_comment wraps multibyte bodies by display width', function()
   local store = require('quickfix-review.store')
   local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':p')

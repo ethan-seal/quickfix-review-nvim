@@ -43,6 +43,7 @@ function M.remove_storage(file)
     os.remove(file .. suffix)
   end
   vim.fn.delete(M.lock_path(file), 'rf')
+  vim.fn.delete(file .. '.snapshots', 'rf')
 end
 
 -- The records of the log at `log_path` (header first)

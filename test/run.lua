@@ -52,6 +52,9 @@ run_file('test/test_schema.lua')
 -- Run per-project storage directory tests
 run_file('test/test_storage_dir.lua')
 
+-- Run snapshot store tests
+run_file('test/test_snapshots.lua')
+
 -- Run setup idempotency tests
 run_file('test/test_setup.lua')
 

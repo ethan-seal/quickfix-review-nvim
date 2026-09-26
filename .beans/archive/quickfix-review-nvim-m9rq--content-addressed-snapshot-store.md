@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-m9rq
 title: Content-addressed snapshot store
-status: todo
+status: completed
 type: task
 priority: high
 created_at: 2026-09-26T04:57:59Z
-updated_at: 2026-09-26T04:57:59Z
+updated_at: 2026-09-26T06:36:29Z
 parent: quickfix-review-nvim-8oi5
 blocked_by:
     - quickfix-review-nvim-l3ui

@@ -23,6 +23,7 @@ quickfix-review-keymaps	quickfix-review.txt	/*quickfix-review-keymaps*
 quickfix-review-log	quickfix-review.txt	/*quickfix-review-log*
 quickfix-review-migration	quickfix-review.txt	/*quickfix-review-migration*
 quickfix-review-signs	quickfix-review.txt	/*quickfix-review-signs*
+quickfix-review-snapshots	quickfix-review.txt	/*quickfix-review-snapshots*
 quickfix-review-storage	quickfix-review.txt	/*quickfix-review-storage*
 quickfix-review-storage_dir	quickfix-review.txt	/*quickfix-review-storage_dir*
 quickfix-review-storage_file	quickfix-review.txt	/*quickfix-review-storage_file*

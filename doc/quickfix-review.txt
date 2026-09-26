@@ -147,6 +147,16 @@ switch projects. The root is looked up once per directory per session, so
 `storage_dir` may be a function, called with the resolved root, returning
 the directory to use, or a string, used as-is (shared by every project).
 
+                                                  *quickfix-review-snapshots*
+`snapshots/` in the storage directory holds copies of commented files, one
+file per version, named by the SHA-256 of its content, so comments can
+follow later edits. Content is stored canonically: lines joined with LF,
+trailing CRs dropped, always ending in a newline, so CRLF and LF versions
+of a file (or one missing its final newline) share a snapshot. A snapshot
+whose content no longer matches its name is ignored with a warning. Files
+in an encoding other than UTF-8 may give noisy results. With
+|quickfix-review-storage_file| the directory is `<storage_file>.snapshots`.
+
                                                  *quickfix-review-migration*
 Earlier versions kept the review in `comments.json` in the same directory.
 When a project has a `comments.json` but no log yet, its comments are

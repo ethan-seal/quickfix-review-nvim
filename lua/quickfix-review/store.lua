@@ -156,8 +156,8 @@ end
 --
 -- With the explicit (deprecated, global) storage_file, the log, cache and
 -- lock sit next to that file, named after it (<file>.log.jsonl,
--- <file>.state.json, <file>.lock), so two storage_file values never share a
--- log. The path is used as given, not resolved: migrating renames the file,
+-- <file>.state.json, <file>.lock, <file>.snapshots), so two storage_file
+-- values never share a log. The path is used as given, not resolved: migrating renames the file,
 -- which would change a resolved path.
 local resolved = {}
 
@@ -167,6 +167,7 @@ local function resolve()
     return {
       path = explicit, dir = vim.fn.fnamemodify(explicit, ':h'), explicit = true,
       log = explicit .. '.log.jsonl', state = explicit .. '.state.json', lock = explicit .. '.lock',
+      snapshots = explicit .. '.snapshots',
     }
   end
   local cwd = vim.fn.getcwd(-1, -1)
@@ -189,6 +190,7 @@ local function resolve()
   resolved = {
     cwd = cwd, opt = opt, root = root, dir = dir, path = dir .. '/comments.json',
     log = dir .. '/log.jsonl', state = dir .. '/state.json', lock = dir .. '/lock',
+    snapshots = dir .. '/snapshots',
   }
   return resolved
 end
@@ -207,6 +209,12 @@ end
 -- The cache of the replayed log
 function M.state_path()
   return resolve().state
+end
+
+-- The directory of the review's file snapshots (see snapshots.lua):
+-- `snapshots/` in the storage dir, or `<storage_file>.snapshots`
+function M.snapshots_dir()
+  return resolve().snapshots
 end
 
 -- The project's storage directory (for an explicit storage_file, its directory)

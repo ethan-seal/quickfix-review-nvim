@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: low
 created_at: 2026-09-26T04:57:59Z
-updated_at: 2026-09-26T04:57:59Z
+updated_at: 2026-09-26T06:36:29Z
 parent: quickfix-review-nvim-8oi5
 blocked_by:
     - quickfix-review-nvim-uv21
@@ -20,3 +20,7 @@ Snapshot garbage collection (parent epic 8oi5).
 ## Done when
 - [ ] Unreferenced old snapshot deleted; unreferenced fresh (<24h) kept; referenced-by-trash kept
 - [ ] Two instances: B writes snapshot, A runs GC before B appends → snapshot survives
+
+
+
+Note (m9rq): snapshots live in store.snapshots_dir() (<storage_dir>/snapshots, or <storage_file>.snapshots in legacy mode). put() treats a same-size existing file as valid and only touches mtime — while here, compare sha256 when sizes match so a corrupt same-size snapshot gets rewritten. Buffer lines containing NUL round-trip split (hash is still consistent).

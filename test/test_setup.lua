@@ -92,7 +92,7 @@ assert.run_test('commands work before setup()', function()
     -- Never touch the real review in stdpath('data')
     require('quickfix-review.config').options.storage_file = storage_file
     require('quickfix-review.store').add({
-      filename = vim.fn.fnamemodify('test_file.txt', ':p'), lnum = 1, text = '[QUESTION] before setup',
+      filename = vim.fn.fnamemodify('test_file.txt', ':p'), lnum = 1, kind = 'question', body = 'before setup',
     })
     vim.fn.setreg = function(_, value) clipboard = value end
     vim.g.loaded_quickfix_review = nil

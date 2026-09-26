@@ -65,7 +65,7 @@ nvim --clean -c 'lua dofile("test/test_comments.lua")'
 | `assertions.lua` | Minimal assertion library with pass/fail tracking |
 | `init.lua` | Test initialization and helper functions |
 | `run.lua` | Test runner that executes all test files |
-| `test_utils.lua` | Tests for utility functions (parse_comment_type, files_match, etc.) |
+| `test_utils.lua` | Tests for utility functions (files_match, etc.) |
 | `test_config.lua` | Tests for configuration (comment_types validation, export legend, type order) |
 | `test_comments.lua` | Tests for adding, deleting, and managing comments |
 | `test_signs.lua` | Tests for sign placement on single and multiline comments |

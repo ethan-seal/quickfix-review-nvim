@@ -47,10 +47,113 @@ function M.atomic_write(path, str)
   return true, nil
 end
 
+-- The schema version this code reads and writes. The file is
+-- { "version": 2, "comments": [ comment... ] }, where a comment is
+-- { id, filename, kind, body, response?, lnum, end_lnum, context?, created_at }.
+-- Version 1 was a bare list of quickfix-shaped items.
+M.VERSION = 2
+
+-- A table whose keys are exactly 1..n. With luanil.array a JSON null element
+-- becomes a hole, and ipairs would silently drop everything after it (then
+-- the next save would persist the truncation). `#` can't detect this: its
+-- result is any border when the table has holes. An empty table is a list
+-- (JSON [] and {} both decode to one).
+local function is_list(t)
+  if type(t) ~= 'table' then return false end
+  local count, max = 0, 0
+  for k in pairs(t) do
+    if type(k) ~= 'number' or k ~= math.floor(k) or k < 1 then return false end
+    count = count + 1
+    if k > max then max = k end
+  end
+  return max == count
+end
+
+-- v1 kept git context in user_data, flat ({ commit, commit_short, snippet },
+-- as context.capture returns it) or, in principle, nested under `context`.
+-- Qf rows put the comment id there too, which is not context.
+local function v1_context(ud)
+  if type(ud) ~= 'table' then return nil end
+  if type(ud.context) == 'table' then return ud.context end
+  if ud.id == nil then return ud end -- keeps an empty dict an empty dict
+  local ctx = {}
+  for k, v in pairs(ud) do
+    if k ~= 'id' then ctx[k] = v end
+  end
+  return next(ctx) ~= nil and ctx or nil
+end
+
+-- v1 encoded kind, range and response in the text:
+-- "[ISSUE:L1-5] body | Response: reply". The range is dropped (lnum/end_lnum
+-- are authoritative); text without a leading [KIND] prefix is a note.
+local function v1_comment(item)
+  local text = type(item.text) == 'string' and item.text or ''
+  local kind, rest = text:match('^%[([^:%]]+)[^%]]*%]%s*(.*)$')
+  if not kind then
+    kind, rest = 'note', text
+  end
+  local body, response = rest:match('^(.-)%s*|%s*Response:%s*(.+)$')
+  if not body then body = rest end
+
+  -- Very old saves were raw getqflist() items that may have only a bufnr
+  local filename = item.filename
+  if (type(filename) ~= 'string' or filename == '') and type(item.bufnr) == 'number' and item.bufnr ~= 0 then
+    filename = vim.fn.bufname(item.bufnr)
+  end
+
+  return {
+    id = item.id,
+    filename = filename,
+    kind = kind:lower(),
+    body = body,
+    response = response,
+    lnum = item.lnum,
+    end_lnum = item.end_lnum,
+    context = v1_context(item.user_data),
+    -- v1 has no creation time, so an upgraded comment is stamped when it is
+    -- upgraded; the real time is unknowable
+    created_at = type(item.created_at) == 'number' and item.created_at or os.time(),
+  }
+end
+
+local function from_1_to_2(doc)
+  local comments = {}
+  for i, item in ipairs(doc.comments) do
+    comments[i] = v1_comment(item)
+  end
+  return { version = 2, comments = comments }
+end
+
+-- steps[n] turns a version n document into a version n + 1 one
+local steps = {
+  [1] = from_1_to_2,
+}
+
+-- Bring a decoded document up to M.VERSION. A bare list is version 1.
+-- Returns: { version = M.VERSION, comments = list }
+function M.upgrade(doc)
+  if doc.version == nil then doc = { version = 1, comments = doc } end
+  while doc.version < M.VERSION do
+    doc = steps[doc.version](doc)
+  end
+  return doc
+end
+
+-- Copy `path` to `path .. suffix` unless that already exists, so the first
+-- backup is never overwritten. The copy keeps the file's permission bits.
+-- Returns: ok (boolean), err (string or nil)
+function M.backup_once(path, suffix)
+  local bak = path .. suffix
+  if uv.fs_stat(bak) then return true, nil end
+  local ok, err = uv.fs_copyfile(path, bak, { excl = true })
+  if not ok then return false, 'Could not back up ' .. path .. ' to ' .. bak .. ': ' .. (err or 'unknown error') end
+  return true, nil
+end
+
 -- Save comments to file (an empty list is saved too, so clearing persists)
 -- Returns: success (boolean), message (string)
 function M.save(comments, filepath)
-  local ok, encoded = pcall(vim.json.encode, comments)
+  local ok, encoded = pcall(vim.json.encode, { version = M.VERSION, comments = comments })
   if not ok then
     return false, 'Failed to encode comments as JSON'
   end
@@ -63,46 +166,46 @@ function M.save(comments, filepath)
   return true, string.format('Review saved to %s (%d comments)', filepath, #comments)
 end
 
--- Load comments from file. A missing or empty file is an empty review.
--- Returns: comments (table or nil), err (string or nil)
+-- Load comments from file, upgrading an older schema in memory (the file is
+-- left alone; the caller decides whether to rewrite it). A missing or empty
+-- file is an empty review.
+-- Returns: comments (table or nil), err (string or nil), upgraded (boolean)
 function M.load(filepath)
   local f = io.open(filepath, 'r')
   if not f then
-    return {}, nil
+    return {}, nil, false
   end
 
   local content = f:read('*all')
   f:close()
 
   if not content or vim.trim(content) == '' then
-    return {}, nil
+    return {}, nil, false
   end
 
   -- luanil: JSON null becomes nil at every depth (vim.fn.json_decode would
-  -- give vim.NIL, which is truthy), e.g. the null commit migrate.ts wrote
-  local ok, comments = pcall(vim.json.decode, content, { luanil = { object = true, array = true } })
+  -- give vim.NIL, which is truthy), e.g. a null commit outside a git repo
+  local ok, doc = pcall(vim.json.decode, content, { luanil = { object = true, array = true } })
   local invalid = 'Failed to parse saved review at ' .. filepath .. ' (invalid JSON)'
-  if not ok or type(comments) ~= 'table' then
+  if not ok or type(doc) ~= 'table' then
     return nil, invalid
   end
 
-  -- The top level must be a list without holes. With luanil.array a null
-  -- element becomes a hole, and ipairs would silently drop everything after
-  -- it (then the next save would persist the truncation). `#` can't detect
-  -- this: its result is any border when the table has holes.
-  local count, max = 0, 0
-  for k in pairs(comments) do
-    if type(k) ~= 'number' or k ~= math.floor(k) or k < 1 then
+  if not is_list(doc) then
+    local v = doc.version
+    if v == nil then return nil, invalid end
+    if type(v) ~= 'number' or v ~= math.floor(v) or v < 1 or v > M.VERSION then
+      return nil, 'Failed to parse saved review at ' .. filepath .. ' (unknown version '
+        .. vim.inspect(v) .. ')'
+    end
+    if not is_list(doc.comments) then
       return nil, invalid
     end
-    count = count + 1
-    if k > max then max = k end
-  end
-  if max ~= count then
-    return nil, invalid
   end
 
-  return comments, nil
+  local from = doc.version or 1
+  doc = M.upgrade(doc)
+  return doc.comments, nil, from < M.VERSION
 end
 
 return M

@@ -19,15 +19,24 @@ local storage_file = test_helper.storage_file
 local function reset()
   vim.fn.setqflist({}, 'f')
   os.remove(storage_file)
+  os.remove(storage_file .. '.pre-v2.bak')
   qf.clear_review()
 end
 
+-- The comment list of a saved (version 2) review
 local function decode(str)
-  return vim.json.decode(str, { luanil = { object = true, array = true } })
+  local doc = vim.json.decode(str, { luanil = { object = true, array = true } })
+  assert.equals(doc.version, 2, 'saved as version 2')
+  return doc.comments
 end
 
 local function saved()
   return decode(table.concat(vim.fn.readfile(storage_file), '\n'))
+end
+
+-- A version 2 file holding these comments
+local function envelope(list)
+  return vim.json.encode({ version = 2, comments = list })
 end
 
 -- Simulate quitting and reopening Neovim: drop every module and set up again
@@ -75,7 +84,7 @@ assert.run_test('every change is written through to disk', function()
   local list = saved()
   assert.length(list, 1, 'comment saved without calling save_review')
   assert.equals(list[1].lnum, 3, 'correct line number')
-  assert.matches(list[1].text, '%[ISSUE%]', 'correct comment type')
+  assert.equals(list[1].kind, 'issue', 'correct comment type')
 
   qf.delete_comment({ 3, 3 })
   assert.length(saved(), 0, 'deletion saved')
@@ -124,8 +133,8 @@ assert.run_test('replacing the quickfix list does not touch the review', functio
 
   local list = saved()
   assert.length(list, 2, 'only review comments saved')
-  assert.matches(list[1].text, '%[ISSUE%]', 'first comment intact')
-  assert.matches(list[2].text, '%[NOTE%]', 'second comment intact')
+  assert.equals(list[1].kind, 'issue', 'first comment intact')
+  assert.equals(list[2].kind, 'note', 'second comment intact')
   assert.equals(vim.fn.getqflist()[1].text, 'grep hit', 'other quickfix list left alone')
 end)
 
@@ -153,9 +162,9 @@ assert.run_test('changes made on disk are picked up', function()
   qf.add_comment('ISSUE')
 
   local list = saved()
-  table.insert(list, { filename = vim.fn.fnamemodify(test_file, ':p'), lnum = 4, text = '[NOTE] from elsewhere' })
+  table.insert(list, { filename = vim.fn.fnamemodify(test_file, ':p'), lnum = 4, kind = 'note', body = 'from elsewhere' })
   vim.uv.sleep(10)
-  vim.fn.writefile({ vim.json.encode(list) }, storage_file)
+  vim.fn.writefile({ envelope(list) }, storage_file)
 
   assert.length(qf.comments(), 2, 'external comment visible')
   vim.fn.cursor(5, 1)
@@ -200,9 +209,10 @@ assert.run_test('a failed save leaves the file intact', function()
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, 'p')
   local path = dir .. '/review.json'
-  -- The id marks the seed as already migrated, so loading doesn't rewrite it
-  local seed = vim.json.encode({
-    { id = '0123456789abcdef', filename = vim.fn.fnamemodify(test_file, ':p'), lnum = 2, col = 1, text = '[NOTE] seeded' },
+  -- A version 2 comment with an id and a creation time, so loading doesn't rewrite it
+  local seed = envelope({
+    { id = '0123456789abcdef', filename = vim.fn.fnamemodify(test_file, ':p'), lnum = 2, end_lnum = 2,
+      kind = 'note', body = 'seeded', created_at = 1700000000 },
   })
   local fh = io.open(path, 'w')
   fh:write(seed)
@@ -222,7 +232,7 @@ assert.run_test('a failed save leaves the file intact', function()
     assert.equals(vim.fn.glob(path .. '.tmp.*'), '', 'no temp files left behind')
     local list = qf.comments()
     assert.length(list, 1, 'failed change not kept in memory')
-    assert.equals(list[1].text, '[NOTE] seeded', 'memory matches disk')
+    assert.equals(list[1].body, 'seeded', 'memory matches disk')
 
     vim.fn.setfperm(dir, 'rwxr-xr-x')
     vim.fn.cursor(3, 1)
@@ -252,11 +262,11 @@ assert.run_test('dd in the quickfix view deletes that comment', function()
 
   local list = qf.comments()
   assert.length(list, 1, 'one comment deleted')
-  assert.matches(list[1].text, '%[ISSUE%]', 'the selected comment was deleted')
+  assert.equals(list[1].kind, 'issue', 'the selected comment was deleted')
   assert.length(saved(), 1, 'deletion saved')
 end)
 
--- Write raw JSON to the storage file, as an older version or migrate.ts would
+-- Write raw JSON to the storage file, as an older version or another tool would
 local function seed_legacy(json)
   vim.fn.setqflist({}, 'f')
   local fh = io.open(storage_file, 'w')
@@ -298,7 +308,7 @@ assert.run_test('legacy JSON null decodes as nil, even nested', function()
     '[{"filename":%q,"lnum":2,"end_lnum":2,"col":1,"text":"[NOTE] migrated",'
       .. '"user_data":{"commit":null,"commit_short":null,"snippet":["   2  line 2"]}}]', abs))
 
-  local ctx = qf.comments()[1].user_data
+  local ctx = qf.comments()[1].context
   assert.equals(ctx.commit, nil, 'nested null commit is nil')
   assert.equals(ctx.commit_short, nil, 'nested null commit_short is nil')
 
@@ -359,7 +369,7 @@ assert.run_test('two Neovim processes give their comments different ids', functi
       '--cmd', 'set rtp^=' .. vim.fn.getcwd(),
       '-c', string.format(
         'lua require("quickfix-review").setup({storage_file=%q}); '
-          .. 'require("quickfix-review.store").add({filename=%q,lnum=1,text="x"})', file, abs),
+          .. 'require("quickfix-review.store").add({filename=%q,lnum=1,kind="note",body="x"})', file, abs),
       '-c', 'qall!',
     }):wait()
     assert.equals(result.code, 0, 'child nvim exits cleanly: ' .. tostring(result.stderr))
@@ -376,21 +386,21 @@ assert.run_test('an empty object round-trips as {}', function()
   local abs = vim.fn.fnamemodify(test_file, ':p')
   seed_legacy(string.format(
     '[{"id":"00000000000000aa","filename":%q,"lnum":1,"col":1,"text":"[NOTE] seeded","user_data":{}}]', abs))
-  assert.equals(type(qf.comments()[1].user_data), 'table', 'loads as a table')
+  assert.equals(type(qf.comments()[1].context), 'table', 'loads as a table')
 
   vim.fn.cursor(3, 1)
   qf.add_comment('NOTE') -- forces a save of the seeded comment
   local bytes = read_bytes(storage_file)
-  assert.truthy(bytes:find('"user_data":{}', 1, true), 'seeded {} saved as {}: ' .. bytes)
-  assert.falsy(bytes:find('"user_data":[]', 1, true), 'not saved as []')
+  assert.truthy(bytes:find('"context":{}', 1, true), 'seeded {} saved as {}: ' .. bytes)
+  assert.falsy(bytes:find('"context":[]', 1, true), 'not saved as []')
 
   reset()
-  require('quickfix-review.store').add({ filename = abs, lnum = 2, text = 'x', user_data = vim.empty_dict() })
+  require('quickfix-review.store').add({ filename = abs, lnum = 2, kind = 'note', body = 'x', context = vim.empty_dict() })
   bytes = read_bytes(storage_file)
-  assert.truthy(bytes:find('"user_data":{}', 1, true), 'empty_dict saved as {}: ' .. bytes)
+  assert.truthy(bytes:find('"context":{}', 1, true), 'empty_dict saved as {}: ' .. bytes)
   assert.falsy(bytes:find('[]', 1, true), 'no [] in the file')
   qf = restart()
-  assert.equals(type(qf.comments()[1].user_data), 'table', 'reloads as a table')
+  assert.equals(type(qf.comments()[1].context), 'table', 'reloads as a table')
 end)
 
 assert.run_test('a null in the comment list is rejected, not truncated', function()
@@ -402,6 +412,11 @@ assert.run_test('a null in the comment list is rejected, not truncated', functio
     ['two holes'] = '[' .. c1 .. ',null,' .. c3 .. ',null,' .. c1 .. ']',
     ['leading null'] = '[null,' .. c1 .. ',' .. c3 .. ']',
     ['top-level object'] = '{"a":1}',
+    ['no version'] = '{"comments":[' .. c1 .. ']}',
+    ['unknown version'] = '{"version":3,"comments":[]}',
+    ['string version'] = '{"version":"2","comments":[]}',
+    ['non-list comments'] = '{"version":2,"comments":{"a":1}}',
+    ['null in v2 comments'] = '{"version":2,"comments":[' .. c1 .. ',null,' .. c3 .. ']}',
   }
   for name, json in pairs(cases) do
     local calls = capture_notify(function()
@@ -434,7 +449,7 @@ assert.run_test('duplicate ids are split on load and persisted once', function()
   assert.equals(require('quickfix-review.store').remove('00000000000000aa'), 1, 'remove deletes one')
   local left = qf.comments()
   assert.length(left, 1, 'one left')
-  assert.equals(left[1].text, '[NOTE] copy', 'the copy remains')
+  assert.equals(left[1].body, 'copy', 'the copy remains')
 end)
 
 assert.run_test('a symlinked storage file stays a link and its target is updated', function()

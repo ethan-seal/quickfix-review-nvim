@@ -2,8 +2,9 @@
 -- list, so other tools that replace the quickfix list (LSP references, grep)
 -- can't clobber the review. The storage file is the source of truth: every
 -- change is written through immediately, and the file is re-read whenever
--- something else (another Neovim, review-export, migrate.ts) has changed it.
--- The quickfix list is only a view that M.show() publishes.
+-- something else (another Neovim, review-export) has changed it. Comments are
+-- the storage schema's records (see storage.lua); the quickfix list is only a
+-- view derived from them, which M.show() publishes.
 local M = {}
 
 local config = require('quickfix-review.config')
@@ -38,30 +39,29 @@ local function has_id(item)
   return type(item.id) == 'string' and item.id ~= ''
 end
 
--- Keep only the fields that describe a comment, giving it an id if it has
--- none (comments saved before ids existed). Files written by older
--- versions were raw quickfix dumps and may carry a stale bufnr.
+-- Keep only the fields of a comment record, giving it an id if it has none
+-- (comments saved before ids existed)
 local function normalize(item)
   local filename = item.filename
-  if (not filename or filename == '') and item.bufnr and item.bufnr ~= 0 then
-    filename = vim.fn.bufname(item.bufnr)
-  end
-  if not filename or filename == '' then return nil end
+  if type(filename) ~= 'string' or filename == '' then return nil end
   -- Older saves were raw getqflist() items, where end_lnum 0 means "unset";
   -- an end before the start is never valid, so treat it as a single line.
   local end_lnum = item.end_lnum
   if type(end_lnum) ~= 'number' or type(item.lnum) ~= 'number' or end_lnum < item.lnum then
     end_lnum = item.lnum
   end
+  local kind = type(item.kind) == 'string' and item.kind ~= '' and item.kind:lower() or 'note'
+  local response = type(item.response) == 'string' and item.response ~= '' and item.response or nil
   return {
     id = has_id(item) and item.id or new_id(),
     filename = vim.fn.fnamemodify(filename, ':p'),
+    kind = kind,
+    body = type(item.body) == 'string' and item.body or '',
+    response = response,
     lnum = item.lnum,
     end_lnum = end_lnum,
-    col = item.col or 1,
-    text = item.text,
-    type = item.type,
-    user_data = item.user_data,
+    context = type(item.context) == 'table' and item.context or nil,
+    created_at = type(item.created_at) == 'number' and item.created_at or os.time(),
   }
 end
 
@@ -69,20 +69,38 @@ local function view_exists()
   return qf_id ~= nil and vim.fn.getqflist({ id = qf_id }).id == qf_id
 end
 
--- The quickfix rows for the comments. Each row carries only its comment's id
--- in user_data; the stored user_data (git context) stays in the store.
+-- A comment as displayed: "[KIND] body", or "[KIND:L1-5] body" for a range
+function M.headline(c)
+  local label = c.kind:upper()
+  if c.end_lnum > c.lnum then
+    label = string.format('%s:L%d-%d', label, c.lnum, c.end_lnum)
+  end
+  return '[' .. label .. '] ' .. c.body
+end
+
+-- The quickfix row for a comment: its headline, with " | Response: reply"
+-- when it has one. The row carries only the comment's id in user_data; the
+-- context stays in the store.
+local function view_item(c)
+  local text = M.headline(c)
+  if c.response then
+    text = text .. ' | Response: ' .. c.response
+  end
+  return {
+    filename = c.filename,
+    lnum = c.lnum,
+    end_lnum = c.end_lnum,
+    col = 1,
+    text = text,
+    type = c.kind:sub(1, 1):upper(),
+    user_data = { id = c.id },
+  }
+end
+
 local function view_items()
   local items = {}
   for i, c in ipairs(comments) do
-    items[i] = {
-      filename = c.filename,
-      lnum = c.lnum,
-      end_lnum = c.end_lnum,
-      col = c.col,
-      text = c.text,
-      type = c.type,
-      user_data = { id = c.id },
-    }
+    items[i] = view_item(c)
   end
   return items
 end
@@ -100,7 +118,12 @@ local function sync()
   local current = mtime(path)
   if path == synced.path and current == synced.mtime then return true end
 
-  local list, err = storage.load(path)
+  local list, err, upgraded = storage.load(path)
+  -- Keep the file as it was before an upgrade rewrites it
+  if upgraded then
+    local backed_up, berr = storage.backup_once(path, '.pre-v' .. storage.VERSION .. '.bak')
+    if not backed_up then list, err = nil, berr end
+  end
   if not list then
     local key = path .. ':' .. tostring(current)
     if key ~= bad_file_notified then
@@ -113,28 +136,31 @@ local function sync()
   bad_file_notified = nil
 
   comments = {}
-  local backfilled = false
+  -- An upgraded file is rewritten in the current schema, once
+  local rewrite = upgraded
   local seen = {}
   for _, item in ipairs(list) do
     local c = normalize(item)
     if c then
-      if not has_id(item) then backfilled = true end
+      if not has_id(item) or type(item.created_at) ~= 'number' then rewrite = true end
       -- A hand-copied comment shares its id; give the copy its own, so
       -- remove(id) never deletes both
       if seen[c.id] then
         c.id = new_id()
-        backfilled = true
+        rewrite = true
       end
       seen[c.id] = true
       table.insert(comments, c)
     end
   end
   synced = { path = path, mtime = current }
-  -- Persist ids given to comments that had none, once, so they stay stable.
+  -- Persist ids (and creation times) given to comments that had none, once,
+  -- so they stay stable.
+  -- An upgraded file is rewritten too (after the backup above).
   -- Not write(): on failure that would forget the synced version, so every
   -- sync would re-read the file and hand out new ids. A failure is left
   -- silent; the next real change retries the write and reports it.
-  if backfilled and storage.save(comments, path) then
+  if rewrite and storage.save(comments, path) then
     synced = { path = path, mtime = mtime(path) }
   end
   refresh_view()

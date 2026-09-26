@@ -105,22 +105,14 @@ function M.add_comment(comment_type, range)
   local text = vim.fn.input(prompt .. ': ')
 
   if text ~= '' then
-    -- Format text with line range if multiline
-    local comment_text
-    if start_line ~= end_line then
-      comment_text = string.format('[%s:L%d-%d] %s', comment_type:upper(), start_line, end_line, text)
-    else
-      comment_text = string.format('[%s] %s', comment_type:upper(), text)
-    end
-
     local added = store.add({
       filename = file,
+      kind = comment_type:lower(),
+      body = text,
       lnum = start_line,
       end_lnum = end_line,
-      col = 1,
-      text = comment_text,
-      type = comment_type:sub(1, 1):upper(),
-      user_data = context.capture(file, start_line, end_line),
+      context = context.capture(file, start_line, end_line),
+      created_at = os.time(),
     })
     if not added then
       vim.notify('quickfix-review: ' .. comment_type:upper() .. ' comment was not added',
@@ -305,7 +297,7 @@ function M.view_comment()
   local comments = {}
   for _, item in ipairs(store.all()) do
     if item.lnum == line and utils.files_match(item.filename, file) then
-      table.insert(comments, item.text)
+      table.insert(comments, item)
     end
   end
 
@@ -316,15 +308,12 @@ function M.view_comment()
 
   -- Build lines for a floating window
   local lines = {}
-  for i, text in ipairs(comments) do
+  for i, c in ipairs(comments) do
     if i > 1 then table.insert(lines, '') end
-    local comment, response = text:match('^(.-)%s*|%s*Response:%s*(.+)$')
-    if comment and response then
-      table.insert(lines, comment)
+    table.insert(lines, store.headline(c))
+    if c.response then
       table.insert(lines, '')
-      table.insert(lines, 'Response: ' .. response)
-    else
-      table.insert(lines, text)
+      table.insert(lines, 'Response: ' .. c.response)
     end
   end
 
@@ -375,8 +364,7 @@ function M.summary_data()
   local comments = store.all()
   local counts = {}
   for _, item in ipairs(comments) do
-    local name = utils.parse_comment_type(item.text):lower()
-    counts[name] = (counts[name] or 0) + 1
+    counts[item.kind] = (counts[item.kind] or 0) + 1
   end
 
   local by_type = {}

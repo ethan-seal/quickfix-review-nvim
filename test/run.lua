@@ -39,6 +39,9 @@ run_file('test/test_signs.lua')
 -- Run persistence tests
 run_file('test/test_persistence.lua')
 
+-- Run storage schema and upgrade tests
+run_file('test/test_schema.lua')
+
 -- Run setup idempotency tests
 run_file('test/test_setup.lua')
 

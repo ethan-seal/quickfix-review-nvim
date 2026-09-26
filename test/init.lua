@@ -102,7 +102,7 @@ function M.print_comments()
   print('Review (' .. #list .. ' comments):')
   for i, item in ipairs(list) do
     print(string.format('  %d. %s:%d-%d - %s',
-      i, vim.fn.fnamemodify(item.filename, ':.'), item.lnum, item.end_lnum or item.lnum, item.text))
+      i, vim.fn.fnamemodify(item.filename, ':.'), item.lnum, item.end_lnum or item.lnum, require('quickfix-review.store').headline(item)))
   end
 end
 

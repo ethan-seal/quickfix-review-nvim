@@ -88,10 +88,11 @@ assert.run_test('dd deletes by id after the file is reordered on disk', function
   vim.fn.cursor(1, 1) -- the line 1 comment
 
   local storage_file = test_helper.storage_file
-  local list = vim.json.decode(table.concat(vim.fn.readfile(storage_file), '\n'),
+  local doc = vim.json.decode(table.concat(vim.fn.readfile(storage_file), '\n'),
     { luanil = { object = true, array = true } })
+  local list = doc.comments
   vim.uv.sleep(10) -- so the rewrite gets a new mtime
-  vim.fn.writefile({ vim.json.encode({ list[2], list[1] }) }, storage_file)
+  vim.fn.writefile({ vim.json.encode({ version = 2, comments = { list[2], list[1] } }) }, storage_file)
 
   pcall(vim.cmd, 'normal dd')
   local left = qf.comments()
@@ -108,8 +109,8 @@ assert.run_test('review rows carry the comment id; export keeps the context', fu
   for i = 1, 2 do
     assert.truthy(comments[i].id, 'comment has an id')
     assert.equals(rows[i].user_data.id, comments[i].id, 'row ' .. i .. ' carries the id')
-    assert.equals(type(comments[i].user_data), 'table', 'stored context kept')
-    assert.equals(comments[i].user_data.id, nil, 'id not written into the stored context')
+    assert.equals(type(comments[i].context), 'table', 'stored context kept')
+    assert.equals(comments[i].context.id, nil, 'id not written into the stored context')
   end
   local config = require('quickfix-review.config')
   local md = require('quickfix-review.export').to_markdown(comments, config.options)

@@ -1,15 +1,14 @@
 -- Export functionality for quickfix-review.nvim
 local M = {}
 
-local utils = require('quickfix-review.utils')
 local storage = require('quickfix-review.storage')
 
 -- Each item is formatted with: index, TYPE, file:line (or file:start-end), text
 M.default_item_format = '%d. **[%s]** `%s` - %s'
 
--- Convert quickfix list to markdown string
-function M.to_markdown(qf_list, config)
-  if not qf_list or #qf_list == 0 then
+-- Convert comment records (store.all()) to a markdown string
+function M.to_markdown(comments, config)
+  if not comments or #comments == 0 then
     return nil, 'No comments to export'
   end
 
@@ -21,10 +20,13 @@ function M.to_markdown(qf_list, config)
 
   local lines = { header, type_legend }
 
-  for i, item in ipairs(qf_list) do
-    local file = vim.fn.fnamemodify(item.filename or vim.fn.bufname(item.bufnr), ':.')
-    local comment_type = utils.parse_comment_type(item.text)
-    local comment_text = item.text:gsub('^%[[^%]]*%]%s*', '')
+  for i, item in ipairs(comments) do
+    local file = vim.fn.fnamemodify(item.filename, ':.')
+    local comment_type = item.kind:upper()
+    local comment_text = item.body
+    if item.response then
+      comment_text = comment_text .. ' | Response: ' .. item.response
+    end
 
     -- Format line reference (handle ranges)
     local line_ref
@@ -47,7 +49,7 @@ function M.to_markdown(qf_list, config)
     table.insert(lines, line_str)
 
     -- Append captured context (commit + diff snippet) if present
-    local ctx = item.user_data
+    local ctx = item.context
     if type(ctx) == 'table' then
       if ctx.commit_short then
         table.insert(lines, string.format('   - commit: `%s`', ctx.commit_short))

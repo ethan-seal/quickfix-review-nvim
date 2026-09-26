@@ -379,7 +379,11 @@ require('quickfix-review').load_review()             *quickfix-review.load_revie
     the quickfix list.
 
 require('quickfix-review').comments()                 *quickfix-review.comments()*
-    All review comments, in creation order. Treat as read-only.
+    All review comments, in creation order. Treat as read-only. Each is a
+    record `{ id, filename, kind, body, response, lnum, end_lnum, context,
+    created_at }`: `kind` is the lowercase comment type, `body` the text
+    without any `[KIND]` prefix, and `response` and `context` (the captured
+    commit and snippet) may be nil.
 
 require('quickfix-review').summary()                   *quickfix-review.summary()*
     Print a summary of comment counts.

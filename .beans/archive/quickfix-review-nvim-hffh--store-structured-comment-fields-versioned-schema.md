@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-hffh
 title: Store structured comment fields + versioned schema
-status: todo
+status: completed
 type: feature
 priority: normal
 created_at: 2026-09-26T04:31:20Z
-updated_at: 2026-09-26T04:57:50Z
+updated_at: 2026-09-26T05:52:19Z
 blocked_by:
     - quickfix-review-nvim-n9cc
     - quickfix-review-nvim-vj7e

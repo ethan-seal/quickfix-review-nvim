@@ -305,6 +305,11 @@ end
 -- Per diff buffer: { name, tick, sha } of its content at changedtick `tick`
 local special_sha = {}
 
+-- Drop what is cached for buffer `bufnr` (on BufWipeout)
+function M.forget_buffer(bufnr)
+  special_sha[bufnr] = nil
+end
+
 -- The lines comment `item` covers in buffer `bufnr`. In a file's own buffer:
 -- store.range (where its anchor's lines are now). In a diff buffer showing a
 -- revision (fugitive, diffview): its anchor's lines when that buffer holds

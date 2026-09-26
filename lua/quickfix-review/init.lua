@@ -600,20 +600,47 @@ local function comments_on_line()
   return comments
 end
 
+local DIFF_MISS = 'No comment on this line (diff buffer shows another revision)'
+
+-- Whether diff buffer `bufnr` hides some comment on `file`: one with no
+-- anchor snapshot, or anchored to another revision than the buffer holds
+local function hidden_in_diff_buffer(bufnr, file)
+  if not utils.is_special_buffer(bufnr) then return false end
+  for _, item in ipairs(store.all()) do
+    if utils.files_match(item.filename, file) and utils.range_in(item, bufnr) == nil then
+      return true
+    end
+  end
+  return false
+end
+
+-- The message for a line with no comment in the current buffer
+local function no_comment_message()
+  if hidden_in_diff_buffer(vim.api.nvim_get_current_buf(), utils.get_real_filepath()) then
+    return DIFF_MISS
+  end
+  return 'No comment on this line'
+end
+
 -- Show every comment whose range covers the current line, in line order
 function M.view_comment()
   local comments = comments_on_line()
 
   if #comments == 0 then
-    print('No comment on this line')
+    print(no_comment_message())
     return
   end
+
+  -- A diff buffer shows a comment only where it holds the anchor's own
+  -- snapshot, so the comment is current there: its working-file state is
+  -- left out, as it is from the sign
+  local special = utils.is_special_buffer(vim.api.nvim_get_current_buf())
 
   -- Build lines for a floating window
   local lines = {}
   for i, c in ipairs(comments) do
     if i > 1 then table.insert(lines, '') end
-    if store.is_outdated(c) then
+    if not special and store.is_outdated(c) then
       table.insert(lines, 'outdated — code changed since comment')
     end
     table.insert(lines, store.headline(c))
@@ -727,6 +754,8 @@ function M.delete_comment(range)
     else
       print(string.format('Deleted %d comment(s) from %s:%d', comments_deleted, display_file, start_line))
     end
+  elseif hidden_in_diff_buffer(bufnr, file) then
+    print(DIFF_MISS)
   else
     local display_file = vim.fn.fnamemodify(file, ':.')
     if start_line ~= end_line then
@@ -927,7 +956,7 @@ function M.edit_comment()
     table.insert(matches, { id = c.id, body = c.body, headline = store.headline(c) })
   end
   if #matches == 0 then
-    print('No comment on this line')
+    print(no_comment_message())
   elseif #matches == 1 then
     prompt_edit(matches[1].id, matches[1].body)
   else
@@ -1098,6 +1127,8 @@ local function write_back(bufnr, file)
   if not is_file_buffer(bufnr) or vim.bo[bufnr].modified then return end
   local name = vim.api.nvim_buf_get_name(bufnr)
   if vim.fn.fnamemodify(file, ':p') ~= vim.fn.fnamemodify(name, ':p') then return end
+  -- A range write (':1,5w!') fires FileWritePost, not BufWritePost, so
+  -- write_back never sees one
 
   -- A comment with a snapshot is relocated by diffing it against the saved
   -- content; one with none (from before anchors) can't be diffed, and its
@@ -1219,6 +1250,16 @@ function M.setup(opts)
     group = augroup,
     callback = function(args) relocate_buffer(args.buf, args.event) end,
   })
+  -- Redraw signs after a filter (':%!cmd'), which fires no TextChanged here.
+  -- The filtered buffer is the current one (<abuf> isn't documented to be it).
+  vim.api.nvim_create_autocmd('ShellFilterPost', {
+    group = augroup,
+    callback = function()
+      local buf = vim.api.nvim_get_current_buf()
+      local file = utils.get_real_filepath(buf)
+      if file ~= '' then draw_signs(buf, file, store.all()) end
+    end,
+  })
   for _, b in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(b) then read_once[b] = true end
   end
@@ -1238,6 +1279,7 @@ function M.setup(opts)
     callback = function(args)
       drawn_at[args.buf] = nil
       read_once[args.buf] = nil
+      utils.forget_buffer(args.buf)
     end,
   })
 

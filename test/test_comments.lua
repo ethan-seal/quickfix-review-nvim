@@ -820,6 +820,37 @@ assert.run_test('edit on a line with no comment prompts and logs nothing', funct
   assert.equals(#updates(), n, 'no update logged')
 end)
 
+assert.run_test('a comment hidden in a diff buffer: view, edit and delete say so', function()
+  qf.clear_review()
+  local diff_name = 'diffview:///no-such-repo/.git/abc123/test_file.txt'
+  -- A legacy comment: no anchor snapshot, so no diff buffer shows it
+  store.add({ filename = '/no-such-repo/test_file.txt', lnum = 2, end_lnum = 2, kind = 'note', body = 'legacy' })
+  local miss = 'No comment on this line (diff buffer shows another revision)'
+  in_scratch(diff_name, 'nofile', function()
+    vim.fn.cursor(2, 1)
+    local printed, prompts
+    printed = capture_print(function() qf.view_comment() end)
+    assert.equals(printed[1], miss, 'view says so')
+    printed = capture_print(function()
+      prompts = with_input('Nope', function() qf.edit_comment() end)
+    end)
+    assert.length(prompts, 0, 'edit: no prompt')
+    assert.equals(printed[1], miss, 'edit says so')
+    printed = capture_print(function() qf.delete_comment() end)
+    assert.equals(printed[1], miss, 'delete says so')
+  end)
+  assert.length(qf.comments(), 1, 'comment still there')
+  assert.equals(qf.comments()[1].body, 'legacy', 'body unchanged')
+
+  -- A diff buffer for a file with no comments: the usual message
+  qf.clear_review()
+  in_scratch(diff_name, 'nofile', function()
+    vim.fn.cursor(2, 1)
+    local printed = capture_print(function() qf.view_comment() end)
+    assert.equals(printed[1], 'No comment on this line', 'generic message')
+  end)
+end)
+
 assert.run_test('edit with overlapping comments edits only the chosen one', function()
   qf.clear_review()
   qf.add_comment('ISSUE', { 2, 6 })

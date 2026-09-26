@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-gk17
 title: 'Diff-buffer and filter follow-ups: float state, no-sha comments, :%! sign redraw'
-status: todo
+status: completed
 type: task
 priority: low
 created_at: 2026-09-26T07:58:17Z
-updated_at: 2026-09-26T08:26:28Z
+updated_at: 2026-09-26T10:46:11Z
 parent: quickfix-review-nvim-8oi5
 ---
 

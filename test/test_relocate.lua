@@ -117,7 +117,7 @@ assert.run_test('replacing every line with the same content keeps the comment cu
   local c = qf.comments()[1]
   assert.equals(store.pos(c).state, 'current', 'still current')
   assert.equals((store.range(c)), 5, 'still on line 5')
-  store.refresh()
+  -- No store.refresh(): the filter itself redraws the signs
   local signs = signs_on(file_buf, 5)
   assert.length(signs, 1, 'sign on line 5')
   assert.truthy(signs[1] and signs[1].sign_hl_group ~= utils.OUTDATED_HL, 'not the outdated highlight')
@@ -188,6 +188,33 @@ assert.run_test('a commented line changed on disk: outdated everywhere', functio
   local md = export.to_markdown(qf.comments(), qf.config.options)
   assert.truthy(md:find('test_file.txt:5 (outdated)', 1, true), 'export marks it: ' .. md)
   assert.equals(log_size(), logged, 'nothing logged')
+end)
+
+assert.run_test('a diff buffer holding the snapshot shows the comment as current in the float', function()
+  fresh()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local lines = vim.deepcopy(TEN)
+  lines[5] = 'line 5 rewritten'
+  rewrite(lines)
+  local c = qf.comments()[1]
+  assert.equals(store.pos(c).state, 'outdated', 'outdated in the working file')
+
+  local fugbuf = vim.api.nvim_create_buf(true, false)
+  vim.api.nvim_buf_set_lines(fugbuf, 0, -1, false, TEN)
+  vim.api.nvim_buf_set_name(fugbuf, 'fugitive://' .. vim.fn.getcwd() .. '/.git//0/' .. test_file)
+  local ok, err = pcall(function()
+    vim.cmd('buffer ' .. fugbuf)
+    local float = float_lines(5)
+    assert.truthy(float[1] ~= 'outdated — code changed since comment', 'no outdated header')
+    assert.equals(float[1], store.headline(c), 'headline first')
+    local signs = signs_on(fugbuf, 5)
+    assert.length(signs, 1, 'sign on line 5 of the diff buffer')
+    assert.truthy(signs[1] and signs[1].sign_hl_group ~= utils.OUTDATED_HL, 'not the outdated highlight')
+  end)
+  vim.cmd('buffer ' .. file_buf)
+  vim.cmd('bwipeout! ' .. fugbuf)
+  if not ok then error(err, 0) end
 end)
 
 assert.run_test('a current comment has no outdated marks', function()
@@ -773,6 +800,51 @@ assert.run_test(':w !cmd does not write anchors', function()
     assert.equals(log_size(), logged, 'nothing logged')
     assert.truthy(vim.deep_equal(qf.comments()[1].anchor, anchor), 'anchor unchanged')
     assert.equals(#vim.fn.readfile(path), 10, 'file untouched')
+  end)
+end)
+
+assert.run_test('a range write to the own file does not write anchors', function()
+  with_temp_file(function(path, buf)
+    vim.fn.cursor(5, 1)
+    qf.add_comment('ISSUE')
+    local anchor = vim.deepcopy(qf.comments()[1].anchor)
+    local logged = log_size()
+    -- Shift the comment, then mark the buffer unmodified, so only the range
+    -- keeps the write from anchoring to lines the file won't have (a range
+    -- write fires FileWritePost, not BufWritePost; this pins that)
+    vim.api.nvim_buf_set_lines(buf, 0, 0, false, { 'top' })
+    vim.bo[buf].modified = false
+    vim.cmd('silent 1,5w!')
+    assert.equals(#vim.fn.readfile(path), 5, 'five lines written')
+    assert.equals(log_size(), logged, 'nothing logged')
+    assert.truthy(vim.deep_equal(qf.comments()[1].anchor, anchor), 'anchor unchanged')
+  end)
+end)
+
+assert.run_test('a BufWritePre that adds a line: :w still re-anchors to the saved content', function()
+  with_temp_file(function(path, buf)
+    vim.fn.cursor(5, 1)
+    qf.add_comment('ISSUE')
+    local old_sha = qf.comments()[1].anchor.sha
+    local logged = log_size()
+    -- A formatter-like hook: the line count changes during the write itself
+    local group = vim.api.nvim_create_augroup('QfrTestBufWritePre', { clear = true })
+    vim.api.nvim_create_autocmd('BufWritePre', {
+      group = group,
+      buffer = buf,
+      callback = function() vim.api.nvim_buf_set_lines(buf, 0, 0, false, { 'top' }) end,
+    })
+    local ok, err = pcall(vim.cmd, 'silent write')
+    vim.api.nvim_del_augroup_by_id(group)
+    if not ok then error(err, 0) end
+    local saved = vim.fn.readfile(path)
+    assert.equals(#saved, 11, 'eleven lines written')
+    assert.equals(log_size(), logged + 1, 'one update')
+    local c = qf.comments()[1]
+    assert.equals(c.anchor.sha, require('quickfix-review.snapshots').hash(saved), 'anchored to the saved content')
+    assert.truthy(c.anchor.sha ~= old_sha, 'new sha')
+    assert.equals(c.anchor.lnum, 6, 'shifted by one line')
+    assert.equals((store.range(c)), 6, 'range on line 6')
   end)
 end)
 

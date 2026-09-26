@@ -379,6 +379,17 @@ assert.run_test('setup() without a type deletes its :ReviewAdd command', functio
   if not ok then error(err, 0) end
 end)
 
+assert.run_test('setup() leaves a user\'s own :ReviewAdd<X> command alone', function()
+  local ok, err = pcall(function()
+    vim.api.nvim_create_user_command('ReviewAddMine', function() end, { desc = 'mine' })
+    qf.setup({ storage_file = test_helper.storage_file })
+    assert.truthy(vim.api.nvim_get_commands({}).ReviewAddMine, 'still there')
+  end)
+  pcall(vim.api.nvim_del_user_command, 'ReviewAddMine')
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
 assert.run_test('a type that cannot name a command warns and gets none', function()
   local calls = {}
   local original_notify = vim.notify

@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-5dyo
 title: 'Event log leftovers: lock-take race, partial remove_if wording, torn-log edge cases'
-status: todo
+status: completed
 type: bug
 priority: low
 created_at: 2026-09-26T10:24:03Z
-updated_at: 2026-09-26T10:24:03Z
+updated_at: 2026-09-26T10:37:54Z
 ---
 
 Follow-ups from qugx review (all narrow; one rollup, don't spawn further follow-up beans):

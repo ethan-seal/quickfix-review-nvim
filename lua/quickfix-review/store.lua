@@ -424,7 +424,22 @@ local function fresh_sync(loc)
   return { log = loc and loc.log, state = loc and loc.state, offset = 0, lines = 0, imports = {} }
 end
 
+-- Unreadable lines of the log already warned about (log.read's `seen`), so
+-- each is warned about once: { log = path, log_id = its header's, lines = {} }
+local log_seen = nil
+
+-- The `seen` table for reading the log at `loc`, new when the log (path or
+-- header log_id) is another one than the lines were seen in
+local function seen_lines(loc)
+  local id = log.read_id(loc.log)
+  if not (log_seen and log_seen.log == loc.log and log_seen.log_id == id) then
+    log_seen = { log = loc.log, log_id = id, lines = {} }
+  end
+  return log_seen.lines
+end
+
 local function reset(loc)
+  log_seen = nil
   synced = fresh_sync(loc)
   reduced = reduce.new()
   unsaved = 0
@@ -557,7 +572,7 @@ local function read_log(loc, stat, opts)
       state = reduce.new()
     end
   end
-  local res, err = log.read(loc.log, base.offset, base.lines)
+  local res, err = log.read(loc.log, base.offset, base.lines, seen_lines(loc))
   if not res then return false, err end
   if base.offset == 0 then base.log_id = res.log_id end
 
@@ -573,9 +588,11 @@ end
 
 -- Load the records of a comments.json (its raw bytes): upgraded, normalized,
 -- hand-copied duplicate ids split, and records that can't be shown dropped
--- with a warning (the original is kept as comments.json.pre-log.bak).
+-- with a warning. `backup` is where the original is kept (the
+-- comments.json.pre-log.bak of a migration), or nil when it is left in place
+-- (loaded read-only).
 -- Returns: records, or nil and an error
-local function load_records(raw, path)
+local function load_records(raw, path, backup)
   local list, err = storage.parse(raw, path)
   if not list then return nil, err end
   local loaded, seen, dropped = {}, {}, 0
@@ -592,8 +609,10 @@ local function load_records(raw, path)
     end
   end
   if dropped > 0 then
+    local kept = backup and ('original kept at ' .. backup)
+      or 'storage is read-only; the file is unchanged'
     vim.notify(string.format('quickfix-review: dropped %d comment(s) with an invalid line number or no file in %s;'
-      .. ' original kept at %s', dropped, path, path .. MIGRATED), vim.log.levels.WARN)
+      .. ' %s', dropped, path, kept), vim.log.levels.WARN)
   end
   return loaded
 end
@@ -619,7 +638,7 @@ local function migrate(loc)
     if not src then return true end
     local raw = read_bytes(loc.path)
     if not raw then return nil, 'Could not read ' .. loc.path end
-    local records, lerr = load_records(raw, loc.path)
+    local records, lerr = load_records(raw, loc.path, loc.path .. MIGRATED)
     if not records then return nil, lerr end
     local import = log.event('import', { source_sha256 = vim.fn.sha256(raw), comments = serialise_all(records) })
     local wrote, werr, landed = log.append(loc.log, { log.new_header(), import }, bit.band(src.mode, 511))
@@ -699,7 +718,7 @@ local function load_readonly(loc, src)
   if readonly and readonly.log == loc.log and readonly.key == key then return true, nil, false end
   local raw = read_bytes(loc.path)
   if not raw then return false, 'Could not read ' .. loc.path end
-  local records, err = load_records(raw, loc.path)
+  local records, err = load_records(raw, loc.path, nil)
   if not records then return false, err end
   reset(loc)
   reduce.apply(reduced, { op = 'import', comments = serialise_all(records) })
@@ -739,7 +758,7 @@ local function is_torn(loc)
   if not head then return false end
   if not head:find('\n', 1, true) then return #head > 0 end
   if not uv.fs_stat(loc.path) then return false end
-  local res = log.read(loc.log, 0, 0)
+  local res = log.read(loc.log, 0, 0, seen_lines(loc))
   return res ~= nil and #res.events == 0
 end
 
@@ -865,7 +884,8 @@ end
 -- change anything if the log (or a comments.json to migrate) is unusable
 -- (sync() reports that once) or the lock can't be taken.
 -- build() returns: events (a list, possibly empty), result
--- Returns: result, or nil if the change was refused or failed
+-- Returns: result, or nil if the change was refused or failed, and then
+-- 'partial' as a second value when some, but not all, of it was written
 -- The error for a change to a review loaded read-only, or nil
 local function readonly_error(loc)
   if not (readonly and readonly.log == loc.log) then return nil end
@@ -881,6 +901,7 @@ local function mutate(build)
     vim.notify('quickfix-review: ' .. ro_err, vim.log.levels.ERROR)
     return nil
   end
+  local partial = false
   local got, result, err = locked(loc, function()
     if not sync() then return nil end
     local events, res = build()
@@ -900,6 +921,7 @@ local function mutate(build)
       return res
     end
     if landed > 0 then
+      partial = true
       return nil, string.format('Could not write all of the change to %s: %s; the change may be incomplete',
         loc.log, tostring(werr))
     end
@@ -907,6 +929,7 @@ local function mutate(build)
   end)
   if not got then result, err = nil, result end
   if err then vim.notify('quickfix-review: ' .. err, vim.log.levels.ERROR) end
+  if result == nil and partial then return nil, 'partial' end
   return result
 end
 
@@ -1070,6 +1093,7 @@ end
 -- Remove every comment for which pred(comment) is true: one delete event,
 -- holding the comment, per match
 -- Returns: number removed, or nil if the change was refused (unreadable file)
+-- or failed, and then 'partial' when some of the deletes may have landed
 function M.remove_if(pred)
   return mutate(function()
     local events = {}
@@ -1084,7 +1108,8 @@ function M.remove_if(pred)
 end
 
 -- Remove the comment with this id
--- Returns: number removed (0 if there is none), or nil if the change was refused
+-- Returns: number removed (0 if there is none), or nil if the change was
+-- refused or failed (and 'partial', as for remove_if)
 function M.remove(id)
   return M.remove_if(function(c) return c.id == id end)
 end

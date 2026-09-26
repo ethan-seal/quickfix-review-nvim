@@ -111,6 +111,7 @@ assert.run_test('a file without a header is not a log; reading past its end fail
   local result, err = log.read(path)
   assert.equals(result, nil, 'refused')
   assert.truthy(err:find('not a quickfix-review log', 1, true), 'says why: ' .. tostring(err))
+  assert.truthy(err:find(path .. '.bad', 1, true), 'names the manual fix: ' .. err)
   assert.equals(log.read_id(path), nil, 'no log_id')
   write_bytes(path, HEADER)
   result, err = log.read(path, 1000)
@@ -161,6 +162,58 @@ assert.run_test('a broken lock leaves nothing aside, and the new holder\'s pid i
   assert.equals(held, uv.os_getpid(), 'this process holds it')
   assert.length(vim.fn.glob(dir .. '.stale-*', true, true), 0, 'no stale lock left aside')
   assert.equals(vim.fn.isdirectory(dir), 0, 'released')
+end)
+
+assert.run_test('a lock moved away by a breaker before its pid is written is taken again', function()
+  local dir = vim.fn.tempname() .. '-lock'
+  local original_open = io.open
+  local moved = false
+  io.open = function(path, mode)
+    if not moved and path == dir .. '/pid' and mode == 'w' then
+      moved = true
+      uv.fs_rename(dir, dir .. '.stale-test')
+    end
+    return original_open(path, mode)
+  end
+  local runs, held = 0, nil
+  local ok, a, b = pcall(log.with_lock, dir, function()
+    runs = runs + 1
+    local fh = original_open(dir .. '/pid', 'r')
+    held = fh and tonumber(fh:read('*l'))
+    if fh then fh:close() end
+  end)
+  io.open = original_open
+  vim.fn.delete(dir .. '.stale-test', 'rf')
+  assert.truthy(ok, 'no error raised: ' .. tostring(a))
+  assert.truthy(moved, 'the lock was moved away once')
+  assert.equals(a, true, 'taken on retry: ' .. tostring(b))
+  assert.equals(runs, 1, 'fn ran once')
+  assert.equals(held, uv.os_getpid(), 'this process holds it')
+  assert.equals(vim.fn.isdirectory(dir), 0, 'released')
+end)
+
+assert.run_test('a stale lock whose pid changed since it was judged is not broken', function()
+  local dir = vim.fn.tempname() .. '-lock'
+  local child = vim.system({ 'true' })
+  child:wait()
+  seed_lock(dir, child.pid)
+  local holder = vim.system({ 'sleep', '30' })
+  -- Between stale() reading the dead pid and break_lock re-reading it, the
+  -- lock is broken and retaken by a live process
+  local original_kill = uv.kill
+  uv.kill = function(pid, sig)
+    if pid == child.pid then write_bytes(dir .. '/pid', tostring(holder.pid) .. '\n') end
+    return original_kill(pid, sig)
+  end
+  local ok, taken = pcall(log.with_lock, dir, function() error('must not run') end)
+  uv.kill = original_kill
+  holder:kill(9)
+  local left = vim.fn.isdirectory(dir)
+  vim.fn.delete(dir, 'rf')
+  assert.truthy(ok, 'no error raised')
+  assert.falsy(taken, 'not taken')
+  assert.equals(left, 1, 'the retaken lock is left alone')
+  assert.length(vim.fn.glob(dir .. '.stale-*', true, true), 0, 'nothing moved aside')
 end)
 
 assert.run_test('a live lock is waited on, then times out; an old one is broken', function()

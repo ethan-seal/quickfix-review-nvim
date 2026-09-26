@@ -21,6 +21,10 @@ local function camel(name)
   return table.concat(parts)
 end
 
+-- Ends the desc of every generated :ReviewAdd<Type>, so that only those are
+-- deleted when their type is no longer configured
+local MARKER = ' [quickfix-review]'
+
 local function add(type_name, o)
   require('quickfix-review').add_comment(type_name:upper(), M.range_of(o))
 end
@@ -49,7 +53,7 @@ function M.create()
         wanted[name] = true
         vim.api.nvim_create_user_command(name, function(o) add(t, o) end, {
           range = true,
-          desc = 'Add a ' .. t:upper() .. ' comment (range or current line)',
+          desc = 'Add a ' .. t:upper() .. ' comment (range or current line)' .. MARKER,
         })
       end
     end
@@ -69,10 +73,12 @@ function M.create()
   -- Delete commands of types no longer configured (so a comment_types that
   -- replaces the defaults drops :ReviewAddIssue etc.). The old set is read
   -- back from Neovim rather than tracked here, because plugin/ may be
-  -- re-sourced and this module reloaded between calls. This also removes a
-  -- user's own :ReviewAdd<X> command, which we accept.
-  for name in pairs(vim.api.nvim_get_commands({})) do
-    if name:match('^ReviewAdd%u') and not wanted[name] then
+  -- re-sourced and this module reloaded between calls. Only commands made
+  -- here (their desc, which Neovim reports as the definition of a Lua
+  -- command, ends in MARKER) are deleted, so a user's own :ReviewAdd<X> stays.
+  for name, cmd in pairs(vim.api.nvim_get_commands({})) do
+    local generated = type(cmd.definition) == 'string' and vim.endswith(cmd.definition, MARKER)
+    if name:match('^ReviewAdd%u') and not wanted[name] and generated then
       pcall(vim.api.nvim_del_user_command, name)
     end
   end

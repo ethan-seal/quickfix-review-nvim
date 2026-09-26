@@ -381,6 +381,45 @@ assert.run_test('comments.json in a read-only storage dir is listed, and changes
   if not ok then error(err, 0) end
 end)
 
+assert.run_test('a record dropped from a read-only comments.json is warned about without a backup', function()
+  local uv = vim.uv or vim.loop
+  if uv.getuid and uv.getuid() == 0 then
+    print('  (skipped: running as root ignores directory permissions)')
+    return
+  end
+
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, 'p')
+  local path = dir .. '/review.json'
+  local fh = io.open(path, 'wb')
+  fh:write(envelope({
+    { id = '00000000000000e3', filename = vim.fn.fnamemodify(test_file, ':p'), lnum = 'x', end_lnum = 1,
+      kind = 'issue', body = 'bad', created_at = 1700000000 },
+  }))
+  fh:close()
+  vim.fn.setfperm(dir, 'r-xr-xr-x')
+
+  local ok, err = pcall(function()
+    local calls = capture_notify(function()
+      qf = restart(path)
+      qf.comments()
+    end)
+    local warns = {}
+    for _, c in ipairs(calls) do
+      if c.level == vim.log.levels.WARN and c.msg:find('dropped', 1, true) then table.insert(warns, c) end
+    end
+    assert.truthy(#warns >= 1, 'dropped record warned: ' .. vim.inspect(calls))
+    assert.truthy(warns[1].msg:find(path, 1, true), 'names the file: ' .. warns[1].msg)
+    assert.falsy(warns[1].msg:find('.pre-log.bak', 1, true), 'no backup mentioned: ' .. warns[1].msg)
+    assert.equals(vim.fn.filereadable(path .. '.pre-log.bak'), 0, 'no backup written')
+  end)
+
+  vim.fn.setfperm(dir, 'rwxr-xr-x')
+  qf = restart()
+  vim.fn.delete(dir, 'rf')
+  if not ok then error(err, 0) end
+end)
+
 assert.run_test('a change written to the log whose fsync failed is reported as made', function()
   reset()
   vim.fn.cursor(2, 1)
@@ -479,6 +518,38 @@ assert.run_test('a failed log append is reported as a failure by every change', 
     assert.length(list, 1, 'comment still listed')
     assert.equals(list[1].lnum, 2, 'not re-anchored')
     assert.length(saved(), 1, 'log unchanged')
+  end)
+
+  log.append = original_append
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('a delete only partly written does not claim nothing was deleted', function()
+  reset()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('ISSUE')
+  vim.fn.cursor(4, 1)
+  qf.add_comment('NOTE')
+  assert.length(qf.comments(), 2, 'seeded')
+
+  local log = require('quickfix-review.log')
+  local original_append = log.append
+  log.append = function(path, evs, mode)
+    original_append(path, { evs[1] }, mode)
+    return false, 'short write', 1
+  end
+
+  local ok, err = pcall(function()
+    local printed
+    local calls = capture_notify(function()
+      printed = capture_print(function() qf.delete_comment({ 1, 5 }) end)
+    end)
+    assert.falsy(any_mentions(calls, 'no comment was deleted'), 'no "no comment was deleted": ' .. vim.inspect(calls))
+    assert.truthy(#errors_mentioning(calls, 'may be incomplete') >= 1, 'the store says it may be incomplete')
+    assert.truthy(any_mentions(calls, 'may not have been deleted'), 'delete says some may not have been')
+    assert.falsy(any_mentions(printed, 'Deleted'), 'no "Deleted" message: ' .. vim.inspect(printed))
+    assert.length(qf.comments(), 1, 'one deleted, as in the log')
+    assert.length(saved(), 1, 'one left in the log')
   end)
 
   log.append = original_append
@@ -783,6 +854,52 @@ for _, case in ipairs({
   end)
 end
 
+assert.run_test('an unreadable line is warned about once on the first sync, with comments.json beside the log', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('ISSUE')
+  local fh = io.open(log_file, 'ab')
+  fh:write('garbage\n')
+  fh:close()
+  fh = io.open(storage_file, 'wb')
+  fh:write(envelope({ { id = '00000000000000da', filename = vim.fn.fnamemodify(test_file, ':p'),
+    lnum = 2, end_lnum = 2, kind = 'note', body = 'stray', created_at = 1700000000 } }))
+  fh:close()
+  local calls = capture_notify(function()
+    qf = restart(nil, { no_flush = true })
+    qf.comments()
+  end)
+  local unreadable = 0
+  for _, c in ipairs(calls) do
+    if c.level == vim.log.levels.WARN and c.msg:find('unreadable line', 1, true) then
+      unreadable = unreadable + 1
+    end
+  end
+  assert.equals(unreadable, 1, 'warned once: ' .. vim.inspect(calls))
+  assert.length(qf.comments(), 1, 'the log is read')
+  os.remove(storage_file)
+end)
+
+assert.run_test('a log whose first line is torn, with events after it, is refused naming the manual fix', function()
+  reset()
+  local log = require('quickfix-review.log')
+  local bytes = vim.json.encode(log.new_header()):sub(1, 20) .. '\n'
+    .. vim.json.encode(log.event('add', { comment = { id = '00000000000000db' } })) .. '\n'
+  local fh = io.open(log_file, 'wb')
+  fh:write(bytes)
+  fh:close()
+  local calls = capture_notify(function()
+    qf = restart(nil, { no_flush = true })
+    qf.comments()
+  end)
+  local errs = errors_mentioning(calls, log_file)
+  assert.length(errs, 1, 'one error naming the log: ' .. vim.inspect(calls))
+  assert.truthy(errs[1].msg:find('move', 1, true), 'says to move it aside: ' .. errs[1].msg)
+  assert.equals(read_bytes(log_file), bytes, 'the log is left alone')
+  os.remove(log_file)
+  qf = restart()
+end)
+
 assert.run_test('a comments.json written next to the log is warned about once and ignored', function()
   reset()
   vim.fn.cursor(1, 1)
@@ -1026,6 +1143,15 @@ assert.run_test('history of one comment shows add, update, delete in order', fun
     { op = 'update', id = 'x', set = { body = 'b' }, ts = 0 },
   }, 'x')
   assert.truthy(plain[2].text:find('body: b', 1, true), 'no prev: ' .. plain[2].text)
+  -- Long bodies differing near their end show where they differ
+  local long = string.rep('the same long start é ', 3)
+  local edited = require('quickfix-review.history').rows({
+    { op = 'add', comment = { id = 'x', kind = 'note', filename = '/f', lnum = 1 }, ts = 0 },
+    { op = 'update', id = 'x', set = { body = long .. 'new end' }, prev = { body = long .. 'old end' }, ts = 0 },
+  }, 'x')
+  local etext = edited[2].text
+  assert.truthy(etext:find('old end', 1, true) and etext:find('new end', 1, true), 'the difference shown: ' .. etext)
+  assert.falsy(etext:gsub('[\194-\244][\128-\191]+', ''):find('[\128-\255]'), 'no split character: ' .. etext)
   -- An anchor update reads as its lines and abbreviated sha, without the
   -- lnum/end_lnum it also sets
   local anchored = require('quickfix-review.history').rows({

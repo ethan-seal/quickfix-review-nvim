@@ -23,3 +23,6 @@ Non-destructive log rotation (parent epic). The log grows slowly (a line per mut
 - [ ] Rotation while another headless instance appends → no lost or duplicated events
 - [ ] After rotation, state identical; trash restorable
 - [ ] retention deletes only rotated files older than N days
+
+
+Note (5dyo review): log.lua with_lock is_stale branch (~241-245) never checks the deadline, so a persistently failing break_lock (fs_rename error) spins forever. Honour the deadline there too (return an error). Also the pid-write-failure fs_rmdir comment "never another's" is slightly wrong in a 3-process race; fix the comment.

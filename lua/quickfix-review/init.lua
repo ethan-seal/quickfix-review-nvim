@@ -708,13 +708,16 @@ function M.delete_comment(range)
   
   -- Remove comments overlapping the specified range
   local bufnr = vim.api.nvim_get_current_buf()
-  local comments_deleted = store.remove_if(function(item)
+  local comments_deleted, failure = store.remove_if(function(item)
     local item_start, item_end = utils.range_in(item, bufnr)
     return item_start ~= nil and utils.files_match(item.filename, file) and
            item_start <= end_line and item_end >= start_line
   end)
 
-  if comments_deleted == nil then
+  if comments_deleted == nil and failure == 'partial' then
+    vim.notify('quickfix-review: the change was only partly written; some comments may not have been deleted',
+      vim.log.levels.WARN)
+  elseif comments_deleted == nil then
     vim.notify('quickfix-review: the review could not be changed; no comment was deleted',
       vim.log.levels.WARN)
   elseif comments_deleted > 0 then
@@ -864,8 +867,11 @@ function M.delete_comment_from_qf()
     return
   end
 
-  local removed = store.remove(id)
-  if removed == nil then
+  local removed, failure = store.remove(id)
+  if removed == nil and failure == 'partial' then
+    vim.notify('quickfix-review: the change was only partly written; the comment may not have been deleted',
+      vim.log.levels.WARN)
+  elseif removed == nil then
     vim.notify('quickfix-review: the review could not be changed; the comment was not deleted',
       vim.log.levels.WARN)
   elseif removed == 0 then

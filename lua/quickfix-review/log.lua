@@ -132,7 +132,9 @@ function M.read(path, from, lines, seen)
 
     if from == 0 and result.lines == 1 then
       if not is_header(ev) then
-        return nil, path .. ' is not a quickfix-review log (its first line is not a header)'
+        return nil, path .. ' is not a quickfix-review log (its first line is not a header, possibly torn by an'
+          .. ' interrupted write); to rebuild it, move it aside (e.g. rename it to ' .. path .. '.bad) and restart'
+          .. ' Neovim: comments.json beside it, if any, is migrated again'
       end
       result.log_id = ev.log_id
     elseif ev then
@@ -173,16 +175,18 @@ end
 
 -- A lock left by a process that is gone, or held for longer than any append
 -- takes. A lock this process holds is never stale (with_lock doesn't nest).
+-- Returns: stale (boolean), and the pid it was judged by (nil when judged
+-- by age alone, before its pid was read)
 local function stale(lockdir)
   local stat = uv.fs_stat(lockdir)
   if not stat then return false end
-  if os.time() - stat.mtime.sec > STALE_SECONDS then return true end
+  if os.time() - stat.mtime.sec > STALE_SECONDS then return true, read_pid(lockdir) end
   local pid = read_pid(lockdir)
   -- No pid yet: the holder is between its mkdir and writing the pid
   if not pid then return false end
-  if pid == uv.os_getpid() then return true end
+  if pid == uv.os_getpid() then return true, pid end
   local alive, _, name = uv.kill(pid, 0)
-  return not alive and name == 'ESRCH'
+  return not alive and name == 'ESRCH', pid
 end
 
 local function unlock(lockdir)
@@ -192,8 +196,12 @@ end
 
 -- Break a stale lock: rename it aside, then remove it. Of two processes
 -- that both judged it stale, only one rename succeeds, so the other never
--- removes a lock taken since.
-local function break_lock(lockdir)
+-- removes a lock taken since. `judged` is the pid stale() judged it by: the
+-- lock is left alone if its pid has changed since (it was broken and taken
+-- again meanwhile), which narrows, but does not close, the window in which
+-- a fresh lock could be broken; take() recovers from that ('lost').
+local function break_lock(lockdir, judged)
+  if read_pid(lockdir) ~= judged then return end
   local aside = string.format('%s.stale-%d-%s', lockdir, uv.os_getpid(), hex(assert(uv.random(4))))
   if uv.fs_rename(lockdir, aside) then unlock(aside) end
 end
@@ -213,6 +221,8 @@ local function take(lockdir)
   local wrote = fh and fh:write(tostring(me), '\n')
   if fh then fh:close() end
   if not wrote then
+    -- Moved away by a breaker before the pid was written: try again
+    if not uv.fs_stat(lockdir) then return 'lost' end
     uv.fs_rmdir(lockdir) -- only if still empty, so never another's
     return nil, 'Could not lock ' .. lockdir .. ': could not write its pid'
   end
@@ -228,8 +238,10 @@ function M.with_lock(lockdir, fn)
     local got, err = take(lockdir)
     if got == 'ok' then break end
     if not got then return false, err end
-    if got == 'busy' and stale(lockdir) then
-      break_lock(lockdir)
+    local is_stale, judged = false, nil
+    if got == 'busy' then is_stale, judged = stale(lockdir) end
+    if is_stale then
+      break_lock(lockdir, judged)
     elseif uv.hrtime() > deadline then
       return false, 'Timed out waiting for the lock ' .. lockdir
     else

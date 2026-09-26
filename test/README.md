@@ -7,13 +7,21 @@ This directory contains tests for the quickfix-review plugin.
 ### Run All Tests
 
 ```bash
-nvim --headless -c 'lua dofile("test/run.lua")' -c 'qall'
+scripts/test.sh
+```
+
+The script runs exactly this command from the repository root and exits with its status (non-zero if any test fails):
+
+```bash
+nvim --headless --clean -c 'lua dofile("test/run.lua")' -c 'qall'
 ```
 
 Check the exit code to determine pass/fail:
 ```bash
-nvim --headless -c 'lua dofile("test/run.lua")' -c 'qall' && echo "PASSED" || echo "FAILED"
+scripts/test.sh && echo "PASSED" || echo "FAILED"
 ```
+
+**Always pass `--clean`.** Without it Neovim loads your `init.lua` and installed plugins (possibly including an installed copy of this plugin), which changes options, signs and highlights and makes results depend on your personal setup. Every command in this file uses `--clean`.
 
 Note: Use `qall` instead of `qa!` to avoid bash history expansion issues with the `!` character.
 
@@ -27,16 +35,16 @@ The test output includes a "Plugin version check" line that shows the first line
 
 ```bash
 # Utility function tests
-nvim --headless -c 'lua dofile("test/test_utils.lua")' -c 'qall'
+nvim --headless --clean -c 'lua dofile("test/test_utils.lua")' -c 'qall'
 
 # Comment add/delete tests
-nvim --headless -c 'lua dofile("test/test_comments.lua")' -c 'qall'
+nvim --headless --clean -c 'lua dofile("test/test_comments.lua")' -c 'qall'
 
 # Sign placement tests
-nvim --headless -c 'lua dofile("test/test_signs.lua")' -c 'qall'
+nvim --headless --clean -c 'lua dofile("test/test_signs.lua")' -c 'qall'
 
 # Save/load persistence tests
-nvim --headless -c 'lua dofile("test/test_persistence.lua")' -c 'qall'
+nvim --headless --clean -c 'lua dofile("test/test_persistence.lua")' -c 'qall'
 ```
 
 ### Interactive Debugging
@@ -44,7 +52,7 @@ nvim --headless -c 'lua dofile("test/test_persistence.lua")' -c 'qall'
 For debugging failing tests:
 
 ```bash
-nvim -c 'lua dofile("test/test_comments.lua")'
+nvim --clean -c 'lua dofile("test/test_comments.lua")'
 ```
 
 ## Test Files
@@ -119,13 +127,8 @@ The test environment:
 
 ## CI Integration
 
-The test runner exits with code 1 if any tests fail:
+The test runner exits with code 1 if any tests fail, and `scripts/test.sh` propagates that code, so CI only needs:
 
 ```bash
-nvim --headless -c 'lua dofile("test/run.lua")' -c 'qall'
-exit_code=$?
-if [ $exit_code -ne 0 ]; then
-  echo "Tests failed!"
-  exit 1
-fi
+scripts/test.sh
 ```

@@ -69,8 +69,10 @@ The current comment type is shown in the status message.
 To run the test suite:
 
 ```bash
-nvim --headless -c 'lua dofile("test/run.lua")' -c 'qa!'
+scripts/test.sh
 ```
+
+This runs `nvim --headless --clean -c 'lua dofile("test/run.lua")' -c 'qall'`, so your own config and installed plugins are not loaded. See [test/README.md](test/README.md) for details.
 
 The tests will:
 - Verify all comment types work correctly

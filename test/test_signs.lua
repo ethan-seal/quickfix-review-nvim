@@ -326,45 +326,50 @@ assert.run_test('deleting one of multiple comments updates count', function()
   assert.falsy(has_sign_on_line(bufnr, 5), 'no sign after delete')
 end)
 
-assert.run_test('review signs coexist with git gutter signs when signcolumn >= 2', function()
+assert.run_test('review signs coexist with git gutter signs on the same line', function()
   qf.clear_review()
   clear_extmarks(vim.fn.bufnr())
   local bufnr = vim.fn.bufnr()
 
-  -- Save original signcolumn and set to yes:2
-  local orig_signcolumn = vim.wo.signcolumn
-  vim.wo.signcolumn = "yes:2"
-  vim.wo.number = false
-
   -- Simulate a git gutter sign (like gitsigns) with higher priority
+  local git_priority = 10  -- gitsigns uses priority 6-10
   local git_ns = vim.api.nvim_create_namespace("test_gitsigns")
   vim.api.nvim_buf_set_extmark(bufnr, git_ns, 4, 0, {  -- line 5 (0-indexed: 4)
     sign_text = "+",
     sign_hl_group = "DiffAdd",
-    priority = 10,  -- gitsigns uses priority 6-10
+    priority = git_priority,
   })
 
   -- Add a review comment on the same line (lower priority)
   vim.fn.cursor(5, 1)
   qf.add_comment('ISSUE')
 
-  vim.cmd("redraw!")
+  -- Collect every sign extmark on line 5 across all namespaces. With
+  -- signcolumn=yes:2 Neovim shows up to two signs per line, so both are
+  -- visible as long as no more than two sign extmarks share the line.
+  local sign_marks = vim.api.nvim_buf_get_extmarks(bufnr, -1, { 4, 0 }, { 4, -1 },
+    { details = true, type = 'sign' })
 
-  -- Check screen to see if both signs are visible
-  local screen_chars = ""
-  for col = 1, 6 do
-    screen_chars = screen_chars .. vim.fn.screenstring(5, col)
+  local git_mark, review_mark
+  for _, mark in ipairs(sign_marks) do
+    local details = mark[4]
+    if details.ns_id == git_ns then
+      git_mark = details
+    elseif details.ns_id == utils.get_ns_id() then
+      review_mark = details
+    end
   end
-
-  local has_git_sign = screen_chars:find("%+") ~= nil
-  local has_review_sign = screen_chars:find("!") ~= nil or screen_chars:find("⚠") ~= nil
 
   -- Cleanup
   vim.api.nvim_buf_clear_namespace(bufnr, git_ns, 0, -1)
-  vim.wo.signcolumn = orig_signcolumn
 
-  assert.truthy(has_git_sign, 'git sign visible on screen')
-  assert.truthy(has_review_sign, 'review sign visible on screen')
+  assert.length(sign_marks, 2, 'exactly two signs on line 5')
+  assert.truthy(git_mark, 'git sign extmark placed on line 5')
+  assert.truthy(review_mark, 'review sign extmark placed on line 5')
+  if review_mark then
+    assert.equals(vim.trim(review_mark.sign_text), '!', 'review sign shows issue symbol')
+    assert.truthy(review_mark.priority < git_priority, 'review sign priority is below git sign priority')
+  end
 end)
 
 test_helper.cleanup_test_environment()

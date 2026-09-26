@@ -1,5 +1,5 @@
 -- Test runner for quickfix-review
--- Usage: nvim --headless -c 'lua dofile("test/run.lua")' -c 'qa!'
+-- Usage: scripts/test.sh  (or: nvim --headless --clean -c 'lua dofile("test/run.lua")' -c 'qall')
 
 print('Running quickfix-review tests...')
 print('Working directory:', vim.fn.getcwd())
@@ -10,28 +10,31 @@ print(string.rep('=', 50))
 local total_passed = 0
 local total_failed = 0
 
+-- Run one test file. A file that errors outside assert.run_test (at load time
+-- or top level) counts as a failure, so the suite still exits non-zero.
+local function run_file(path)
+  local ok, result = pcall(dofile, path)
+  if not ok then
+    print(string.format('ERROR: %s failed to run: %s', path, tostring(result)))
+    total_failed = total_failed + 1
+    return
+  end
+  total_passed = total_passed + result.passed
+  total_failed = total_failed + result.failed
+  result.reset()
+end
+
 -- Run utility tests first (no plugin dependency)
-local utils_assert = dofile('test/test_utils.lua')
-total_passed = total_passed + utils_assert.passed
-total_failed = total_failed + utils_assert.failed
-utils_assert.reset()
+run_file('test/test_utils.lua')
 
 -- Run comment tests
-local comments_assert = dofile('test/test_comments.lua')
-total_passed = total_passed + comments_assert.passed
-total_failed = total_failed + comments_assert.failed
-comments_assert.reset()
+run_file('test/test_comments.lua')
 
 -- Run sign tests
-local signs_assert = dofile('test/test_signs.lua')
-total_passed = total_passed + signs_assert.passed
-total_failed = total_failed + signs_assert.failed
-signs_assert.reset()
+run_file('test/test_signs.lua')
 
 -- Run persistence tests
-local persistence_assert = dofile('test/test_persistence.lua')
-total_passed = total_passed + persistence_assert.passed
-total_failed = total_failed + persistence_assert.failed
+run_file('test/test_persistence.lua')
 
 -- Final summary
 print('')

@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-l6ll
 title: Quickfix jump to the current entry aborts with E925 when comments relocate on read
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T08:06:29Z
-updated_at: 2026-09-26T08:06:29Z
+updated_at: 2026-09-26T08:17:15Z
 ---
 
 Follow-ups from dsak (init.lua pending_jump / finish_jump / relocate_buffer).

@@ -120,6 +120,78 @@ assert.run_test('auto_show = false: navigating the review list opens no float', 
   if not ok then error(err, 0) end
 end)
 
+assert.run_test('auto_show = false: reloading the selected file does not move the cursor', function()
+  local qf = require('quickfix-review')
+  local ok, err = pcall(function()
+    qf.setup({ storage_file = test_helper.storage_file, auto_show = false })
+    local file = test_helper.create_test_file('line 1\nline 2\nline 3\nline 4\nline 5\n')
+    vim.cmd('only')
+    qf.clear_review()
+    vim.fn.cursor(1, 1)
+    qf.add_comment('NOTE')
+    vim.fn.cursor(3, 1)
+    qf.add_comment('NOTE')
+    qf.show_list()
+    for _, cmd in ipairs({ 'cc 1', 'cnext' }) do
+      vim.cmd(cmd)
+      vim.api.nvim_exec_autocmds('CursorMoved', {})
+      vim.wait(50, function() return false end)
+    end
+    assert.equals(vim.fn.line('.'), 3, 'cnext moved')
+    -- Two lines inserted above both comments on disk, then reloaded
+    vim.fn.writefile({ 'x', 'y', 'line 1', 'line 2', 'line 3', 'line 4', 'line 5' }, file)
+    vim.cmd('silent edit!')
+    vim.wait(50, function() return false end)
+    assert.equals(vim.fn.line('.'), 3, 'cursor not moved by the plugin')
+  end)
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  vim.fn.setqflist({})
+  qf.clear_review()
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('reloading a file loaded before setup does not move the cursor', function()
+  local qf = require('quickfix-review')
+  local moved = vim.fn.tempname() .. '.txt'
+  local ok, err = pcall(function()
+    test_helper.create_test_file('home 1\nhome 2\n')
+    vim.cmd('only')
+    qf.clear_review()
+    vim.fn.cursor(1, 1)
+    qf.add_comment('NOTE')
+    -- Loaded without the plugin seeing its read, as when the plugin is set
+    -- up lazily or a session is restored before setup()
+    vim.fn.writefile({ 'line 1', 'line 2', 'line 3', 'line 4', 'line 5' }, moved)
+    vim.cmd('noautocmd edit ' .. vim.fn.fnameescape(moved))
+    qf.setup({ storage_file = test_helper.storage_file })
+    vim.fn.cursor(3, 1)
+    qf.add_comment('ISSUE')
+    qf.show_list()
+    local idx
+    for i, item in ipairs(vim.fn.getqflist()) do
+      if item.bufnr == vim.fn.bufnr(moved) then idx = i end
+    end
+    assert.truthy(idx, 'entry for the file')
+    vim.cmd('cc ' .. idx)
+    vim.api.nvim_exec_autocmds('CursorMoved', {})
+    vim.wait(50, function() return false end)
+    assert.equals(vim.fn.line('.'), 3, 'on the entry')
+    -- Two lines inserted above the comment on disk, then reloaded
+    vim.fn.writefile({ 'x', 'y', 'line 1', 'line 2', 'line 3', 'line 4', 'line 5' }, moved)
+    vim.cmd('silent edit!')
+    vim.wait(50, function() return false end)
+    assert.equals(vim.fn.line('.'), 3, 'cursor not moved by the plugin')
+  end)
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  vim.fn.setqflist({})
+  qf.clear_review()
+  test_helper.setup_test_environment()
+  pcall(vim.cmd, 'bwipeout! ' .. vim.fn.fnameescape(moved))
+  vim.fn.delete(moved)
+  if not ok then error(err, 0) end
+end)
+
 -- Put the test configuration back for the files that run after this one
 test_helper.setup_test_environment()
 test_helper.cleanup_test_environment()

@@ -436,6 +436,63 @@ assert.run_test('cnext into a file whose comment relocates on read shows it', fu
   if not ok then error(err, 0) end
 end)
 
+-- Jump to the entry already selected (entry 2, in a file wiped and then
+-- shifted on disk) with `jump`: no E925, and the cursor on the relocated line
+local function jump_to_current_into_moved_file(jump)
+  local path = vim.fn.tempname() .. '-moved.txt'
+  vim.fn.writefile({ 'a', 'b', 'c', 'd', 'e' }, path)
+  local ok, err = pcall(function()
+    qf.clear_review()
+    vim.cmd('only')
+    vim.fn.cursor(1, 1)
+    qf.add_comment('NOTE')
+    local home = vim.api.nvim_get_current_buf()
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    local buf = vim.api.nvim_get_current_buf()
+    vim.fn.cursor(4, 1)
+    qf.add_comment('ISSUE')
+    vim.api.nvim_set_current_buf(home)
+    qf.show_list()
+    navigate('cc 2')
+    assert.equals(selected(), 2, 'entry 2 selected')
+    vim.api.nvim_set_current_buf(home)
+    vim.api.nvim_exec_autocmds('CursorMoved', {})
+    vim.wait(50, function() return false end)
+    assert.length(floats(), 0, 'float closed')
+    vim.cmd('bwipeout! ' .. buf)
+    -- Refill, so the entry names the file again rather than the wiped buffer
+    qf.show_list()
+    assert.equals(selected(), 2, 'entry 2 still selected')
+    -- Two lines inserted above the comment while the file is not loaded
+    vim.fn.writefile({ 'x', 'y', 'a', 'b', 'c', 'd', 'e' }, path)
+    local jumped, jump_err = pcall(jump)
+    assert.truthy(jumped, 'jump succeeded: ' .. tostring(jump_err))
+    vim.wait(100, function() return false end)
+    assert.equals(selected(), 2, 'still on entry 2')
+    assert.equals(vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':p'),
+      vim.fn.fnamemodify(path, ':p'), 'in the moved file')
+    assert.equals(vim.fn.line('.'), 6, 'on the relocated line')
+  end)
+  pcall(reset_nav)
+  pcall(vim.cmd, 'bwipeout! ' .. vim.fn.fnameescape(path))
+  os.remove(path)
+  qf.clear_review()
+  if not ok then error(err, 0) end
+end
+
+assert.run_test('<CR> on the current entry into a file whose comment relocates on read', function()
+  jump_to_current_into_moved_file(function()
+    qf.open_list()
+    assert.equals(vim.bo.buftype, 'quickfix', 'in the list window')
+    assert.equals(vim.fn.line('.'), 2, 'on the current row')
+    navigate('execute "normal \\<CR>"')
+  end)
+end)
+
+assert.run_test(':cc N to the current N into a file whose comment relocates on read', function()
+  jump_to_current_into_moved_file(function() navigate('cc 2') end)
+end)
+
 qf.clear_review()
 test_helper.cleanup_test_environment()
 

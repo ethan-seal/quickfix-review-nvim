@@ -458,12 +458,14 @@ end
 local jump_finishing = false
 local function auto_show_check()
   if jump_finishing then return end
-  if not config.options.auto_show then return end
   if not store.is_current_view() then return end
   if vim.fn.win_gettype() ~= '' or vim.bo.buftype == 'quickfix' then return end
   local info = vim.fn.getqflist({ id = 0, idx = 0 })
   local changed = not last_seen or last_seen.id ~= info.id or last_seen.idx ~= info.idx
+  -- Track the selection even with auto_show off, so a later reload of the
+  -- selected file isn't taken for a pending jump (see pending_jump)
   last_seen = { id = info.id, idx = info.idx }
+  if not config.options.auto_show then return end
   if not changed then return end
   local item = (vim.fn.getqflist({ id = 0, items = 0 }).items or {})[info.idx]
   if not item or item.bufnr ~= vim.api.nvim_get_current_buf()
@@ -848,6 +850,14 @@ end
 -- only redraws a buffer that changed since
 local drawn_at = {}
 
+-- Buffers read from disk since they were created: a BufReadPost for a buffer
+-- not in here is its first read (a jump into an unloaded file), not a reload
+-- (:e!, :checktime). Cleared on wipeout only: a reload unloads the buffer
+-- first, so clearing on BufUnload would make every reload a first read.
+-- setup() seeds it with the buffers already loaded when it runs, whose read
+-- the autocmd never saw.
+local read_once = {}
+
 local function draw_signs(bufnr, name, comments)
   utils.refresh_buffer_signs(bufnr, name, comments)
   drawn_at[bufnr] = vim.api.nvim_buf_get_changedtick(bufnr)
@@ -873,18 +883,18 @@ local function is_file_buffer(bufnr)
     and vim.api.nvim_buf_get_name(bufnr) ~= ''
 end
 
--- The file in `bufnr` was read or reloaded from disk: relocate its comments
--- from its content (never from a diff buffer, which holds an old revision).
--- Positions are kept in memory only; nothing is logged here (anchors are
--- written back only when the file is saved, see write_back).
 -- The review list entry a quickfix jump into `bufnr` is heading for, if one
--- is under way (:cnext/:cc reading the file): the selection is in `bufnr`
--- and auto_show_check hasn't seen it yet
-local function pending_jump(bufnr)
+-- is under way (:cnext/:cc reading the file): the selection is in `bufnr`,
+-- and either auto_show_check hasn't seen it yet, or the file is being read
+-- for the first time (`fresh`: a jump to the entry already selected).
+-- A jump to the selected entry into a buffer that was :bunload-ed but not
+-- wiped is not a first read, so it isn't detected: its cursor stays on the
+-- entry's old line.
+local function pending_jump(bufnr, fresh)
   if not last_seen or not store.is_current_view() then return nil end
   local info = vim.fn.getqflist({ id = 0, idx = 0, items = 0 })
   local item = info.items[info.idx]
-  if info.id ~= last_seen.id or info.idx == last_seen.idx
+  if info.id ~= last_seen.id or (info.idx == last_seen.idx and not fresh)
       or not item or item.bufnr ~= bufnr then
     return nil
   end
@@ -910,21 +920,29 @@ local function finish_jump(bufnr, item, seen)
   pcall(auto_show_check)
 end
 
-local function relocate_buffer(bufnr)
+-- The file in `bufnr` was read or reloaded from disk (`event`): relocate its
+-- comments from its content (never from a diff buffer, which holds an old
+-- revision). Positions are kept in memory only; nothing is logged here
+-- (anchors are written back only when the file is saved, see write_back).
+local function relocate_buffer(bufnr, event)
   if vim.bo[bufnr].buftype ~= '' or utils.is_special_buffer(bufnr) then return end
+  local fresh = event == 'BufReadPost' and not read_once[bufnr]
+  if event == 'BufReadPost' then read_once[bufnr] = true end
   local comments = store.all()
-  if track.relocate_buffer(bufnr, comments) then
-    local item = pending_jump(bufnr)
-    if item then
-      local seen = { id = last_seen.id, idx = last_seen.idx }
-      jump_finishing = true
-      vim.schedule(function() finish_jump(bufnr, item, seen) end)
-    else
-      store.refresh()
-    end
+  local relocated = track.relocate_buffer(bufnr, comments)
+  -- Relocation moves only this buffer's comments: redraw its signs now
+  local name = utils.get_real_filepath(bufnr)
+  if name ~= '' then draw_signs(bufnr, name, comments) end
+  if not relocated then return end
+  local item = pending_jump(bufnr, fresh)
+  if item then
+    local seen = { id = last_seen.id, idx = last_seen.idx }
+    jump_finishing = true
+    vim.schedule(function() finish_jump(bufnr, item, seen) end)
   else
-    local name = utils.get_real_filepath(bufnr)
-    if name ~= '' then draw_signs(bufnr, name, comments) end
+    -- Never refill the list during a read: a quickfix jump may be reading
+    -- the file, and refilling would abort it with E925
+    vim.schedule(function() store.refresh() end)
   end
 end
 
@@ -1063,8 +1081,11 @@ function M.setup(opts)
   -- after changing on disk
   vim.api.nvim_create_autocmd({ 'BufReadPost', 'FileChangedShellPost' }, {
     group = augroup,
-    callback = function(args) relocate_buffer(args.buf) end,
+    callback = function(args) relocate_buffer(args.buf, args.event) end,
   })
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(b) then read_once[b] = true end
+  end
   -- Write the anchors of a saved file's comments back to the log. Only on
   -- a write: unsaved edits never change a stored anchor.
   vim.api.nvim_create_autocmd('BufWritePost', {
@@ -1078,7 +1099,10 @@ function M.setup(opts)
   })
   vim.api.nvim_create_autocmd('BufWipeout', {
     group = augroup,
-    callback = function(args) drawn_at[args.buf] = nil end,
+    callback = function(args)
+      drawn_at[args.buf] = nil
+      read_once[args.buf] = nil
+    end,
   })
 
   if config.options.prompt_on_file_change and not prompt_deprecation_shown then

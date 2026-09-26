@@ -192,7 +192,7 @@ assert.run_test('review rows carry the comment id; export keeps the context', fu
   end
   local config = require('quickfix-review.config')
   local md = require('quickfix-review.export').to_markdown(comments, config.options)
-  assert.truthy(md and md:find('```diff', 1, true), 'export still emits the snippet')
+  assert.truthy(md and md:find('   ```', 1, true), 'export still emits the snippet')
   close_lists()
 end)
 

@@ -7,6 +7,15 @@ local store = require('quickfix-review.store')
 -- Each item is formatted with: index, TYPE, file:line (or file:start-end), text
 M.default_item_format = '%d. **[%s]** `%s` - %s'
 
+-- Code fence language for a captured snippet: 'diff' for a diff hunk (and
+-- legacy contexts with no snippet_source); for buffer lines, the filetype
+-- guessed from the filename, or '' (a plain fence) when unknown
+local function snippet_fence_lang(ctx, filename)
+  if ctx.snippet_source ~= 'buffer' then return 'diff' end
+  local ok, ft = pcall(vim.filetype.match, { filename = filename })
+  return ok and ft or ''
+end
+
 -- Convert comment records (store.all()) to a markdown string
 function M.to_markdown(comments, config)
   if not comments or #comments == 0 then
@@ -61,8 +70,11 @@ function M.to_markdown(comments, config)
         table.insert(lines, string.format('   - commit: `%s`', ctx.commit_short))
       end
       if type(ctx.snippet) == 'table' and #ctx.snippet > 0 then
+        if ctx.buffer_modified then
+          table.insert(lines, '   - (unsaved buffer)')
+        end
         table.insert(lines, '')
-        table.insert(lines, '   ```diff')
+        table.insert(lines, '   ```' .. snippet_fence_lang(ctx, item.filename))
         for _, l in ipairs(ctx.snippet) do
           table.insert(lines, '   ' .. l)
         end

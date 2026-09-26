@@ -103,10 +103,11 @@ function M.capture(file, start_line, end_line, bufnr)
     local head = git(toplevel, { 'rev-parse', 'HEAD' })
     commit = head and head[1] ~= '' and head[1] or nil
 
-    -- The diff is against the file on disk; with unsaved edits its line
-    -- numbers would not match the commented buffer lines.
+    -- The diff is against the file on disk; with unsaved edits, or in a
+    -- diffview/fugitive buffer showing another revision, its line numbers
+    -- would not match the commented buffer lines.
     local rel = repo_relative(toplevel, abs)
-    if rel and not buffer_modified then
+    if rel and not buffer_modified and not utils.is_special_buffer(bufnr) then
       snippet = diff_hunk(toplevel, rel, start_line, 'HEAD~1')
              or diff_hunk(toplevel, rel, start_line, 'HEAD')
     end

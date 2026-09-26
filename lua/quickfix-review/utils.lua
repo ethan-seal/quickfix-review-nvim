@@ -237,7 +237,7 @@ function M.git_toplevel(dir)
 
   local root = false
   local ok, result = pcall(function()
-    return vim.system({ 'git', '-C', query, 'rev-parse', '--show-toplevel' }, { text = true }):wait(1000)
+    return vim.system({ 'git', '-C', query, 'rev-parse', '--show-toplevel' }, { text = true, timeout = 1000 }):wait()
   end)
   if ok and result and result.code == 0 and result.stdout then
     local trimmed = vim.trim(result.stdout)

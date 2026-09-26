@@ -186,4 +186,67 @@ assert.run_test('capture with unsaved edits snippets the buffer lines', function
   assert.contains(ctx.snippet, '   1  inserted', 'unsaved line present')
 end)
 
+-- A repo whose HEAD~1..HEAD diff has a hunk at line 2, and a buffer named
+-- `name(repo)` holding an old revision of file.txt
+local function capture_from_revision_buffer(name)
+  local repo = make_repo({ 'r1', 'r2', 'r3' })
+  write_file(repo .. '/file.txt', { 'r1', 'changed', 'r3' })
+  git(repo, 'commit', '-q', '-am', 'change')
+  local bufnr = vim.api.nvim_create_buf(true, false)
+  vim.api.nvim_buf_set_name(bufnr, name(repo))
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'r1', 'r2', 'r3' })
+  vim.bo[bufnr].modified = false
+  local ok, ctx = pcall(context.capture, repo .. '/file.txt', 2, 2, bufnr)
+  wipe(bufnr)
+  vim.fn.delete(repo, 'rf')
+  assert.truthy(ok, 'capture does not error: ' .. tostring(ctx))
+  assert.equals(ctx.snippet_source, 'buffer', 'buffer snippet, not the working-tree diff')
+  assert.contains(ctx.snippet, '   2  r2', 'snippet is the revision buffer\'s line')
+  assert.truthy(ctx.commit, 'commit still recorded')
+end
+
+assert.run_test('capture from a fugitive revision buffer uses the buffer snippet', function()
+  capture_from_revision_buffer(function(repo)
+    return 'fugitive://' .. repo .. '/.git//0123456789abcdef/file.txt'
+  end)
+end)
+
+assert.run_test('capture from a diffview revision buffer uses the buffer snippet', function()
+  capture_from_revision_buffer(function(repo)
+    return 'diffview://' .. repo .. '/.git/0123456789abcdef/file.txt'
+  end)
+end)
+
+-- export fences
+
+local export = require('quickfix-review.export')
+
+local function export_one(filename, ctx)
+  local md = export.to_markdown(
+    { { filename = filename, lnum = 1, kind = 'note', body = 'b', context = ctx } },
+    { export = { header = '', type_legend = '' } })
+  return vim.split(md, '\n', { plain = true })
+end
+
+assert.run_test('export fences a buffer snippet by filetype, not as diff', function()
+  local lines = export_one('/tmp/x.lua', { snippet_source = 'buffer', snippet = { '   1  local x' } })
+  assert.contains(lines, '   ```lua', 'lua fence')
+  assert.falsy(vim.tbl_contains(lines, '   ```diff'), 'no diff fence')
+  assert.falsy(vim.tbl_contains(lines, '   - (unsaved buffer)'), 'no unsaved marker')
+end)
+
+assert.run_test('export fences a buffer snippet of an unknown type plainly', function()
+  local lines = export_one('/tmp/noext_zzqq', {
+    snippet_source = 'buffer', snippet = { '   1  x' }, buffer_modified = true,
+  })
+  assert.contains(lines, '   ```', 'plain fence')
+  assert.falsy(vim.tbl_contains(lines, '   ```diff'), 'no diff fence')
+  assert.contains(lines, '   - (unsaved buffer)', 'unsaved marker')
+end)
+
+assert.run_test('export fences a diff snippet as diff', function()
+  local lines = export_one('/tmp/x.lua', { snippet_source = 'diff', snippet = { '@@ -1 +1 @@', '+x' } })
+  assert.contains(lines, '   ```diff', 'diff fence')
+end)
+
 return assert

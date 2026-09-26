@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-atv3
 title: 'Context capture: skip diff for diffview/fugitive revision buffers; export labels buffer snippets'
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T06:02:33Z
-updated_at: 2026-09-26T06:02:33Z
+updated_at: 2026-09-26T07:45:20Z
 ---
 
 Follow-ups from 1ig6 review:

@@ -241,7 +241,9 @@ require('quickfix-review').setup({
 
 Signs and continuation signs are auto-generated. The `description` field is shown during type cycling and in the export legend. Types are listed (when cycling, in the summary and in the legend) in the default order issue, suggestion, note, praise, question, insight, followed by any other types sorted by name.
 
-`comment_types` must be a non-empty table; anything else is ignored with a warning and the default types are used.
+`comment_types` must be a non-empty table; anything else is ignored with a warning and the default types are used. A list of names (`comment_types = { 'bug', 'issue' }`) also works: a default type's name gets its default config, any other name a generic one. In `additional_comment_types`, `name = false` removes that type (`additional_comment_types = { praise = false }`).
+
+A keymap value must be a key sequence (a non-empty string) or `false`; any other value (`true`, `''`) warns and leaves that map unset.
 
 ### Export format
 

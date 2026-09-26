@@ -136,6 +136,37 @@ local function fit_sign_text(text)
   return fitted
 end
 
+-- The name -> config entries of a user's comment type table (comment_types
+-- or additional_comment_types, named by `option` in warnings). A list entry
+-- ('bug') or `name = true` is a type with the default config of that name, or
+-- a generic one; `name = false` is kept as false (the caller decides what it
+-- means); anything else is dropped with a warning.
+local function type_entries(types, option)
+  local entries = {}
+  local function bare(name)
+    local default = M.default_comment_types[name:lower()]
+    if default then return vim.deepcopy(default) end
+    return { sign = name:sub(1, 1):upper(), highlight = 'DiagnosticInfo', description = '' }
+  end
+  local keys = vim.tbl_keys(types)
+  table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+  for _, key in ipairs(keys) do
+    local def = types[key]
+    if type(key) == 'number' and type(def) == 'string' and def ~= '' then
+      if entries[def] == nil then entries[def] = bare(def) end
+    elseif type(key) == 'string' and key ~= '' and def == true then
+      entries[key] = bare(key)
+    elseif type(key) == 'string' and key ~= '' and (def == false or type(def) == 'table') then
+      entries[key] = def
+    else
+      vim.notify(string.format(
+        "quickfix-review: %s entry %s = %s is not a type name or a type config table; ignoring it",
+        option, vim.inspect(key), vim.inspect(def)), vim.log.levels.WARN)
+    end
+  end
+  return entries
+end
+
 -- Fill in the options derived from comment_types (the types themselves, their
 -- keymaps, signs and export legend), respecting what the user set explicitly
 local function derive(user_opts)
@@ -165,6 +196,14 @@ local function derive(user_opts)
   -- 3. Merge additional_comment_types on top
   local base_types
   local user_types = user_opts.comment_types
+  if type(user_types) == 'table' then
+    -- false in comment_types just leaves the type out
+    local entries = type_entries(user_types, 'comment_types')
+    user_types = {}
+    for name, def in pairs(entries) do
+      if def ~= false then user_types[name] = def end
+    end
+  end
   if user_types ~= nil and (type(user_types) ~= 'table' or vim.tbl_isempty(user_types)) then
     vim.notify('quickfix-review: comment_types must be a non-empty table; using the default types',
       vim.log.levels.WARN)
@@ -176,8 +215,29 @@ local function derive(user_opts)
     base_types = vim.deepcopy(M.default_comment_types)
   end
 
-  if type(user_opts.additional_comment_types) == 'table' then
-    base_types = vim.tbl_deep_extend('force', base_types, user_opts.additional_comment_types)
+  local additional = user_opts.additional_comment_types
+  if additional ~= nil and type(additional) ~= 'table' then
+    vim.notify('quickfix-review: additional_comment_types must be a table; ignoring it',
+      vim.log.levels.WARN)
+  elseif additional ~= nil then
+    -- false removes a type; a table is merged into the type's config
+    for name, def in pairs(type_entries(additional, 'additional_comment_types')) do
+      if def == false then
+        -- type names are lowercase, so Praise = false removes praise too
+        base_types[name] = nil
+        base_types[name:lower()] = nil
+      elseif type(base_types[name]) == 'table' then
+        base_types[name] = vim.tbl_deep_extend('force', base_types[name], def)
+      else
+        base_types[name] = vim.deepcopy(def)
+      end
+    end
+  end
+
+  if vim.tbl_isempty(base_types) then
+    vim.notify('quickfix-review: no comment types left after additional_comment_types; using the default types',
+      vim.log.levels.WARN)
+    base_types = vim.deepcopy(M.default_comment_types)
   end
 
   -- Type names are stored and looked up lowercased (store, storage, signs),
@@ -248,6 +308,18 @@ local function derive(user_opts)
     -- Only set default keymap if user didn't provide one and it's a default type
     if M.options.keymaps[keymap_key] == nil and M.default_type_keymaps[keymap_key] then
       M.options.keymaps[keymap_key] = M.default_type_keymaps[keymap_key]
+    end
+  end
+
+  -- A keymap is a non-empty lhs string or false; anything else (true, '',
+  -- a number) would make vim.keymap.set throw, so warn and leave it unmapped
+  for _, key in ipairs(vim.tbl_keys(M.options.keymaps)) do
+    local lhs = M.options.keymaps[key]
+    if lhs ~= false and not (type(lhs) == 'string' and lhs ~= '') then
+      vim.notify(string.format(
+        "quickfix-review: keymaps.%s must be a key sequence (a non-empty string) or false; not mapping it",
+        tostring(key)), vim.log.levels.WARN)
+      M.options.keymaps[key] = false
     end
   end
 

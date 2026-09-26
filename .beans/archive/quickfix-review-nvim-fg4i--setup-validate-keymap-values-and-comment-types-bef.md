@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-fg4i
 title: 'Setup: validate keymap values and comment_types before tearing down state'
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T16:43:09Z
-updated_at: 2026-09-26T16:43:09Z
+updated_at: 2026-09-26T17:01:51Z
 ---
 
 From review cycle 3 (details/repros: /tmp/claude-1001/-home-ethans-Programming-quickfix-review-nvim/cfc4ea53-3598-4975-b59b-e35c5f93f346/scratchpad/review3/opus-ui.md).

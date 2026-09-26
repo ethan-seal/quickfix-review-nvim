@@ -592,6 +592,95 @@ assert.run_test('the cycle add map desc does not mention Tab', function()
   if not ok then error(err, 0) end
 end)
 
+assert.run_test('bad keymap values warn, are skipped, and leave the plugin working', function()
+  local ok, err, warns = capture_warnings(function()
+    qf.setup({ storage_file = test_helper.storage_file,
+      keymaps = { reanchor = true, view = '', delete_comment = true, export = 42 } })
+  end)
+  local ok2, err2 = pcall(function()
+    assert.truthy(ok, 'setup does not throw: ' .. tostring(err))
+    assert.length(warns, 4, 'one warning per bad keymap: ' .. vim.inspect(warns))
+    for _, key in ipairs({ 'reanchor', 'view', 'delete_comment', 'export' }) do
+      local named = false
+      for _, w in ipairs(warns) do named = named or w:find('keymaps.' .. key, 1, true) ~= nil end
+      assert.truthy(named, 'warning names keymaps.' .. key)
+    end
+    assert.truthy(#vim.api.nvim_get_autocmds({ group = 'QuickfixReview' }) > 0, 'autocmds made')
+    assert.truthy(vim.api.nvim_get_commands({}).ReviewAddIssue, 'commands made')
+    assert.truthy(vim.fn.maparg('<leader>ci', 'n') ~= '', 'good keymaps still mapped')
+    assert.equals(vim.fn.maparg('<leader>cd', 'n'), '', 'bad delete_comment left unmapped')
+  end)
+  test_helper.setup_test_environment()
+  if not ok2 then error(err2, 0) end
+end)
+
+assert.run_test('a bad keymap on re-run does not tear down the earlier setup', function()
+  local ok, err = pcall(function()
+    local before = #vim.api.nvim_get_autocmds({ group = 'QuickfixReview' })
+    capture_warnings(function()
+      qf.setup({ storage_file = test_helper.storage_file, keymaps = { reanchor = true } })
+    end)
+    assert.equals(#vim.api.nvim_get_autocmds({ group = 'QuickfixReview' }), before, 'autocmds kept')
+  end)
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('list-form comment_types makes working types', function()
+  local config = require('quickfix-review.config')
+  local ok, err, warns = capture_warnings(function()
+    qf.setup({ storage_file = test_helper.storage_file, comment_types = { 'bug', 'issue' } })
+  end)
+  local ok2, err2 = pcall(function()
+    assert.truthy(ok, 'setup does not throw: ' .. tostring(err))
+    assert.length(warns, 0, 'no warnings: ' .. vim.inspect(warns))
+    assert.equals(vim.tbl_count(config.options.comment_types), 2, 'two types')
+    assert.equals(config.options.comment_types.issue.sign, config.default_comment_types.issue.sign,
+      'a default name keeps its default config')
+    assert.truthy(type(config.options.comment_types.bug.sign) == 'string', 'custom name gets a sign')
+    assert.truthy(vim.api.nvim_get_commands({}).ReviewAddBug, ':ReviewAddBug made')
+    local seen = {}
+    for _ = 1, 2 do seen[qf.cycle_next_comment_type()] = true end
+    assert.truthy(seen.bug and seen.issue, 'cycling reaches both types')
+  end)
+  test_helper.setup_test_environment()
+  if not ok2 then error(err2, 0) end
+end)
+
+assert.run_test('additional_comment_types entry = false removes the type without throwing', function()
+  local config = require('quickfix-review.config')
+  local ok, err, warns = capture_warnings(function()
+    qf.setup({ storage_file = test_helper.storage_file,
+      additional_comment_types = { praise = false, Insight = false, nit = nit } })
+  end)
+  local ok2, err2 = pcall(function()
+    assert.truthy(ok, 'setup does not throw: ' .. tostring(err))
+    assert.length(warns, 0, 'no warnings: ' .. vim.inspect(warns))
+    assert.equals(config.options.comment_types.praise, nil, 'praise removed')
+    assert.equals(config.options.comment_types.insight, nil, 'insight removed')
+    assert.truthy(config.options.comment_types.nit, 'nit added')
+    assert.truthy(config.options.comment_types.issue, 'other defaults kept')
+    assert.equals(vim.api.nvim_get_commands({}).ReviewAddPraise, nil, 'no :ReviewAddPraise')
+    assert.equals(vim.fn.maparg('<leader>cp', 'n'), '', 'no praise keymap')
+  end)
+  test_helper.setup_test_environment()
+  if not ok2 then error(err2, 0) end
+end)
+
+assert.run_test('a non-table comment type entry warns and is skipped', function()
+  local config = require('quickfix-review.config')
+  local ok, err, warns = capture_warnings(function()
+    qf.setup({ storage_file = test_helper.storage_file, additional_comment_types = { nit = 'x' } })
+  end)
+  local ok2, err2 = pcall(function()
+    assert.truthy(ok, 'setup does not throw: ' .. tostring(err))
+    assert.length(warns, 1, 'one warning: ' .. vim.inspect(warns))
+    assert.equals(config.options.comment_types.nit, nil, 'nit skipped')
+  end)
+  test_helper.setup_test_environment()
+  if not ok2 then error(err2, 0) end
+end)
+
 test_helper.cleanup_test_environment()
 
 return assert

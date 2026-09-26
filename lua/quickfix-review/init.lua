@@ -1285,10 +1285,12 @@ local prompt_deprecation_shown = false
 
 -- Setup the plugin
 function M.setup(opts)
+  -- Options first: they are validated there, so a bad option cannot throw
+  -- after the old autocmds are gone and leave the plugin half set up
+  config.setup(opts)
+
   -- Clearing the group makes setup() safe to call more than once
   local augroup = vim.api.nvim_create_augroup('QuickfixReview', { clear = true })
-
-  config.setup(opts)
   sync_cycle_state()
   utils.init_signs(config.options)
   setup_keymaps()

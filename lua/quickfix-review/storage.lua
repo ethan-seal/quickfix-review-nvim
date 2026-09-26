@@ -1,6 +1,40 @@
 -- Storage functionality for quickfix-review.nvim
 local M = {}
 
+local uv = vim.uv or vim.loop
+
+-- Replace `path` with `str` so that readers only ever see the old or the new
+-- contents: write a per-process temp file next to it, fsync, then rename it
+-- over `path`. On failure the temp file is removed and `path` is untouched.
+-- Returns: ok (boolean), err (string or nil)
+function M.atomic_write(path, str)
+  local tmp = path .. '.tmp.' .. uv.os_getpid()
+  local fd, err = uv.fs_open(tmp, 'w', 420) -- 0644
+  if not fd then return false, err end
+
+  local function fail(e)
+    if fd then uv.fs_close(fd) end
+    uv.fs_unlink(tmp)
+    return false, e or 'unknown error'
+  end
+
+  local n, werr = uv.fs_write(fd, str, 0)
+  if not n then return fail(werr) end
+  if n ~= #str then return fail(string.format('short write (%d of %d bytes)', n, #str)) end
+
+  local synced, serr = uv.fs_fsync(fd)
+  if not synced then return fail(serr) end
+
+  local closed, cerr = uv.fs_close(fd)
+  fd = nil
+  if not closed then return fail(cerr) end
+
+  local renamed, rerr = uv.fs_rename(tmp, path)
+  if not renamed then return fail(rerr) end
+
+  return true, nil
+end
+
 -- Save comments to file (an empty list is saved too, so clearing persists)
 -- Returns: success (boolean), message (string)
 function M.save(comments, filepath)
@@ -9,13 +43,10 @@ function M.save(comments, filepath)
     return false, 'Failed to encode comments as JSON'
   end
 
-  local f, err = io.open(filepath, 'w')
-  if not f then
-    return false, 'Could not open file for writing: ' .. (err or 'unknown error')
+  local wrote, err = M.atomic_write(filepath, encoded)
+  if not wrote then
+    return false, 'Could not write ' .. filepath .. ': ' .. (err or 'unknown error')
   end
-
-  f:write(encoded)
-  f:close()
 
   return true, string.format('Review saved to %s (%d comments)', filepath, #comments)
 end

@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-09-26T04:31:28Z
-updated_at: 2026-09-26T05:08:55Z
+updated_at: 2026-09-26T05:13:26Z
 blocked_by:
     - quickfix-review-nvim-0edn
 ---
@@ -35,3 +35,6 @@ Grab-bag of small, local fixes from the multi-model review. Items that overlappe
 
 
 - [ ] qf hook (configure_qf_buffer in init.lua): only delete buffer-local `dd`/`<leader>cd` maps that the plugin created (check `desc`/callback via `nvim_buf_get_keymap`), so another plugin's qf maps survive. (from cvl0 review)
+
+- [ ] storage.atomic_write: resolve the target with `fs_realpath` first (a symlinked storage file must keep updating its target) and copy the existing file's mode onto the tmp (`fs_fstat` + `fs_fchmod`) before rename. (from hh4t review)
+- [ ] export.lua:68-72 writes the export with io.open("w") and unchecked write/close: use `storage.atomic_write` and report errors. (from hh4t review)

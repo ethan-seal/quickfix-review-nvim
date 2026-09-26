@@ -17,6 +17,9 @@ local synced = { path = nil, mtime = nil }
 -- Id of the quickfix list showing the review, if one has been published
 local qf_id = nil
 local on_change = function(_) end
+-- path:mtime of the unparseable storage file already reported, so it is
+-- reported once rather than on every read and change
+local bad_file_notified = nil
 
 local function mtime(path)
   local stat = (vim.uv or vim.loop).fs_stat(path)
@@ -60,7 +63,16 @@ local function sync()
   if path == synced.path and current == synced.mtime then return true end
 
   local list, err = storage.load(path)
-  if not list then return false, err end
+  if not list then
+    local key = path .. ':' .. tostring(current)
+    if key ~= bad_file_notified then
+      bad_file_notified = key
+      vim.notify('quickfix-review: ' .. err .. '; the review will not be modified until the file is fixed',
+        vim.log.levels.ERROR)
+    end
+    return false, err
+  end
+  bad_file_notified = nil
 
   comments = {}
   for _, item in ipairs(list) do
@@ -73,26 +85,33 @@ local function sync()
   return true
 end
 
+-- On failure the file is untouched, so `comments` no longer reflects it:
+-- forget the synced version so the next sync() re-reads the file.
 local function write()
   local path = config.options.storage_file
   local ok, message = storage.save(comments, path)
-  if ok then synced = { path = path, mtime = mtime(path) } end
+  if ok then
+    synced = { path = path, mtime = mtime(path) }
+  else
+    synced = { path = nil, mtime = nil }
+  end
   return ok, message
 end
 
 -- Apply `fn` to the latest comments and write the result through to disk.
 -- Refuses to change anything if the storage file can't be read, so an
--- unreadable file is never silently overwritten.
+-- unreadable file is never silently overwritten (sync() reports that once).
+-- If the write fails the change is dropped: `comments` is re-read from the
+-- untouched file, so memory never holds a change that isn't on disk.
 -- Returns: whatever fn returns, or nil if the change was refused
 local function update(fn)
-  local ok, err = sync()
-  if not ok then
-    vim.notify('quickfix-review: ' .. err .. ' (not modifying the review)', vim.log.levels.ERROR)
-    return nil
-  end
+  if not sync() then return nil end
   local result = fn()
   local saved, message = write()
-  if not saved then vim.notify('quickfix-review: ' .. message, vim.log.levels.ERROR) end
+  if not saved then
+    vim.notify('quickfix-review: ' .. message, vim.log.levels.ERROR)
+    sync()
+  end
   refresh_view()
   on_change(comments)
   return result
@@ -105,8 +124,7 @@ end
 
 -- All comments, in creation order. Treat as read-only.
 function M.all()
-  local ok, err = sync()
-  if not ok then vim.notify('quickfix-review: ' .. err, vim.log.levels.WARN) end
+  sync()
   return comments
 end
 

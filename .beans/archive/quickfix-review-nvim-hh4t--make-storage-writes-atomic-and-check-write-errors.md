@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-hh4t
 title: Make storage writes atomic and check write errors
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-09-26T04:31:20Z
-updated_at: 2026-09-26T04:57:49Z
+updated_at: 2026-09-26T05:13:26Z
 blocked_by:
     - quickfix-review-nvim-46kf
 ---

@@ -202,8 +202,12 @@ end
 -- Save review to file. Every change is already saved as it is made; this
 -- only forces a write.
 function M.save_review()
-  local _, message = store.save()
-  print(message)
+  local ok, message = store.save()
+  if ok then
+    print(message)
+  else
+    vim.notify('quickfix-review: ' .. message, vim.log.levels.ERROR)
+  end
 end
 
 -- Re-read the review from file and show it in the quickfix list

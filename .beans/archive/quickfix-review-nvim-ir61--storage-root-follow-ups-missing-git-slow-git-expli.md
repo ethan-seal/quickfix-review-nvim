@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-ir61
 title: 'Storage root follow-ups: missing git, slow git, explicit-mode legacy log import'
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T13:09:31Z
-updated_at: 2026-09-26T13:09:31Z
+updated_at: 2026-09-26T15:11:34Z
 ---
 
 Leftovers accepted in zvy7 (don't spawn further follow-ups from this bean).

@@ -329,6 +329,7 @@ local RETRY_NS = 5e9
 -- (a fallback memoized now is kept no longer than that either)
 function M._set_retry_ns(ns)
   RETRY_NS = ns
+  utils._set_retry_ns(ns)
   if resolved.retry_at then resolved.retry_at = math.min(resolved.retry_at, uv.hrtime() + ns) end
 end
 
@@ -761,22 +762,82 @@ local import_tried = {}
 -- a log is the "already imported" marker. When the legacy file is missing,
 -- its .pre-log.bak is read instead: older versions renamed the legacy file
 -- away when storage_file pointed at it, leaving only that copy.
+-- Comments made while storage_file pointed at the legacy file live in its
+-- log (<legacy>.log.jsonl); that log's reduced state is imported too. It
+-- already holds an import of the legacy file, so while the file is
+-- unchanged since (its sha256 is among the log's imports) the log alone is
+-- the source; otherwise the file's records whose ids the log doesn't know
+-- are added. The legacy log is only read: never locked, synced, rotated or
+-- given a state.json.
 local function import_legacy(loc)
   if import_tried[loc.log] then return end
   import_tried[loc.log] = true
 
-  local legacy = config.legacy_storage_file()
+  local legacy_path = config.legacy_storage_file()
+  local legacy_log = legacy_path .. '.log.jsonl'
+  local log_st = uv.fs_stat(legacy_log)
+  if not log_st or log_st.size == 0 or utils.files_match(legacy_log, loc.log) then legacy_log = nil end
+
+  local legacy = legacy_path
   if vim.fn.filereadable(legacy) == 0 then
     legacy = legacy .. MIGRATED
-    if vim.fn.filereadable(legacy) == 0 then return end
+    if vim.fn.filereadable(legacy) == 0 then legacy = nil end
   end
-  if utils.files_match(legacy, loc.path) or utils.files_match(legacy, loc.log) then return end
+  if legacy and (utils.files_match(legacy, loc.path) or utils.files_match(legacy, loc.log)) then return end
+  if not legacy and not legacy_log then return end
 
-  local raw = read_bytes(legacy)
-  local list, err = storage.parse(raw, legacy)
-  if not list then
-    vim.notify('quickfix-review: not importing from ' .. legacy .. ': ' .. err, vim.log.levels.WARN)
-    return
+  -- The legacy log's state and the shas of the files it imported
+  local state, imports, log_raw_sha
+  if legacy_log then
+    local res, lerr = log.read(legacy_log, 0, 0, {})
+    if res then
+      state, imports = reduce.new(), {}
+      for _, ev in ipairs(res.events) do
+        if ev.op == 'import' and type(ev.source_sha256) == 'string' then imports[ev.source_sha256] = true end
+        if ev.op == 'checkpoint' and type(ev.imports) == 'table' then
+          for _, sha in ipairs(ev.imports) do
+            if type(sha) == 'string' then imports[sha] = true end
+          end
+        end
+        reduce.apply(state, ev)
+      end
+      local bytes = read_bytes(legacy_log)
+      log_raw_sha = bytes and vim.fn.sha256(bytes) or nil
+    else
+      vim.notify('quickfix-review: not importing from ' .. legacy_log .. ': ' .. tostring(lerr), vim.log.levels.WARN)
+      if not legacy then return end
+    end
+  end
+
+  local raw, file_list
+  if legacy then
+    raw = read_bytes(legacy)
+    local err
+    file_list, err = storage.parse(raw, legacy)
+    if not file_list then
+      vim.notify('quickfix-review: not importing from ' .. legacy .. ': ' .. err, vim.log.levels.WARN)
+      if not state then return end
+      legacy, raw = nil, nil
+    end
+  end
+
+  local list, source
+  if state then
+    list, source = vim.list_extend({}, state.comments), legacy_log
+    -- The file changed after the log imported it: add what the log lacks
+    if file_list and not imports[vim.fn.sha256(raw)] then
+      local known = {}
+      for _, c in ipairs(state.comments) do known[c.id] = true end
+      for id, _ in pairs(state.trash) do known[id] = true end
+      for _, r in ipairs(state.removed) do known[r.id] = true end
+      for _, item in ipairs(file_list) do
+        local c = type(item) == 'table' and normalize(item) or nil
+        if not c or not known[c.id] then table.insert(list, c and storage.serialise(c) or item) end
+      end
+      source = legacy_log .. ' and ' .. legacy
+    end
+  else
+    list, source = file_list, legacy
   end
 
   local imported, seen, dropped = {}, {}, 0
@@ -792,22 +853,23 @@ local function import_legacy(loc)
   end
   if dropped > 0 then
     vim.notify(string.format('quickfix-review: not importing %d comment(s) from %s: invalid line number'
-      .. ' or no file name (the file is unchanged)', dropped, legacy), vim.log.levels.WARN)
+      .. ' or no file name (the file is unchanged)', dropped, source), vim.log.levels.WARN)
   end
 
   local got, ok, werr = locked(loc, function()
     local st = uv.fs_stat(loc.log)
     if st and st.size > 0 then return 'exists' end -- another Neovim did it
-    local import = log.event('import', { source_sha256 = vim.fn.sha256(raw), comments = imported })
+    local import = log.event('import', { source_sha256 = raw and vim.fn.sha256(raw) or log_raw_sha,
+      comments = imported })
     return log.append(loc.log, { log.new_header(), import })
   end)
   if not got or not ok then
-    vim.notify('quickfix-review: import from ' .. legacy .. ' failed: ' .. tostring(got and werr or ok),
+    vim.notify('quickfix-review: import from ' .. source .. ' failed: ' .. tostring(got and werr or ok),
       vim.log.levels.ERROR)
     return
   end
   if ok == true and #imported > 0 then
-    vim.notify(string.format('quickfix-review: imported %d comments from %s', #imported, legacy))
+    vim.notify(string.format('quickfix-review: imported %d comments from %s', #imported, source))
   end
 end
 

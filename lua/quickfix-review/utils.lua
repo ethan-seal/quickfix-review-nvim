@@ -239,17 +239,65 @@ end
 -- git toplevel per directory; false marks "not in a git repo" so misses are cached too
 local toplevel_cache = {}
 
--- Whether a finished `git rev-parse` gave a definitive answer: a root (0) or
--- "not a git repo" (128, git's fatal exit). A timeout, a signal, a spawn
--- error or any other exit is transient and must not be cached.
+-- Whether a `git rev-parse` gave a definitive answer: a root (0), "not a git
+-- repo" (128, git's fatal exit), or no git installed at all (the spawn fails
+-- with ENOENT: there is no repo git could name). A timeout, a signal, any
+-- other spawn error or any other exit is transient and must not be cached.
+-- `result` is the finished process when `ok`, else the spawn error.
 local function definitive(ok, result)
-  return ok and result ~= nil and (result.signal or 0) == 0
+  if not ok then
+    -- nvim prefixes the message with its location, so it is not anchored
+    return type(result) == 'string' and result:find('ENOENT', 1, true) ~= nil
+  end
+  return result ~= nil and (result.signal or 0) == 0
     and (result.code == 0 or result.code == 128)
 end
 
+local uv = vim.uv or vim.loop
+-- How long git is left alone in a dir after it gave no definitive answer
+local RETRY_NS = 5e9
+-- Per dir git is run in: the hrtime before which it is not asked again
+local retry_after = {}
+
+-- Test hook: how long git is left alone after a transient failure (a window
+-- open now is kept no longer than that either)
+function M._set_retry_ns(ns)
+  RETRY_NS = ns
+  local limit = uv.hrtime() + ns
+  for dir, at in pairs(retry_after) do
+    retry_after[dir] = math.min(at, limit)
+  end
+end
+
+-- Run `git rev-parse --show-toplevel` in `dir`. After a transient failure
+-- git is not spawned there again until the retry window has passed (a
+-- missing or always-slow git would otherwise cost a spawn, or a 1 s
+-- timeout, on every call).
+-- Returns: root (or false), transient (true when git gave no definitive answer)
+local function rev_parse_toplevel(dir)
+  local after = retry_after[dir]
+  if after and uv.hrtime() < after then return false, true end
+
+  local root = false
+  local ok, result = pcall(function()
+    return vim.system({ 'git', '-C', dir, 'rev-parse', '--show-toplevel' }, { text = true, timeout = 1000 }):wait()
+  end)
+  if ok and result and result.code == 0 and result.stdout then
+    local trimmed = vim.trim(result.stdout)
+    if trimmed ~= '' then root = trimmed end
+  end
+  if not definitive(ok, result) then
+    retry_after[dir] = uv.hrtime() + RETRY_NS
+    return false, true
+  end
+  retry_after[dir] = nil
+  return root, false
+end
+
 -- Return the git toplevel containing `dir` (a file path uses its directory),
--- or nil outside git. Definitive answers are cached per argument for the
--- session; a failed or timed-out git is not, so it is asked again next time.
+-- or nil outside git (or with no git installed). Definitive answers are
+-- cached per argument for the session; a failed or timed-out git is not, and
+-- is asked again once the retry window has passed (see rev_parse_toplevel).
 -- Returns: root (or nil), transient (true when git gave no definitive answer)
 function M.git_toplevel(dir)
   if not dir or dir == '' then return nil, false end
@@ -261,16 +309,8 @@ function M.git_toplevel(dir)
     query = vim.fn.fnamemodify(query, ':h')
   end
 
-  local root = false
-  local ok, result = pcall(function()
-    return vim.system({ 'git', '-C', query, 'rev-parse', '--show-toplevel' }, { text = true, timeout = 1000 }):wait()
-  end)
-  if ok and result and result.code == 0 and result.stdout then
-    local trimmed = vim.trim(result.stdout)
-    if trimmed ~= '' then root = trimmed end
-  end
-
-  if not definitive(ok, result) then return nil, true end
+  local root, transient = rev_parse_toplevel(query)
+  if transient then return nil, true end
   toplevel_cache[dir] = root
   return root or nil, false
 end
@@ -316,14 +356,7 @@ local function worktree_of(gitdir)
     end
   elseif vim.fn.isdirectory(gitdir) == 1 then
     -- Submodule (core.worktree set in its git dir)
-    local ok, result = pcall(function()
-      return vim.system({ 'git', '-C', gitdir, 'rev-parse', '--show-toplevel' }, { text = true, timeout = 1000 }):wait()
-    end)
-    if ok and result and result.code == 0 and result.stdout then
-      local trimmed = vim.trim(result.stdout)
-      if trimmed ~= '' then tree = trimmed end
-    end
-    transient = not definitive(ok, result)
+    tree, transient = rev_parse_toplevel(gitdir)
   end
   if not tree then
     -- Last resort: the directory holding the first .git

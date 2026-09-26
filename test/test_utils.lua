@@ -124,6 +124,7 @@ assert.run_test('git_toplevel does not cache a failed or timed-out git', functio
     assert.equals(root, nil, 'no root while git fails')
     assert.equals(transient, true, 'reported as transient')
     git.fail = false
+    utils._set_retry_ns(0)
     root, transient = utils.git_toplevel(sub)
     assert.equals(root, repo_root, 'asked again once git answers')
     assert.equals(transient, false, 'a definitive answer')
@@ -131,6 +132,71 @@ assert.run_test('git_toplevel does not cache a failed or timed-out git', functio
     assert.equals(utils.git_toplevel(sub), repo_root, 'cached')
     assert.equals(git.calls, calls, 'a cached root spawns no git')
   end)
+  utils._set_retry_ns(5e9)
+end)
+
+assert.run_test('git_toplevel leaves an always-slow git alone within the retry window', function()
+  local sub = repo_root .. '/lua'
+  with_counted_git(function(git)
+    git.fail = true
+    local root, transient = utils.git_toplevel(sub)
+    assert.equals(root, nil, 'no root while git times out')
+    assert.equals(transient, true, 'reported as transient')
+    root, transient = utils.git_toplevel(sub)
+    assert.equals(root, nil, 'still no root')
+    assert.equals(transient, true, 'still transient (not "no repo")')
+    assert.equals(git.calls, 1, 'git spawned once within the window')
+    utils._set_retry_ns(0)
+    git.fail = false
+    root, transient = utils.git_toplevel(sub)
+    assert.equals(root, repo_root, 'asked again after the window')
+    assert.equals(transient, false, 'a definitive answer')
+    assert.equals(git.calls, 2, 'one more spawn')
+  end)
+  utils._set_retry_ns(5e9)
+end)
+
+-- vim.system replaced by one that counts calls and throws `msg` like a
+-- failed spawn (error() at level 1, so with a location prefix, as nvim does)
+local function with_throwing_git(msg, fn)
+  local original = vim.system
+  local state = { calls = 0 }
+  vim.system = function()
+    state.calls = state.calls + 1
+    error(msg)
+  end
+  local ok, err = pcall(fn, state)
+  vim.system = original
+  if not ok then error(err, 0) end
+end
+
+assert.run_test('git_toplevel treats a missing git (ENOENT) as "no repo" and caches it', function()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, 'p')
+  with_throwing_git("ENOENT: no such file or directory (cmd): 'git'", function(git)
+    local root, transient = utils.git_toplevel(dir)
+    assert.equals(root, nil, 'no toplevel without git')
+    assert.equals(transient, false, 'a definitive answer')
+    assert.equals(git.calls, 1, 'git spawned once')
+    utils.git_toplevel(dir)
+    assert.equals(git.calls, 1, 'not spawned again')
+  end)
+  vim.fn.delete(dir, 'rf')
+end)
+
+assert.run_test('git_toplevel treats another spawn error as transient', function()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, 'p')
+  with_throwing_git('EMFILE: too many open files', function(git)
+    local root, transient = utils.git_toplevel(dir)
+    assert.equals(root, nil, 'no toplevel')
+    assert.equals(transient, true, 'transient')
+    utils._set_retry_ns(0)
+    utils.git_toplevel(dir)
+    assert.equals(git.calls, 2, 'asked again after the window')
+  end)
+  utils._set_retry_ns(5e9)
+  vim.fn.delete(dir, 'rf')
 end)
 
 assert.run_test('git_toplevel caches "not a git repo" without a transient flag', function()
@@ -243,6 +309,22 @@ do
     vim.system = orig
     assert.truthy(ok, tostring(err))
     assert.equals(calls, 0, 'no git call on a repeat resolution')
+  end)
+
+  assert.run_test('get_real_filepath leaves an always-slow submodule git alone within the retry window', function()
+    assert.truthy(ok_setup, 'repo setup: ' .. tostring(setup_err))
+    -- A git dir not resolved yet, so its work tree is not cached
+    local gitdir = main .. '/.git/modules/slow'
+    vim.fn.mkdir(gitdir, 'p')
+    local name = 'fugitive://' .. gitdir .. '//0/file.txt'
+    with_counted_git(function(git)
+      git.fail = true
+      local ok, err = pcall(real_path_for_name, name)
+      assert.truthy(ok, tostring(err))
+      ok, err = pcall(real_path_for_name, name)
+      assert.truthy(ok, tostring(err))
+      assert.equals(git.calls, 1, 'git spawned once within the window')
+    end)
   end)
 
   assert.run_test('get_real_filepath leaves fugitive summary and commit names unresolved', function()

@@ -1164,6 +1164,35 @@ assert.run_test('a state.json without `removed` (older cache) is replayed from t
   assert.equals(table.concat(store.last_removal().ids, ','), target, 'same after a cached restart')
 end)
 
+assert.run_test('a state.json whose offset lands mid-line is rejected and the log replayed', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('ISSUE')
+  vim.fn.cursor(3, 1)
+  qf.add_comment('NOTE')
+  qf = restart() -- writes the cache
+  local doc = vim.json.decode(read_bytes(test_helper.state_path()))
+  local size = vim.uv.fs_stat(log_file).size
+  assert.equals(doc.offset, size, 'the cache covers the whole log')
+  -- Mid-line (the byte before it is not a \n), and a state that would show
+  -- nothing if it were used
+  doc.offset = size - 1
+  doc.state.comments = {}
+  local fh = io.open(test_helper.state_path(), 'wb')
+  fh:write(vim.json.encode(doc))
+  fh:close()
+  local calls = capture_notify(function()
+    qf = restart(nil, { no_flush = true })
+    require('quickfix-review.store').all()
+  end)
+  local list = require('quickfix-review.store').all()
+  assert.length(list, 2, 'both comments, from a full replay')
+  local want = vim.tbl_map(function(c) return c.id end, saved())
+  local got = vim.tbl_map(function(c) return c.id end, list)
+  assert.equals(table.concat(got, ','), table.concat(want, ','), 'the log\'s comments')
+  assert.falsy(any_mentions(calls, 'unreadable line'), 'no unreadable-line warning')
+end)
+
 assert.run_test('history of one comment shows add, update, delete in order', function()
   reset()
   vim.fn.cursor(2, 1)

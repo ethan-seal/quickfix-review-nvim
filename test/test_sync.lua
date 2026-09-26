@@ -113,6 +113,26 @@ assert.run_test('dd on a comment another Neovim deleted is a no-op', function()
   reset()
 end)
 
+assert.run_test(':ReviewEdit on a comment another Neovim deleted says so and logs nothing', function()
+  reset()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('NOTE')
+  local id = qf.comments()[1].id
+  local original = vim.ui.input
+  -- Deleted elsewhere while the prompt is open
+  vim.ui.input = function(_, on_confirm)
+    other(string.format('assert(store.remove(%q) == 1)', id))
+    on_confirm('too late')
+  end
+  local ok, printed, notified = pcall(capture, function() qf.edit_comment() end)
+  vim.ui.input = original
+  if not ok then error(printed, 0) end
+  assert.truthy(vim.tbl_contains(printed, 'Comment no longer exists'), 'says so: ' .. vim.inspect(printed))
+  assert.length(notified, 0, 'no error or warning')
+  assert.length(test_helper.log_ops(log_file, 'update'), 0, 'no update logged')
+  reset()
+end)
+
 assert.run_test(':ReviewDelete on a comment another Neovim deleted is a no-op', function()
   reset()
   vim.fn.cursor(2, 1)

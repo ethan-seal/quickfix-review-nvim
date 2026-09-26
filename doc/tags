@@ -4,6 +4,7 @@
 :ReviewAddSuggestion	quickfix-review.txt	/*:ReviewAddSuggestion*
 :ReviewClear	quickfix-review.txt	/*:ReviewClear*
 :ReviewDelete	quickfix-review.txt	/*:ReviewDelete*
+:ReviewEdit	quickfix-review.txt	/*:ReviewEdit*
 :ReviewExport	quickfix-review.txt	/*:ReviewExport*
 :ReviewGoto	quickfix-review.txt	/*:ReviewGoto*
 :ReviewHistory	quickfix-review.txt	/*:ReviewHistory*
@@ -42,6 +43,7 @@ quickfix-review.comments()	quickfix-review.txt	/*quickfix-review.comments()*
 quickfix-review.cycle_next_comment_type()	quickfix-review.txt	/*quickfix-review.cycle_next_comment_type()*
 quickfix-review.cycle_previous_comment_type()	quickfix-review.txt	/*quickfix-review.cycle_previous_comment_type()*
 quickfix-review.delete_comment()	quickfix-review.txt	/*quickfix-review.delete_comment()*
+quickfix-review.edit_comment()	quickfix-review.txt	/*quickfix-review.edit_comment()*
 quickfix-review.export_review()	quickfix-review.txt	/*quickfix-review.export_review()*
 quickfix-review.goto_real_file()	quickfix-review.txt	/*quickfix-review.goto_real_file()*
 quickfix-review.jump_comment()	quickfix-review.txt	/*quickfix-review.jump_comment()*

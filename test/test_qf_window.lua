@@ -155,6 +155,35 @@ assert.run_test('dd in the review list deletes the comment on that row', functio
   close_lists()
 end)
 
+assert.run_test("edit from the review list edits the row's comment", function()
+  add_two_comments()
+  qf.open_list()
+  assert.equals(vim.fn.win_gettype(), 'quickfix', 'cursor in the quickfix window')
+  vim.fn.cursor(2, 1)
+  local id = vim.fn.getqflist()[2].user_data.id
+
+  local original = vim.ui.input
+  local default
+  vim.ui.input = function(opts, on_confirm)
+    default = opts.default
+    on_confirm('Edited from list')
+  end
+  local ok, err = pcall(qf.edit_comment)
+  vim.ui.input = original
+  if not ok then error(err, 0) end
+
+  assert.equals(default, 'Test comment', 'prompt prefilled with the row body')
+  local by_line = {}
+  for _, c in ipairs(qf.comments()) do by_line[c.lnum] = c end
+  assert.equals(by_line[3].body, 'Edited from list', 'the line 3 comment was edited')
+  assert.equals(by_line[3].id, id, 'same id')
+  assert.equals(by_line[1].body, 'Test comment', 'the line 1 comment is unchanged')
+  local row = vim.fn.getqflist()[2]
+  assert.equals(row.user_data.id, id, 'row keeps its comment')
+  assert.truthy(row.text:find('Edited from list', 1, true), 'row text updated')
+  close_lists()
+end)
+
 assert.run_test('dd deletes by id after another Neovim reorders the review', function()
   add_two_comments()
   qf.open_list()

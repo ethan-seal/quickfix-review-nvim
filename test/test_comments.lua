@@ -680,6 +680,122 @@ assert.run_test('a snapshot that cannot be saved warns and still adds the commen
   qf.clear_review()
 end)
 
+-- Run fn with vim.ui.input answering `answer` (or calling answer(opts) when
+-- it's a function); returns the opts of every prompt shown
+local function with_input(answer, fn)
+  local prompts = {}
+  local original = vim.ui.input
+  vim.ui.input = function(opts, on_confirm)
+    table.insert(prompts, opts)
+    if type(answer) == 'function' then answer = answer(opts) end
+    on_confirm(answer)
+  end
+  local ok, err = pcall(fn)
+  vim.ui.input = original
+  if not ok then error(err, 0) end
+  return prompts
+end
+
+local function updates()
+  return test_helper.log_ops(test_helper.log_path(), 'update')
+end
+
+assert.run_test('edit saves the new body; id and anchor unchanged', function()
+  qf.clear_review()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local before = vim.deepcopy(qf.comments()[1])
+  local n = #updates()
+
+  local prompts = with_input('New body', function() qf.edit_comment() end)
+  assert.length(prompts, 1, 'one prompt')
+  assert.equals(prompts[1].default, 'Test comment', 'prompt prefilled with the body')
+
+  local c = qf.comments()[1]
+  assert.equals(c.body, 'New body', 'body changed')
+  assert.equals(c.id, before.id, 'id unchanged')
+  assert.equals(c.kind, before.kind, 'kind unchanged')
+  assert.equals(c.lnum, before.lnum, 'lnum unchanged')
+  assert.equals(c.anchor.sha, before.anchor.sha, 'anchor unchanged')
+  qf.show_list()
+  local row = vim.fn.getqflist()[1]
+  assert.truthy(row and row.text:find('New body', 1, true), 'quickfix text updated')
+
+  local ups = updates()
+  assert.equals(#ups, n + 1, 'one update logged')
+  assert.equals(ups[#ups].id, before.id, 'update names the comment')
+  assert.equals(ups[#ups].set.body, 'New body', 'update sets the body')
+  assert.equals(ups[#ups].prev.body, 'Test comment', 'update keeps the old body')
+  assert.equals(vim.tbl_count(ups[#ups].set), 1, 'update sets only the body')
+end)
+
+assert.run_test('cancelled or empty edit logs nothing', function()
+  qf.clear_review()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local n = #updates()
+  for _, answer in ipairs({ vim.NIL, '' }) do
+    with_input(answer ~= vim.NIL and answer or nil, function() qf.edit_comment() end)
+    assert.equals(qf.comments()[1].body, 'Test comment', 'body unchanged')
+    assert.equals(#updates(), n, 'no update logged')
+  end
+end)
+
+assert.run_test('edit to the same body logs nothing', function()
+  qf.clear_review()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local n = #updates()
+  with_input(function(opts) return opts.default end, function() qf.edit_comment() end)
+  assert.equals(#updates(), n, 'no update logged')
+end)
+
+assert.run_test('edit on the middle line of a range comment', function()
+  qf.clear_review()
+  qf.add_comment('ISSUE', { 2, 6 })
+  vim.fn.cursor(4, 1)
+  with_input('Ranged', function() qf.edit_comment() end)
+  assert.equals(qf.comments()[1].body, 'Ranged', 'range comment edited')
+end)
+
+assert.run_test('edit on a line with no comment prompts and logs nothing', function()
+  qf.clear_review()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local n = #updates()
+  vim.fn.cursor(8, 1)
+  local prompts
+  local printed = capture_print(function()
+    prompts = with_input('Nope', function() qf.edit_comment() end)
+  end)
+  assert.length(prompts, 0, 'no prompt')
+  assert.equals(printed[1], 'No comment on this line', 'says so')
+  assert.equals(#updates(), n, 'no update logged')
+end)
+
+assert.run_test('edit with overlapping comments edits only the chosen one', function()
+  qf.clear_review()
+  qf.add_comment('ISSUE', { 2, 6 })
+  vim.fn.cursor(4, 1)
+  qf.add_comment('NOTE')
+  local original = vim.ui.select
+  local offered
+  vim.ui.select = function(items, opts, on_choice)
+    offered = vim.tbl_map(opts.format_item, items)
+    on_choice(items[2])
+  end
+  local ok, err = pcall(with_input, 'Chosen', function() qf.edit_comment() end)
+  vim.ui.select = original
+  if not ok then error(err, 0) end
+
+  assert.length(offered, 2, 'both comments offered')
+  assert.truthy(offered[1]:find('ISSUE', 1, true), 'range comment first (starts earlier)')
+  local by_kind = {}
+  for _, c in ipairs(qf.comments()) do by_kind[c.kind] = c.body end
+  assert.equals(by_kind.note, 'Chosen', 'chosen comment edited')
+  assert.equals(by_kind.issue, 'Test comment', 'other comment unchanged')
+end)
+
 test_helper.cleanup_test_environment()
 
 return assert

@@ -81,6 +81,7 @@ M.defaults = {
     prev_comment = '[r',
     goto_real_file = '<leader>cg',
     view = '<leader>cv',
+    edit = '<leader>cm',  -- Edit (modify) the comment on the current line
     reanchor = false,  -- Accept an outdated comment's new position (:ReviewReanchor)
   },
 }

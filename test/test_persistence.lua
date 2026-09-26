@@ -335,14 +335,21 @@ assert.run_test('a failed log append is reported as a failure by every change', 
   log.append = function() return false, 'short write (0 of 10 bytes)' end
 
   local ok, err = pcall(function()
-    local added, removed, updated, cleared, printed
+    local added, removed, updated, edited, cleared, printed
     local calls = capture_notify(function()
       added = store.add({ filename = test_file, kind = 'note', body = 'direct', lnum = 4, end_lnum = 4 })
       local c = qf.comments()[1]
       updated = store.update({ { id = c.id, anchor = { sha = string.rep('a', 64), lnum = 5, end_lnum = 5 } } })
+      edited = store.edit(c.id, 'not saved')
       cleared = store.clear()
       removed = store.remove(c.id)
       printed = capture_print(function()
+        vim.fn.cursor(2, 1)
+        local original_input = vim.ui.input
+        vim.ui.input = function(_, on_confirm) on_confirm('edited body') end
+        local eok, eerr = pcall(qf.edit_comment)
+        vim.ui.input = original_input
+        if not eok then error(eerr, 0) end
         vim.fn.cursor(4, 1)
         qf.add_comment('NOTE')
         qf.delete_comment({ 2, 2 })
@@ -351,6 +358,10 @@ assert.run_test('a failed log append is reported as a failure by every change', 
 
     assert.equals(added, false, 'add returns false')
     assert.equals(updated, nil, 'update returns nil')
+    assert.equals(edited, nil, 'edit returns nil')
+    assert.falsy(any_mentions(printed, 'edited'), 'no "edited" message: ' .. vim.inspect(printed))
+    assert.truthy(any_mentions(calls, 'the comment was not edited'), 'edit reports the failure')
+    assert.equals(qf.comments()[1].body, 'Test comment', 'body unchanged')
     assert.equals(cleared, nil, 'clear returns nil')
     assert.equals(removed, nil, 'remove returns nil')
     assert.falsy(any_mentions(printed, 'added'), 'no "added" message: ' .. vim.inspect(printed))
@@ -848,16 +859,13 @@ assert.run_test('history of one comment shows add, update, delete in order', fun
   local id = qf.comments()[1].id
   vim.fn.cursor(4, 1)
   qf.add_comment('NOTE') -- another comment, not in this history
-  local log = require('quickfix-review.log')
-  assert.truthy(log.append(log_file, {
-    log.event('update', { id = id, set = { body = 'new' }, prev = { body = 'old' } }),
-  }), 'update appended')
+  assert.equals(require('quickfix-review.store').edit(id, 'new'), 'edited', 'body edited')
   qf.delete_comment({ 2, 2 })
   local rows = qf.history_rows(id)
   local ops = {}
   for i, r in ipairs(rows) do ops[i] = r.op end
   assert.equals(table.concat(ops, ','), 'add,update,delete', 'ops in order')
-  assert.truthy(rows[2].text:find('body: old -> new', 1, true), 'update shows prev -> set: ' .. rows[2].text)
+  assert.truthy(rows[2].text:find('body: Test comment -> new', 1, true), 'update shows prev -> set: ' .. rows[2].text)
   assert.equals(rows[1].kind, 'issue', 'kind shown')
   assert.truthy(rows[1].text:find('test_file.txt:2', 1, true), 'file:line shown: ' .. rows[1].text)
   assert.truthy(rows[1].text:find(id, 1, true), 'id shown')

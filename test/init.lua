@@ -110,6 +110,7 @@ function M.setup_test_environment()
       prev_comment = false,
       goto_real_file = false,
       view = false,
+      edit = false,
     }
   })
 

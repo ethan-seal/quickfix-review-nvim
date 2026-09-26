@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-qb76
 title: Edit an existing comment's text
-status: todo
+status: completed
 type: feature
 priority: normal
 created_at: 2026-09-26T04:57:59Z
-updated_at: 2026-09-26T04:57:59Z
+updated_at: 2026-09-26T10:11:20Z
 blocked_by:
     - quickfix-review-nvim-0scv
 ---

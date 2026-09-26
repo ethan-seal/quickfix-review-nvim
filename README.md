@@ -138,6 +138,7 @@ require('quickfix-review').setup({
 
     delete_comment = '<leader>cd',
     view = '<leader>cv',
+    edit = '<leader>cm',  -- Edit the comment at cursor (or on the quickfix row)
     export = '<leader>ce',
     clear = '<leader>cc',
     summary = '<leader>cS',
@@ -256,6 +257,7 @@ A pattern that doesn't accept those four values falls back to the default with a
 | `:ReviewAddPraise` | Add a PRAISE comment |
 | `:ReviewDelete` | Delete comment at cursor |
 | `:ReviewView` | View comment at cursor |
+| `:ReviewEdit` | Edit the text of the comment at cursor, or of the row under the cursor in the review's quickfix window (single line; the change shows in `:ReviewHistory`) |
 | `:ReviewExport` | Export to markdown and clipboard |
 | `:ReviewClear` | Clear all comments (asks first; `:ReviewClear!` doesn't) |
 | `:ReviewTrash` | List deleted and cleared comments, newest first, in a quickfix list titled "Review trash" |

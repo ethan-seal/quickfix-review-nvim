@@ -573,8 +573,9 @@ local function wrap_line(line, width)
   return out
 end
 
--- Show every comment whose range covers the current line, in line order
-function M.view_comment()
+-- Every comment whose range (as shown in the current buffer) covers the
+-- cursor line, sorted by start line
+local function comments_on_line()
   local file = utils.get_real_filepath()
   local line = vim.fn.line('.')
   local comments = {}
@@ -588,6 +589,12 @@ function M.view_comment()
     end
   end
   table.sort(comments, function(a, b) return start_of[a] < start_of[b] end)
+  return comments
+end
+
+-- Show every comment whose range covers the current line, in line order
+function M.view_comment()
+  local comments = comments_on_line()
 
   if #comments == 0 then
     print('No comment on this line')
@@ -822,6 +829,10 @@ local function setup_keymaps()
     vim.keymap.set('n', keymaps.view, M.view_comment,
       { desc = 'View comment on current line' })
   end
+  if keymaps.edit then
+    vim.keymap.set('n', keymaps.edit, M.edit_comment,
+      { desc = 'Edit review comment' })
+  end
 
   if keymaps.reanchor then
     vim.keymap.set('n', keymaps.reanchor, M.reanchor,
@@ -851,6 +862,67 @@ function M.delete_comment_from_qf()
       vim.log.levels.WARN)
   elseif removed == 0 then
     print('Comment no longer exists')
+  end
+end
+
+-- Ask for a new body for the comment with this id, prefilled with its current
+-- one, and save it. A cancelled or empty input changes nothing.
+local function prompt_edit(id, old)
+  vim.ui.input({ prompt = 'Edit comment: ', default = old or '' }, function(input)
+    if input == nil or input == '' then return end
+    local result = store.edit(id, input)
+    if result == nil then
+      vim.notify('quickfix-review: the review could not be changed; the comment was not edited',
+        vim.log.levels.WARN)
+    elseif result == 'missing' then
+      print('Comment no longer exists')
+    elseif result == 'edited' then
+      print('Comment edited')
+    end
+  end)
+end
+
+-- Edit the text of a comment: the one on the row under the cursor in the
+-- review's quickfix window, otherwise the one covering the cursor line (a
+-- choice is offered when several do). Ids and bodies are taken before any
+-- prompt, since vim.ui prompts may return after the review has changed.
+function M.edit_comment()
+  if vim.fn.win_gettype() == 'quickfix' then
+    if not store.is_current_view() then
+      print('This quickfix list is not the review')
+      return
+    end
+    -- Read the row before any store call: one may re-render the rows
+    local row = vim.fn.getqflist()[vim.fn.line('.')]
+    local id = row and type(row.user_data) == 'table' and row.user_data.id
+    if not id then
+      print('No comment selected in quickfix list')
+      return
+    end
+    local c = store.get(id)
+    if not c then
+      print('Comment no longer exists')
+      return
+    end
+    prompt_edit(id, c.body)
+    return
+  end
+
+  local matches = {}
+  for _, c in ipairs(comments_on_line()) do
+    table.insert(matches, { id = c.id, body = c.body, headline = store.headline(c) })
+  end
+  if #matches == 0 then
+    print('No comment on this line')
+  elseif #matches == 1 then
+    prompt_edit(matches[1].id, matches[1].body)
+  else
+    vim.ui.select(matches, {
+      prompt = 'Edit which comment?',
+      format_item = function(m) return m.headline end,
+    }, function(m)
+      if m then prompt_edit(m.id, m.body) end
+    end)
   end
 end
 

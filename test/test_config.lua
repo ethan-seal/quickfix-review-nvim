@@ -86,6 +86,14 @@ assert.run_test('options hold the defaults before setup()', function()
   assert.truthy(fresh.options.signs.issue, 'signs derived')
   assert.matches(fresh.options.export.type_legend, '^Comment types: ISSUE', 'legend derived')
   assert.equals(fresh.options.keymaps.add_issue, '<leader>ci', 'type keymaps derived')
+  assert.equals(fresh.options.keymaps.edit, '<leader>cm', 'edit keymap')
+  local lhs_of = {}
+  for name, lhs in pairs(fresh.options.keymaps) do
+    if lhs then
+      assert.equals(lhs_of[lhs], nil, 'default keymaps ' .. tostring(lhs_of[lhs]) .. ' and ' .. name .. ' share ' .. lhs)
+      lhs_of[lhs] = name
+    end
+  end
   assert.equals(fresh.options.storage_file, nil, 'no storage_file by default')
   assert.equals(fresh.options.storage_dir, nil, 'default storage_dir')
   assert.equals(fresh.options.auto_show, true, 'auto_show on by default')

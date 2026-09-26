@@ -108,6 +108,7 @@ options are optional; defaults are shown below.
 
         delete_comment = '<leader>cd',
         view = '<leader>cv',
+        edit = '<leader>cm',
         export = '<leader>ce',
         clear = '<leader>cc',
         summary = '<leader>cS',
@@ -397,6 +398,19 @@ press `dd` to delete the comment under cursor.
                                                              *:ReviewView*
 :ReviewView             View comment at the current line.
 
+                                                             *:ReviewEdit*
+:ReviewEdit             Edit the text of the comment at the current line,
+                        with the input prefilled with its current text.
+                        If several comments cover the line, you pick one
+                        first. In the review's quickfix window, edits the
+                        comment on the row under the cursor. Its id, kind
+                        and position are unchanged. Comment text is a
+                        single line. Cancelling (or an empty input)
+                        changes nothing. The edit is logged as one
+                        `update` event, shown by |:ReviewHistory| with the
+                        old and new text; it is not undone by
+                        |:ReviewRestore|.
+
                                                            *:ReviewExport*
 :ReviewExport           Export all comments to markdown format.
                         Copies to clipboard and optionally writes to file.
@@ -477,6 +491,7 @@ Default keymaps (normal and visual mode where applicable):
   `-`             Cycle to previous comment type
   `<leader>cd`    Delete comment at cursor/selection
   `<leader>cv`    View comment at cursor
+  `<leader>cm`    Edit comment at cursor
   `<leader>ce`    Export review to markdown
   `<leader>cc`    Clear all comments
   `<leader>cS`    Show review summary
@@ -492,6 +507,7 @@ Default keymaps (normal and visual mode where applicable):
 Quickfix window keymaps:
   `dd`            Delete comment under cursor
   `<leader>cd`    Delete comment under cursor
+  `<leader>cm`    Edit comment under cursor (the global `keymaps.edit`)
 
 All keymaps can be customized or disabled via configuration.
 
@@ -531,6 +547,10 @@ require('quickfix-review').delete_comment({range})
 
 require('quickfix-review').view_comment()           *quickfix-review.view_comment()*
     View the comment at the current line.
+
+require('quickfix-review').edit_comment()           *quickfix-review.edit_comment()*
+    Edit the text of the comment at the current line, or of the row under
+    the cursor in the review's quickfix window. See |:ReviewEdit|.
 
 require('quickfix-review').export_review()         *quickfix-review.export_review()*
     Export all comments to markdown and clipboard.

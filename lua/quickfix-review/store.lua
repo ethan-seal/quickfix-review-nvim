@@ -893,6 +893,22 @@ function M.update(changes)
   end)
 end
 
+-- Change a comment's text: one update event setting its body, with the
+-- previous body (as shown, so a legacy record's `text`) in `prev`. Nothing is
+-- logged when the comment is gone or the body is unchanged.
+-- Returns: 'edited', 'unchanged', 'missing' (no live comment with this id),
+-- or nil if the body isn't a non-empty string or the change was refused
+function M.edit(id, body)
+  if type(body) ~= 'string' or body == '' then return nil end
+  return mutate(function()
+    local r = reduce.get(reduced, id)
+    local c = r and view_of(r)
+    if not c then return {}, 'missing' end
+    if c.body == body then return {}, 'unchanged' end
+    return { log.event('update', { id = id, set = { body = body }, prev = { body = c.body } }) }, 'edited'
+  end)
+end
+
 -- Remove every comment for which pred(comment) is true: one delete event,
 -- holding the comment, per match
 -- Returns: number removed, or nil if the change was refused (unreadable file)

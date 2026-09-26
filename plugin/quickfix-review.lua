@@ -75,6 +75,10 @@ vim.api.nvim_create_user_command('ReviewView', function()
   require('quickfix-review').view_comment()
 end, { desc = 'View comment on current line' })
 
+vim.api.nvim_create_user_command('ReviewEdit', function()
+  require('quickfix-review').edit_comment()
+end, { desc = 'Edit comment at current line' })
+
 vim.api.nvim_create_user_command('ReviewDelete', function()
   require('quickfix-review').delete_comment()
 end, { desc = 'Delete comment at current line' })

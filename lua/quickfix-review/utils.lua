@@ -349,10 +349,13 @@ local function worktree_of(gitdir)
       tree, transient = top or prefix, failed
     end
   elseif vim.fn.filereadable(gitdir .. '/gitdir') == 1 then
-    -- Linked worktree: <gitdir>/gitdir holds the path of <worktree>/.git
+    -- Linked worktree: <gitdir>/gitdir holds the path of <worktree>/.git,
+    -- relative to <gitdir> when made with worktree.useRelativePaths
     local ok, lines = pcall(vim.fn.readfile, gitdir .. '/gitdir', '', 1)
-    if ok and lines[1] and vim.trim(lines[1]) ~= '' then
-      tree = vim.fn.fnamemodify(vim.trim(lines[1]), ':h')
+    local p = ok and lines[1] and vim.trim(lines[1]) or ''
+    if p ~= '' then
+      if p:sub(1, 1) ~= '/' then p = vim.fn.simplify(gitdir .. '/' .. p) end
+      tree = vim.fn.fnamemodify(p, ':h')
     end
   elseif vim.fn.isdirectory(gitdir) == 1 then
     -- Submodule (core.worktree set in its git dir)
@@ -381,18 +384,15 @@ function M.get_real_filepath(bufnr)
 
   -- diffview:///repo/.git/<rev>/file.txt (also tolerates .git//<rev>/); the
   -- git dir may be a linked worktree's (.git/worktrees/<n>) or a submodule's
-  -- (.git/modules/<n>, possibly nested)
+  -- (.git/modules/<n>), in any sequence (a submodule of a linked worktree is
+  -- .git/worktrees/<wt>/modules/<n>)
   local gitdir, rest = bufname:match('^diffview://(.-/%.git)/+(.+)$')
   if rest then
-    local seg, tail = rest:match('^(worktrees/[^/]+)/+(.+)$')
-    if seg then
+    while true do
+      local seg, tail = rest:match('^(worktrees/[^/]+)/+(.+)$')
+      if not seg then seg, tail = rest:match('^(modules/[^/]+)/+(.+)$') end
+      if not seg then break end
       gitdir, rest = gitdir .. '/' .. seg, tail
-    else
-      seg, tail = rest:match('^(modules/[^/]+)/+(.+)$')
-      while seg do
-        gitdir, rest = gitdir .. '/' .. seg, tail
-        seg, tail = rest:match('^(modules/[^/]+)/+(.+)$')
-      end
     end
     local rel = rest:match('^[^/]+/+(.+)$')
     if rel then
@@ -402,7 +402,7 @@ function M.get_real_filepath(bufnr)
 
   -- fugitive:///repo/.git//<rev>/file.txt (the git dir, then //)
   local gd, rel = bufname:match('^fugitive://(.-)//[^/]+/(.+)$')
-  if rel and gd:find('/%.git') then
+  if rel and (gd:find('/%.git$') or gd:find('/%.git/')) then
     return resolve_gitdir_path(gd, rel)
   end
 

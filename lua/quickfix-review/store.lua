@@ -238,7 +238,8 @@ end
 -- when it has one. The row carries only the comment's id in user_data; the
 -- context stays in the store.
 local function view_item(c)
-  local text = M.headline(c)
+  -- First line only: a newline would break the quickfix row
+  local text = M.headline(c):match('^[^\n]*')
   if c.response then
     text = text .. ' | Response: ' .. c.response
   end
@@ -830,9 +831,18 @@ local function import_legacy(loc)
       for _, c in ipairs(state.comments) do known[c.id] = true end
       for id, _ in pairs(state.trash) do known[id] = true end
       for _, r in ipairs(state.removed) do known[r.id] = true end
+      -- An id-less record gets a fresh id each time it is normalized, so it
+      -- is matched by place and body instead
+      local function loc_key(c) return table.concat({ c.filename, tostring(c.lnum), c.body }, '\0') end
+      local known_loc = {}
+      for _, c in ipairs(state.comments) do
+        local n = normalize(c)
+        if n then known_loc[loc_key(n)] = true end
+      end
       for _, item in ipairs(file_list) do
         local c = type(item) == 'table' and normalize(item) or nil
-        if not c or not known[c.id] then table.insert(list, c and storage.serialise(c) or item) end
+        local dup = c and (known[c.id] or (not has_id(item) and known_loc[loc_key(c)]))
+        if not dup then table.insert(list, c and storage.serialise(c) or item) end
       end
       source = legacy_log .. ' and ' .. legacy
     end

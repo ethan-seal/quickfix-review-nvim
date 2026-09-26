@@ -14,6 +14,11 @@ local total_failed = 0
 -- or top level) counts as a failure, so the suite still exits non-zero.
 local function run_file(path)
   local ok, result = pcall(dofile, path)
+  -- Drain callbacks this file scheduled (e.g. store refreshes), so they don't
+  -- fire during a later file's vim.wait and redraw its buffers
+  local drained = false
+  vim.schedule(function() drained = true end)
+  vim.wait(1000, function() return drained end)
   if not ok then
     print(string.format('ERROR: %s failed to run: %s', path, tostring(result)))
     total_failed = total_failed + 1

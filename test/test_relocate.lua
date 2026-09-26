@@ -879,17 +879,23 @@ local function count_diffs(fn)
   return n
 end
 
-assert.run_test('a refresh with 300 comments over 100 buffers is not comments x buffers', function()
+assert.run_test('a refresh with 500 comments over 100 buffers is not comments x buffers', function()
   qf.clear_review()
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, 'p')
-  local bufs = {}
+  -- 1-3 comments on each loaded buffer (200 in all), so the batched
+  -- mark/place/sign path runs at scale too
+  local bufs, loaded = {}, 0
   for i = 1, 100 do
     local path = dir .. '/loaded' .. i .. '.txt'
     vim.fn.writefile({ 'a' .. i, 'b' .. i, 'c' .. i }, path)
     local buf = vim.fn.bufadd(path)
     vim.fn.bufload(buf)
     table.insert(bufs, buf)
+    for l = 1, (i % 3) + 1 do
+      store.add({ filename = path, lnum = l, kind = 'note', body = 'l' .. i .. ':' .. l })
+      loaded = loaded + 1
+    end
   end
   for i = 1, 100 do
     local path = dir .. '/unloaded' .. i .. '.txt'
@@ -901,7 +907,9 @@ assert.run_test('a refresh with 300 comments over 100 buffers is not comments x 
   qf.show_list()
 
   local orig_match, orig_list = utils.files_match, vim.api.nvim_list_bufs
-  local matches, lists = 0, 0
+  local orig_signs = utils.refresh_buffer_signs
+  local orig_set, orig_get = vim.api.nvim_buf_set_extmark, vim.api.nvim_buf_get_extmark_by_id
+  local matches, lists, signs, sets, gets = 0, 0, 0, 0, 0
   utils.files_match = function(...)
     matches = matches + 1
     return orig_match(...)
@@ -910,8 +918,22 @@ assert.run_test('a refresh with 300 comments over 100 buffers is not comments x 
     lists = lists + 1
     return orig_list()
   end
+  utils.refresh_buffer_signs = function(...)
+    signs = signs + 1
+    return orig_signs(...)
+  end
+  vim.api.nvim_buf_set_extmark = function(...)
+    sets = sets + 1
+    return orig_set(...)
+  end
+  vim.api.nvim_buf_get_extmark_by_id = function(...)
+    gets = gets + 1
+    return orig_get(...)
+  end
   local ok, err = pcall(store.refresh)
   utils.files_match, vim.api.nvim_list_bufs = orig_match, orig_list
+  utils.refresh_buffer_signs = orig_signs
+  vim.api.nvim_buf_set_extmark, vim.api.nvim_buf_get_extmark_by_id = orig_set, orig_get
   local rows = #vim.fn.getqflist()
 
   vim.fn.setqflist({}, 'f')
@@ -920,9 +942,14 @@ assert.run_test('a refresh with 300 comments over 100 buffers is not comments x 
   qf.clear_review()
 
   assert.truthy(ok, 'refreshed: ' .. tostring(err))
-  assert.equals(rows, 300, 'all 300 comments listed')
+  assert.equals(loaded, 200, 'comments on loaded buffers')
+  assert.equals(rows, 500, 'all 500 comments listed')
   assert.truthy(matches < 400, 'files_match calls: ' .. matches .. ' (over 100000 unbatched)')
   assert.truthy(lists <= 5, 'buffer list scans: ' .. lists)
+  -- One sign pass per loaded buffer, and a few extmark calls per comment on one
+  assert.truthy(signs <= #bufs + 20, 'sign refreshes: ' .. signs)
+  assert.truthy(sets <= loaded * 3, 'extmarks set: ' .. sets)
+  assert.truthy(gets <= loaded * 3, 'extmarks read: ' .. gets)
 end)
 
 assert.run_test('comments sharing one anchor sha are relocated through one diff', function()

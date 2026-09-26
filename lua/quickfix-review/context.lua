@@ -8,12 +8,13 @@ local GIT_TIMEOUT_MS = 2000
 local SNIPPET_PAD = 3
 
 -- Run git in `dir` (argv form: no shell quoting, no shell rc). Returns stdout
--- lines, or nil on non-zero exit, timeout, or failure to spawn.
-local function git(dir, args)
+-- lines, or nil on non-zero exit, timeout, or failure to spawn. `env` is
+-- merged into the inherited environment.
+local function git(dir, args, env)
   local cmd = { 'git', '-C', dir }
   vim.list_extend(cmd, args)
   local ok, result = pcall(function()
-    return vim.system(cmd, { text = true, timeout = GIT_TIMEOUT_MS }):wait()
+    return vim.system(cmd, { text = true, timeout = GIT_TIMEOUT_MS, env = env }):wait()
   end)
   if not ok or not result or result.code ~= 0 or not result.stdout then return nil end
   local out = vim.split(result.stdout, '\n', { plain = true })
@@ -53,9 +54,12 @@ M._parse_hunks = parse_hunks
 M._find_hunk_for_line = find_hunk_for_line
 
 local function diff_hunk(toplevel, rel, lnum, base)
-  -- ':(literal)' so a path with glob characters (app/[id]/page.tsx) matches
-  -- only itself, not siblings like app/d/page.tsx
-  local diff = git(toplevel, { 'diff', '--no-color', '--unified=3', base, '--', ':(literal)' .. rel })
+  -- Literal pathspecs so a path with glob characters (app/[id]/page.tsx)
+  -- matches only itself, not siblings like app/d/page.tsx. Set by env rather
+  -- than ':(literal)', which a user's GIT_LITERAL_PATHSPECS=1 would take as
+  -- part of the file name.
+  local diff = git(toplevel, { 'diff', '--no-color', '--unified=3', base, '--', rel },
+    { GIT_LITERAL_PATHSPECS = '1' })
   if not diff or #diff == 0 then return nil end
   local h = find_hunk_for_line(parse_hunks(diff), lnum)
   return h and h.lines or nil

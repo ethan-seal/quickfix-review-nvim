@@ -615,6 +615,34 @@ storage_test('storage_file set to the legacy global file leaves it in place for 
   assert.equals(read_bytes(legacy), bytes, 'the legacy file is untouched')
 end)
 
+storage_test('id-less legacy records are imported once after the legacy file changes', function()
+  local a = make_repo('rho')
+  local b = make_repo('sigma')
+  local config = mods()
+  local legacy = seed_legacy(a, b, true)
+  cd(a)
+  capture_notify(function()
+    restart({ storage_file = config.legacy_storage_file() })
+    local _, store = mods()
+    assert.length(store.all(), 3, 'the legacy log imports the file')
+  end)
+  -- The file changes after the log imported it (its sha no longer matches)
+  local content = vim.json.encode({
+    { filename = a .. '/a.txt', lnum = 1, col = 1, text = '[ISSUE] from a' },
+    { filename = b .. '/b.txt', lnum = 2, col = 1, text = '[NOTE] from b' },
+    { filename = a .. '2/c.txt', lnum = 3, col = 1, text = '[NOTE] from sibling' },
+    { filename = a .. '/a.txt', lnum = 2, col = 1, text = '[NOTE] added later' },
+  })
+  vim.fn.writefile({ content }, legacy)
+  local bytes = read_bytes(legacy)
+  capture_notify(function() restart() end)
+  local _, store = mods()
+  local bodies = vim.tbl_map(function(c) return c.body end, store.all())
+  table.sort(bodies)
+  assert.equals(table.concat(bodies, '|'), 'added later|from a', 'each comment imported once')
+  assert.equals(read_bytes(legacy), bytes, 'the legacy file is untouched')
+end)
+
 storage_test('a comment deleted while storage_file pointed at the legacy file is not imported', function()
   local a = make_repo('eta')
   local b = make_repo('theta')

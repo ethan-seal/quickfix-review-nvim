@@ -230,6 +230,8 @@ assert.run_test('diff-plugin buffers that show no file are refused', function()
     'diffview:///repo/panels/1/DiffviewFilePanel',
     'fugitive://' .. vim.fn.getcwd() .. '/.git//',
     'fugitive://' .. vim.fn.getcwd() .. '/.git//0123456789abcdef0123456789abcdef01234567',
+    -- A dir that merely starts with .git is not a git dir
+    'fugitive://' .. vim.fn.getcwd() .. '/.gitrepos/foo//0/file.txt',
   }
   for _, name in ipairs(names) do
     qf.clear_review()

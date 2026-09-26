@@ -299,6 +299,40 @@ do
       want, 'diffview submodule name')
   end)
 
+  assert.run_test('get_real_filepath resolves a submodule of a linked worktree', function()
+    assert.truthy(ok_setup, 'repo setup: ' .. tostring(setup_err))
+    git(main, 'commit', '-q', '-m', 'add sub')
+    local wt2 = tmp .. '/wt2'
+    git(main, 'worktree', 'add', '-q', wt2)
+    git(wt2, 'submodule', 'update', '--init', '-q')
+    local gitdir = main .. '/.git/worktrees/wt2/modules/sub'
+    assert.truthy(vim.fn.isdirectory(gitdir) == 1, 'submodule git dir under the worktree')
+    local want = real(wt2 .. '/sub/file.txt')
+    assert.equals(real(real_path_for_name('diffview://' .. gitdir .. '/abc123/file.txt')),
+      want, 'diffview name')
+    assert.equals(real(real_path_for_name('fugitive://' .. gitdir .. '//0/file.txt')),
+      want, 'fugitive name')
+  end)
+
+  assert.run_test('get_real_filepath resolves a relative gitdir file against the git dir', function()
+    assert.truthy(ok_setup, 'repo setup: ' .. tostring(setup_err))
+    local wt3 = tmp .. '/wt3'
+    git(main, 'worktree', 'add', '-q', '--relative-paths', wt3)
+    local line = vim.fn.readfile(main .. '/.git/worktrees/wt3/gitdir')[1]
+    assert.truthy(line:sub(1, 1) ~= '/', 'gitdir file is relative: ' .. line)
+    local want = real(wt3 .. '/file.txt')
+    assert.equals(real(real_path_for_name('fugitive://' .. main .. '/.git/worktrees/wt3//0/file.txt')),
+      want, 'fugitive name')
+    assert.equals(real(real_path_for_name('diffview://' .. main .. '/.git/worktrees/wt3/abc123/file.txt')),
+      want, 'diffview name')
+  end)
+
+  assert.run_test('get_real_filepath leaves a fugitive name without a .git dir unresolved', function()
+    local name = 'fugitive://' .. tmp .. '/.gitrepos/foo//0/file.txt'
+    assert.equals(real_path_for_name(name), name, 'name unchanged')
+    assert.truthy(utils.is_unresolved(name), 'name is unresolved')
+  end)
+
   assert.run_test('get_real_filepath caches the git-dir work tree', function()
     assert.truthy(ok_setup, 'repo setup: ' .. tostring(setup_err))
     local name = 'fugitive://' .. main .. '/.git/modules/sub//0/file.txt'

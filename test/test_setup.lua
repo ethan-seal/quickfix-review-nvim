@@ -201,6 +201,11 @@ assert.run_test('view_comment shows a body and response containing newlines', fu
     assert.truthy(set['second'], 'second body line on its own line')
     assert.truthy(set['Response: r1'], 'first response line')
     assert.truthy(set['r2'], 'second response line on its own line')
+    -- The quickfix row shows only the body's first line
+    qf.show_list()
+    local text = vim.fn.getqflist()[1].text
+    assert.truthy(vim.startswith(text, '[NOTE] first | Response: '), 'qf text: ' .. text)
+    assert.falsy(text:find('second', 1, true), 'second body line not in qf text: ' .. text)
   end)
   vim.api.nvim_exec_autocmds('CursorMoved', {})
   qf.clear_review()

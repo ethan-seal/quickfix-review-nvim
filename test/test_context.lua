@@ -186,7 +186,8 @@ assert.run_test('capture with unsaved edits snippets the buffer lines', function
   assert.contains(ctx.snippet, '   1  inserted', 'unsaved line present')
 end)
 
-assert.run_test('capture of a path with glob characters diffs only that file', function()
+-- literal_env: the user's GIT_LITERAL_PATHSPECS during capture (nil: unset)
+local function check_glob_path_capture(literal_env)
   -- As a glob pathspec, app/[id]/page.txt also matches the sibling
   -- app/d/page.txt. Its own file changes at line 1, the sibling at line 9;
   -- a comment on line 9 must not pick up the sibling's hunk.
@@ -206,14 +207,27 @@ assert.run_test('capture of a path with glob characters diffs only that file', f
   git(repo, 'commit', '-q', '-am', 'change')
   local file = repo .. '/app/[id]/page.txt'
   local bufnr = open(file)
-  local at9 = context.capture(file, 9, 9)
-  local at1 = context.capture(file, 1, 1)
+  local saved = vim.env.GIT_LITERAL_PATHSPECS
+  vim.env.GIT_LITERAL_PATHSPECS = literal_env
+  local ok, at9, at1 = pcall(function()
+    return context.capture(file, 9, 9), context.capture(file, 1, 1)
+  end)
+  vim.env.GIT_LITERAL_PATHSPECS = saved
+  if not ok then error(at9, 0) end
   wipe(bufnr)
   vim.fn.delete(repo, 'rf')
   assert.falsy(vim.tbl_contains(at9.snippet, '+sibling'), 'not the sibling hunk')
   assert.equals(at9.snippet_source, 'buffer', 'no own hunk at line 9')
   assert.equals(at1.snippet_source, 'diff', 'own hunk at line 1')
   assert.contains(at1.snippet, '+own', 'own hunk content')
+end
+
+assert.run_test('capture of a path with glob characters diffs only that file', function()
+  check_glob_path_capture(nil)
+end)
+
+assert.run_test('capture diffs the file when the user sets GIT_LITERAL_PATHSPECS=1', function()
+  check_glob_path_capture('1')
 end)
 
 -- A repo whose HEAD~1..HEAD diff has a hunk at line 2, and a buffer named

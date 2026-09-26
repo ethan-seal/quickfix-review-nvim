@@ -50,6 +50,65 @@ assert.run_test('view_comment float close autocmd is grouped and removed on clos
   qf.clear_review()
 end)
 
+-- The floating windows currently open
+local function floats()
+  local found = {}
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_config(win).relative ~= '' then table.insert(found, win) end
+  end
+  return found
+end
+
+-- The lines of the one float open now (fails if there is not exactly one)
+local function only_float_lines()
+  local open = floats()
+  assert.length(open, 1, 'floating windows open')
+  return vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(open[1]), 0, -1, false)
+end
+
+assert.run_test('three consecutive views leave no buffers, floats or handlers behind', function()
+  qf.clear_review()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('NOTE')
+  local bufs = #vim.api.nvim_list_bufs()
+
+  for _ = 1, 3 do qf.view_comment() end
+  assert.length(floats(), 1, 'one float open after three views')
+  assert.equals(#vim.api.nvim_get_autocmds({ group = 'QuickfixReviewFloat' }), 2,
+    'one float close handler (two events)')
+
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  assert.length(floats(), 0, 'no float left after closing')
+  assert.equals(#vim.api.nvim_list_bufs(), bufs, 'buffer count back to baseline')
+  assert.equals(#vim.api.nvim_get_autocmds({ group = 'QuickfixReviewFloat' }), 0,
+    'float handlers removed after close')
+  qf.clear_review()
+end)
+
+assert.run_test('view_comment on the middle line of a range comment opens its float', function()
+  qf.clear_review()
+  qf.add_comment('ISSUE', { 1, 3 })
+  vim.fn.cursor(2, 1)
+  qf.view_comment()
+  local lines = only_float_lines()
+  assert.equals(lines[1], '[ISSUE:L1-3] Test comment', 'float shows the range comment')
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  qf.clear_review()
+end)
+
+assert.run_test('overlapping comments are shown together in one float, in line order', function()
+  qf.clear_review()
+  qf.add_comment('NOTE', { 2, 3 })
+  qf.add_comment('ISSUE', { 1, 2 })
+  vim.fn.cursor(2, 1)
+  qf.view_comment()
+  local lines = only_float_lines()
+  assert.equals(table.concat(lines, '\n'),
+    '[ISSUE:L1-2] Test comment\n\n[NOTE:L2-3] Test comment', 'both comments, lnum order')
+  vim.api.nvim_exec_autocmds('CursorMoved', {})
+  qf.clear_review()
+end)
+
 assert.run_test('FileChangedShellPost relocates the changed buffer and never offers to clear', function()
   local changed_buf = vim.api.nvim_get_current_buf()
   local path = vim.api.nvim_buf_get_name(changed_buf)

@@ -407,16 +407,31 @@ function M.jump_comment(direction)
   M.view_comment()
 end
 
--- Show comment(s) at current line
+-- The open comment float, if any: { win = id, autocmd = id }
+local float_state
+
+-- Close the comment float (if still open) and remove its close handler
+local function close_float()
+  if not float_state then return end
+  pcall(vim.api.nvim_win_close, float_state.win, true)
+  pcall(vim.api.nvim_del_autocmd, float_state.autocmd)
+  float_state = nil
+end
+
+-- Show every comment whose range covers the current line, in line order
 function M.view_comment()
   local file = utils.get_real_filepath()
   local line = vim.fn.line('.')
   local comments = {}
+  local start_of = {}
   for _, item in ipairs(store.all()) do
-    if (store.range(item)) == line and utils.files_match(item.filename, file) then
+    local lnum, end_lnum = store.range(item)
+    if lnum <= line and end_lnum >= line and utils.files_match(item.filename, file) then
       table.insert(comments, item)
+      start_of[item] = lnum
     end
   end
+  table.sort(comments, function(a, b) return start_of[a] < start_of[b] end)
 
   if #comments == 0 then
     print('No comment on this line')
@@ -453,8 +468,12 @@ function M.view_comment()
     end
   end
 
+  -- One float at a time: replace any float still open
+  close_float()
+
   local height = math.min(#wrapped, 20)
   local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].bufhidden = 'wipe'
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, wrapped)
   vim.bo[buf].modifiable = false
 
@@ -467,14 +486,12 @@ function M.view_comment()
 
   -- Close on cursor move or leaving the buffer. The handler lives in the
   -- QuickfixReviewFloat group and removes itself (both events) on close.
+  -- Closing the window wipes its buffer (bufhidden=wipe).
   local float_group = vim.api.nvim_create_augroup('QuickfixReviewFloat', { clear = false })
-  local close_id
-  close_id = vim.api.nvim_create_autocmd({ 'CursorMoved', 'BufLeave' }, {
+  float_state = { win = win }
+  float_state.autocmd = vim.api.nvim_create_autocmd({ 'CursorMoved', 'BufLeave' }, {
     group = float_group,
-    callback = function()
-      pcall(vim.api.nvim_win_close, win, true)
-      pcall(vim.api.nvim_del_autocmd, close_id)
-    end,
+    callback = close_float,
   })
 end
 

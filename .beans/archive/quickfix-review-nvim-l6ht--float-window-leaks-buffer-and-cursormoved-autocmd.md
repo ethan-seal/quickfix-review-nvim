@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-l6ht
 title: Float window leaks buffer and CursorMoved autocmd per view
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T04:31:20Z
-updated_at: 2026-09-26T05:03:39Z
+updated_at: 2026-09-26T07:10:37Z
 blocked_by:
     - quickfix-review-nvim-nep3
 ---

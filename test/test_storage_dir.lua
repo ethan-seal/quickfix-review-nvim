@@ -86,10 +86,9 @@ local function stamp(path)
   return s.mtime.sec .. '.' .. s.mtime.nsec
 end
 
-local function saved(path)
-  local doc = vim.json.decode(read_bytes(path), { luanil = { object = true, array = true } })
-  assert.equals(doc.version, 2, 'saved as version 2')
-  return doc.comments
+-- The live records in the event log at `log_path`
+local function saved(log_path)
+  return test_helper.saved(log_path)
 end
 
 local function note(file, body)
@@ -128,6 +127,8 @@ storage_test('the default dir is stdpath(data)/quickfix-review/<basename>-<sha25
     .. vim.fn.sha256(a):sub(1, 12)
   assert.equals(store.dir(), expected, 'storage dir')
   assert.equals(store.path(), expected .. '/comments.json', 'storage file')
+  assert.equals(store.log_path(), expected .. '/log.jsonl', 'event log')
+  assert.equals(store.state_path(), expected .. '/state.json', 'cache')
   assert.equals(store.root(), a, 'project root')
 end)
 
@@ -138,10 +139,10 @@ storage_test('two repos get different dirs and their comments stay apart', funct
   restart()
   local _, store = mods()
   note(file_a, 'in alpha')
-  local path_a = store.path()
+  local path_a = store.log_path()
 
   cd(b)
-  local path_b = store.path()
+  local path_b = store.log_path()
   assert.not_equals(path_b, path_a, 'different storage files')
   assert.length(store.all(), 0, 'alpha comment not visible in beta')
   note(file_b, 'in beta')
@@ -211,7 +212,7 @@ storage_test('storage_dir as a string is used as-is, created on first write', fu
   local _, store = mods()
   assert.equals(store.path(), target .. '/comments.json', 'string dir used')
   note(file_a, 'theta note')
-  assert.length(saved(target .. '/comments.json'), 1, 'written into the new dir')
+  assert.length(saved(target .. '/log.jsonl'), 1, 'written into the new dir')
 end)
 
 storage_test('outside git the root is the cwd', function()
@@ -270,8 +271,9 @@ for _, v1 in ipairs({ true, false }) do
     assert.equals(list[1].kind, 'issue', 'kind kept')
     local imported = mentioning(calls, 'imported 1 comments from ' .. legacy)
     assert.length(imported, 1, 'one import notice')
-    local on_disk = saved(store.path())
-    assert.length(on_disk, 1, 'one comment in comments.json')
+    local on_disk = saved(store.log_path())
+    assert.length(on_disk, 1, 'one comment in the log')
+    assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'as one import event')
     assert.equals(on_disk[1].text, nil, 'no legacy text field written')
     if not v1 then
       assert.equals(on_disk[1].id, '0000000000000001', 'id kept')
@@ -287,8 +289,7 @@ for _, v1 in ipairs({ true, false }) do
 
     assert.equals(read_bytes(legacy), bytes, 'legacy bytes unchanged')
     assert.equals(stamp(legacy), before, 'legacy mtime unchanged')
-    assert.equals(vim.fn.filereadable(legacy .. '.pre-v2.bak'), 0, 'no upgrade backup')
-    assert.equals(vim.fn.filereadable(legacy .. '.pre-repair.bak'), 0, 'no repair backup')
+    assert.equals(vim.fn.filereadable(legacy .. '.pre-log.bak'), 0, 'legacy not moved aside')
   end)
 end
 
@@ -307,11 +308,13 @@ storage_test('import happens once: a cleared review is not re-imported', functio
   _, store = mods()
   assert.length(store.all(), 0, 'nothing re-imported after restart')
   assert.length(mentioning(calls, 'imported'), 0, 'no import notice')
+  assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'one import event in the log')
 
   calls = capture_notify(function() cd(c) end)
   assert.length(store.all(), 0, 'no comments for an unrelated project')
   assert.length(mentioning(calls, 'imported'), 0, 'no notice for 0 imported')
-  assert.length(saved(store.path()), 0, 'empty comments.json written, so no re-scan')
+  assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'an empty import logged, so no re-scan')
+  assert.length(saved(store.log_path()), 0, 'nothing live')
 end)
 
 storage_test('a symlinked checkout imports comments saved under the real path', function()
@@ -339,6 +342,7 @@ storage_test('an invalid legacy file writes nothing and stays untouched', functi
   local _, store = mods()
   assert.length(store.all(), 0, 'nothing imported')
   assert.equals(vim.fn.filereadable(store.path()), 0, 'no comments.json')
+  assert.equals(vim.fn.filereadable(store.log_path()), 0, 'no log.jsonl')
   assert.length(mentioning(calls, 'not importing'), 1, 'warned once')
   store.all()
   assert.equals(read_bytes(legacy), bytes, 'legacy untouched')

@@ -115,12 +115,25 @@ options are optional; defaults are shown below.
                                                       *quickfix-review-storage*
 Storage:~
 
-Each project has its own review, kept in `comments.json` inside the
-project's storage directory. By default that is: >
+Each project has its own review, kept as an append-only event log,
+`log.jsonl`, inside the project's storage directory. By default that is: >
     stdpath('data')/quickfix-review/<basename(root)>-<sha256(root)[1..12]>/
 <
 where the last part is the first 12 hex characters of the SHA-256 of the
 project root, e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/`.
+
+                                                      *quickfix-review-log*
+The log holds one JSON object per line. The first line is a header; every
+later line is an event (`add`, `delete`, `clear`, `restore`, `import`, ...)
+and the review is those events replayed in order. Lines are only ever
+appended, each change in a single write under a lock (a `lock` directory
+next to the log), so several Neovims can share a review and no change can
+overwrite another. Deleted and cleared comments stay in the log. A line
+that can't be read is skipped with a warning naming its line number.
+
+`state.json` next to the log is a cache of the replay, written on exit and
+every 50 events. It is never needed: delete it and it is rebuilt from the
+log.
 
 The project root is the git toplevel of Neovim's global working directory,
 or that directory itself outside git, with symlinks resolved. Each git
@@ -135,17 +148,29 @@ switch projects. The root is looked up once per directory per session, so
 the directory to use, or a string, used as-is (shared by every project).
 
                                                  *quickfix-review-migration*
-Older versions kept every project's comments in one global file,
-`stdpath('data')/quickfix-review.json`. The first time a project without a
-`comments.json` is opened, the comments in that file whose path is inside
-the project are imported ("imported N comments from ..."). The global file
-is only read, never changed. The import happens once per project: once its
-`comments.json` exists, even empty, nothing is imported again.
+Earlier versions kept the review in `comments.json` in the same directory.
+When a project has a `comments.json` but no log yet, its comments are
+copied into a new log as one `import` event and the file is renamed to
+`comments.json.pre-log.bak`, byte for byte as it was. From then on the log
+is the review: a `comments.json` that reappears next to it (written by an
+older version or another tool) is not read; you get one warning and the
+file is left alone.
+
+Older versions still kept every project's comments in one global file,
+`stdpath('data')/quickfix-review.json`. The first time a project with
+neither a log nor a `comments.json` is opened, the comments in that file
+whose path is inside the project are imported ("imported N comments from
+..."). The global file is only read, never changed. The import happens
+once per project: once its log exists, even with nothing imported, nothing
+is imported again.
 
                                                  *quickfix-review-storage_file*
-`storage_file` is deprecated. When set, that single file is used for every
+`storage_file` is deprecated. When set, one review is used for every
 project, as before: no storage directory, no switching on |:cd|, and no
-import. If you copied the old full configuration example, remove its
+import from the global file. Its log and cache sit next to the path given:
+`<storage_file>.log.jsonl` and `<storage_file>.state.json` (and a
+`<storage_file>.lock` directory while writing). An existing file at that
+path is migrated to the log and renamed to `<storage_file>.pre-log.bak`. If you copied the old full configuration example, remove its
 `storage_file` line to get per-project reviews.
 
                                                 *quickfix-review-comment-types*
@@ -266,10 +291,10 @@ Use `]r` and `[r` to jump between review comments across all files.
 Where comments live:~
 
 The plugin keeps comments itself, not in the quickfix list, and writes
-every change to the project's `comments.json` (see
-|quickfix-review-storage|) immediately. The review is read back at
-setup, and re-read whenever the file changes on disk (another Neovim, or
-an external script), so it is never lost when you quit.
+every change to the project's event log (see |quickfix-review-log|)
+immediately. The review is read back at setup, and events appended by
+another Neovim (or an external script) are picked up as they appear, so it
+is never lost when you quit.
 
 The quickfix list is only a view: `<leader>co` and |:ReviewLoad| publish
 the review as a new quickfix list, which then follows changes to the
@@ -316,14 +341,13 @@ press `dd` to delete the comment under cursor.
                         confirmation first (default No); with ! it does not.
 
                                                              *:ReviewSave*
-:ReviewSave             Write the review to disk. Every change is already
-                        saved as it is made, so this is rarely needed.
-                        Uses the project's storage file (see
-                        |quickfix-review-storage|).
+:ReviewSave             Write the review's `state.json` cache. Every
+                        change is already in the log as it is made, so
+                        this is rarely needed (see |quickfix-review-log|).
 
                                                              *:ReviewLoad*
-:ReviewLoad             Re-read the review from disk and show it in the
-                        quickfix list.
+:ReviewLoad             Replay the review's log from disk and show it in
+                        the quickfix list.
 
                                                           *:ReviewSummary*
 :ReviewSummary          Show a summary of comment counts by type.
@@ -410,12 +434,11 @@ require('quickfix-review').clear_review({opts})     *quickfix-review.clear_revie
     (default No); without it, clear at once.
 
 require('quickfix-review').save_review()             *quickfix-review.save_review()*
-    Write the review to the configured storage file (every change
-    already is).
+    Write the review's `state.json` cache (every change is already in
+    the log).
 
 require('quickfix-review').load_review()             *quickfix-review.load_review()*
-    Re-read the review from the configured storage file and show it in
-    the quickfix list.
+    Replay the review's log from disk and show it in the quickfix list.
 
 require('quickfix-review').comments()                 *quickfix-review.comments()*
     All review comments, in creation order. Treat as read-only. Each is a
@@ -423,9 +446,9 @@ require('quickfix-review').comments()                 *quickfix-review.comments(
     created_at }`: `kind` is the lowercase comment type, `body` the text
     without any `[KIND]` prefix, and `response` and `context` (the captured
     commit and snippet) may be nil. A record may also carry `extra`: a
-    table of fields from the storage file that the plugin does not know
-    (written by other tools), preserved and written back at the top level
-    of the record.
+    table of fields from stored records that the plugin does not know
+    (written by other tools), preserved and logged at the top level of the
+    record.
 
 require('quickfix-review').summary()                   *quickfix-review.summary()*
     Print a summary of comment counts.

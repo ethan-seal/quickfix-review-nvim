@@ -159,7 +159,8 @@ function M.backup_once(path, suffix)
 end
 
 -- A record as written: its `extra` fields flattened back to the top level,
--- where known fields win a clash. The in-memory record is not changed.
+-- where known fields win a clash. The in-memory record is not changed. This
+-- is also the payload format of the event log (see log.lua).
 local function serialise(c)
   if c.extra == nil then return c end
   local out = {}
@@ -192,6 +193,8 @@ function M.save(comments, filepath)
   return true, string.format('Review saved to %s (%d comments)', filepath, #comments)
 end
 
+M.serialise = serialise
+
 -- Load comments from file, upgrading an older schema in memory (the file is
 -- left alone; the caller decides whether to rewrite it). A missing or empty
 -- file is an empty review.
@@ -204,7 +207,13 @@ function M.load(filepath)
 
   local content = f:read('*all')
   f:close()
+  return M.parse(content, filepath)
+end
 
+-- Decode the contents of a storage file (as M.load does), so a caller that
+-- needs the raw bytes too reads the file only once
+-- Returns: comments (table or nil), err (string or nil), upgraded (boolean)
+function M.parse(content, filepath)
   if not content or vim.trim(content) == '' then
     return {}, nil, false
   end

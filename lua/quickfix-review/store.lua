@@ -1,32 +1,32 @@
 -- The review's comments. The plugin owns them here rather than in the quickfix
 -- list, so other tools that replace the quickfix list (LSP references, grep)
--- can't clobber the review. The storage file is the source of truth: every
--- change is written through immediately, and the file is re-read whenever
--- something else (another Neovim, review-export) has changed it. Comments are
--- the storage schema's records (see storage.lua); the quickfix list is only a
--- view derived from them, which M.show() publishes.
+-- can't clobber the review. The source of truth is an append-only event log
+-- (log.jsonl, see log.lua): every change is appended as an event, and the
+-- comments are the log replayed through reduce.lua, so no change can lose
+-- data. state.json is a cache of that replay, never needed for correctness.
+-- Events another Neovim appends are picked up by reading the log's tail.
+-- Comments are the storage schema's records (see storage.lua); the quickfix
+-- list is only a view derived from them, which M.show() publishes.
 local M = {}
 
 local config = require('quickfix-review.config')
+local log = require('quickfix-review.log')
+local reduce = require('quickfix-review.reduce')
 local storage = require('quickfix-review.storage')
 local utils = require('quickfix-review.utils')
 
+local uv = vim.uv or vim.loop
+
 local QF_TITLE = 'Code Review Comments'
 
+-- The live comments, normalized: the view of `reduced.comments`
 local comments = {}
--- Which file (and which version of it) `comments` reflects
-local synced = { path = nil, mtime = nil }
+-- The log replayed: records as logged, and the trash
+local reduced = reduce.new()
 -- Id of the quickfix list showing the review, if one has been published
 local qf_id = nil
 local on_change = function(_) end
--- path:mtime of the unparseable storage file already reported, so it is
--- reported once rather than on every read and change
-local bad_file_notified = nil
 
-local function mtime(path)
-  local stat = (vim.uv or vim.loop).fs_stat(path)
-  return stat and (stat.mtime.sec .. '.' .. stat.mtime.nsec) or nil
-end
 
 -- A stable identity for a comment: 16 hex chars from the OS RNG. Not
 -- math.random, which LuaJIT leaves unseeded, so every Neovim would produce
@@ -148,17 +148,26 @@ local function refresh_view()
   end
 end
 
--- Where the review lives: the explicit (deprecated, global) storage_file, or
--- comments.json in the project's storage dir. The project root is the git
--- toplevel of the global cwd, else the cwd itself (symlinks resolved).
--- Memoized on the cwd and the storage_dir option, so it is a string compare
--- on every store call.
+-- Where the review lives. Per project: log.jsonl (the review), state.json
+-- (its cache) and the lock dir `lock`, in the project's storage dir, next to
+-- where comments.json used to be. The project root is the git toplevel of the
+-- global cwd, else the cwd itself (symlinks resolved). Memoized on the cwd
+-- and the storage_dir option, so it is a string compare on every store call.
+--
+-- With the explicit (deprecated, global) storage_file, the log, cache and
+-- lock sit next to that file, named after it (<file>.log.jsonl,
+-- <file>.state.json, <file>.lock), so two storage_file values never share a
+-- log. The path is used as given, not resolved: migrating renames the file,
+-- which would change a resolved path.
 local resolved = {}
 
 local function resolve()
   local explicit = config.options.storage_file
   if explicit ~= nil then
-    return { path = explicit, dir = vim.fn.fnamemodify(explicit, ':h'), explicit = true }
+    return {
+      path = explicit, dir = vim.fn.fnamemodify(explicit, ':h'), explicit = true,
+      log = explicit .. '.log.jsonl', state = explicit .. '.state.json', lock = explicit .. '.lock',
+    }
   end
   local cwd = vim.fn.getcwd(-1, -1)
   local opt = config.options.storage_dir
@@ -177,13 +186,27 @@ local function resolve()
   end
   -- ~ and $VARS are expanded; the result is absolute, without a trailing slash
   dir = (vim.fn.fnamemodify(vim.fs.normalize(dir), ':p'):gsub('(.)/+$', '%1'))
-  resolved = { cwd = cwd, opt = opt, root = root, dir = dir, path = dir .. '/comments.json' }
+  resolved = {
+    cwd = cwd, opt = opt, root = root, dir = dir, path = dir .. '/comments.json',
+    log = dir .. '/log.jsonl', state = dir .. '/state.json', lock = dir .. '/lock',
+  }
   return resolved
 end
 
--- The storage file the review is read from and written to
+-- The comments.json of the review: the pre-log storage file, which is
+-- migrated into the log (and renamed to comments.json.pre-log.bak) on first use
 function M.path()
   return resolve().path
+end
+
+-- The review's event log, its source of truth
+function M.log_path()
+  return resolve().log
+end
+
+-- The cache of the replayed log
+function M.state_path()
+  return resolve().state
 end
 
 -- The project's storage directory (for an explicit storage_file, its directory)
@@ -196,28 +219,271 @@ function M.root()
   return resolve().root
 end
 
+-- Where comments.json is kept once it has been migrated into the log
+local MIGRATED = '.pre-log.bak'
+-- state.json is written after this many events, besides on exit and :ReviewSave
+local FLUSH_EVERY = 50
+local JSON_NIL = { luanil = { object = true, array = true } }
+
 local function mkdir_for(path)
   local parent = vim.fn.fnamemodify(path, ':h')
-  if vim.fn.isdirectory(parent) == 0 then vim.fn.mkdir(parent, 'p') end
+  if vim.fn.isdirectory(parent) == 0 then pcall(vim.fn.mkdir, parent, 'p') end
+end
+
+local function read_bytes(path)
+  local fh = io.open(path, 'rb')
+  if not fh then return nil end
+  local content = fh:read('*a')
+  fh:close()
+  return content
+end
+
+-- The normalized comment for each logged record, so a record is normalized
+-- once and an unchanged comment keeps its identity across changes. false for
+-- a record that can't be shown (no file or no valid line number).
+local views = setmetatable({}, { __mode = 'k' })
+
+local function view_of(record)
+  local c = views[record]
+  if c == nil then
+    c = normalize(record) or false
+    views[record] = c
+  end
+  return c or nil
+end
+
+-- What `reduced` reflects: which log (path, header log_id, inode), how far it
+-- has been read (bytes and lines), and the source_sha256 of its imports
+local synced
+-- Events applied since state.json was last written
+local unsaved = 0
+
+local function fresh_sync(loc)
+  return { log = loc and loc.log, state = loc and loc.state, offset = 0, lines = 0, imports = {} }
+end
+
+local function reset(loc)
+  synced = fresh_sync(loc)
+  reduced = reduce.new()
+  unsaved = 0
+end
+reset(nil)
+
+-- Messages shown once per session, by key
+local notified = {}
+
+local function notify_once(key, msg, level)
+  if notified[key] then return end
+  notified[key] = true
+  vim.notify('quickfix-review: ' .. msg, level)
+end
+
+-- The error the review is currently refused for, so it is reported once
+-- rather than on every read and change
+local bad_notified = nil
+
+local function refuse(e)
+  if e ~= bad_notified then
+    bad_notified = e
+    vim.notify('quickfix-review: ' .. e .. '; the review will not be modified until the file is fixed',
+      vim.log.levels.ERROR)
+  end
+  return false, e
+end
+
+-- Run fn with the review's lock held (log.with_lock), creating the storage
+-- dir first. Nested calls (a sync inside a change) run under the outer lock.
+-- Returns: true and fn's two results, or false and the lock error
+local lock_held = false
+
+local function locked(loc, fn)
+  if lock_held then return true, fn() end
+  mkdir_for(loc.log)
+  lock_held = true
+  local ok, got, a, b = pcall(log.with_lock, loc.lock, fn)
+  lock_held = false
+  if not ok then error(got, 0) end
+  return got, a, b
+end
+
+local function apply(events)
+  for _, ev in ipairs(events) do
+    if ev.op == 'import' and type(ev.source_sha256) == 'string' then
+      synced.imports[ev.source_sha256] = true
+    end
+    local _, ignored = reduce.apply(reduced, ev)
+    if ignored == 'duplicate' then
+      notify_once('duplicate', string.format('ignoring logged comments whose id is already in the review'
+        .. ' (first: event %s in %s)', tostring(ev.eid), synced.log), vim.log.levels.WARN)
+    end
+  end
+  unsaved = unsaved + #events
+end
+
+-- Write state.json (the replayed log, and how far it was read) if events
+-- were applied since it was last written, or always with `force`. It is only
+-- a cache: a failure is returned, never fatal.
+-- Returns: ok (boolean), err (string or nil)
+local function flush(force)
+  if not synced.log_id or (unsaved == 0 and not force) then return true, nil end
+  local doc = {
+    log_id = synced.log_id, offset = synced.offset, lines = synced.lines,
+    imports = vim.tbl_keys(synced.imports), state = reduced,
+  }
+  local ok, encoded = pcall(vim.json.encode, doc)
+  if not ok then return false, 'could not encode the review cache' end
+  -- A new cache gets the log's mode, so a private review's cache is private
+  if not uv.fs_stat(synced.state) then
+    local stat = uv.fs_stat(synced.log)
+    local fd = uv.fs_open(synced.state, 'a', stat and bit.band(stat.mode, 511) or 420)
+    if fd then uv.fs_close(fd) end
+  end
+  local wrote, err = storage.atomic_write(synced.state, encoded)
+  if wrote then unsaved = 0 end
+  return wrote, err
+end
+
+local function is_list(t)
+  if type(t) ~= 'table' then return false end
+  local n = 0
+  for _ in pairs(t) do n = n + 1 end
+  return n == #t
+end
+
+-- The reduced state from state.json, if it is a cache of this log (same
+-- log_id, no longer than the log); fills `base` with where it was read to
+local function load_cache(loc, stat, base)
+  local content = read_bytes(loc.state)
+  if not content then return nil end
+  local ok, doc = pcall(vim.json.decode, content, JSON_NIL)
+  if not ok or type(doc) ~= 'table' or type(doc.state) ~= 'table' then return nil end
+  local st = doc.state
+  if type(doc.log_id) ~= 'string' or type(doc.offset) ~= 'number' or type(doc.lines) ~= 'number'
+      or doc.offset > stat.size or not is_list(st.comments) or type(st.trash) ~= 'table' then
+    return nil
+  end
+  if log.read_id(loc.log) ~= doc.log_id then return nil end
+  base.log_id, base.offset, base.lines = doc.log_id, doc.offset, doc.lines
+  for _, sha in ipairs(is_list(doc.imports) and doc.imports or {}) do base.imports[sha] = true end
+  return { comments = st.comments, trash = st.trash }
+end
+
+-- Bring `reduced` up to date with the log: read its tail, or replay it (from
+-- state.json if that is valid, unless opts.full) when it is new, was
+-- replaced or shrank. On failure nothing changes.
+-- Returns: ok (boolean), err (string or nil), changed (boolean)
+local function read_log(loc, stat, opts)
+  local full = opts.full or not synced.log_id or synced.ino ~= stat.ino or stat.size < synced.offset
+  if not full and stat.size == synced.offset then return true, nil, false end
+
+  local base, state = synced, reduced
+  local cached = false
+  if full then
+    base, state = fresh_sync(loc), nil
+    if not opts.full then state = load_cache(loc, stat, base) end
+    cached = state ~= nil
+    if not state then
+      base = fresh_sync(loc)
+      state = reduce.new()
+    end
+  end
+  local res, err = log.read(loc.log, base.offset, base.lines)
+  if not res then return false, err end
+  if base.offset == 0 then base.log_id = res.log_id end
+
+  if full then unsaved = 0 end
+  synced, reduced = base, state
+  synced.ino = stat.ino
+  apply(res.events)
+  synced.offset, synced.lines = res.offset, res.lines
+  -- A replay that didn't come from the cache is worth caching
+  if full and not cached and unsaved == 0 then unsaved = 1 end
+  return true, nil, full or #res.events > 0
+end
+
+-- Load the records of a comments.json (its raw bytes): upgraded, normalized,
+-- hand-copied duplicate ids split, and records that can't be shown dropped
+-- with a warning (the original is kept as comments.json.pre-log.bak).
+-- Returns: records, or nil and an error
+local function load_records(raw, path)
+  local list, err = storage.parse(raw, path)
+  if not list then return nil, err end
+  local loaded, seen, dropped = {}, {}, 0
+  for _, item in ipairs(list) do
+    local c = type(item) == 'table' and normalize(item) or nil
+    if not c then
+      dropped = dropped + 1
+    else
+      -- A hand-copied comment shares its id; give the copy its own, so
+      -- remove(id) never deletes both
+      if seen[c.id] then c.id = new_id() end
+      seen[c.id] = true
+      table.insert(loaded, c)
+    end
+  end
+  if dropped > 0 then
+    vim.notify(string.format('quickfix-review: dropped %d comment(s) with an invalid line number or no file in %s;'
+      .. ' original kept at %s', dropped, path, path .. MIGRATED), vim.log.levels.WARN)
+  end
+  return loaded
+end
+
+local function serialise_all(records)
+  local out = {}
+  for i, c in ipairs(records) do out[i] = storage.serialise(c) end
+  return out
+end
+
+-- Move comments.json into a new log: under the lock, write the header and an
+-- import of its comments (with the sha256 of its bytes) in one fsync'ed
+-- append, then rename it to comments.json.pre-log.bak, which keeps the
+-- original bytes. A crash before the rename is finished by the next sync,
+-- which finds the import's sha256 in the log. An unreadable comments.json
+-- is refused: no log is written and the file is left alone.
+-- Returns: ok (boolean), err (string or nil)
+local function migrate(loc)
+  local got, ok, err = locked(loc, function()
+    local st = uv.fs_stat(loc.log)
+    if st and st.size > 0 then return true end -- another Neovim did it
+    local src = uv.fs_stat(loc.path)
+    if not src then return true end
+    local raw = read_bytes(loc.path)
+    if not raw then return nil, 'Could not read ' .. loc.path end
+    local records, lerr = load_records(raw, loc.path)
+    if not records then return nil, lerr end
+    local import = log.event('import', { source_sha256 = vim.fn.sha256(raw), comments = serialise_all(records) })
+    local wrote, werr = log.append(loc.log, { log.new_header(), import }, bit.band(src.mode, 511))
+    if not wrote then return nil, 'Could not write ' .. loc.log .. ': ' .. werr end
+    local renamed, rerr = uv.fs_rename(loc.path, loc.path .. MIGRATED)
+    if not renamed then
+      vim.notify(string.format('quickfix-review: migrated %s into %s but could not rename it: %s',
+        loc.path, loc.log, tostring(rerr)), vim.log.levels.WARN)
+    end
+    return true
+  end)
+  if not got then return false, ok end
+  return ok == true, err
 end
 
 -- Storage paths whose legacy import has been tried this session
 local import_tried = {}
 
--- First use of a project with no comments.json: copy the comments under the
--- project root out of the legacy global file (old default storage_file). The
--- legacy file is only read, never upgraded, backed up or rewritten. The
--- comments.json is written even when nothing matches, so the import happens
--- once per project, across restarts.
+-- First use of a project with neither a log nor a comments.json: copy the
+-- comments under the project root out of the legacy global file (old default
+-- storage_file) into a new log, as an import event. The legacy file is only
+-- read, never upgraded, backed up or rewritten. The log is written even when
+-- nothing matches, so the import happens once per project, across restarts:
+-- a log is the "already imported" marker.
 local function import_legacy(loc)
-  if import_tried[loc.path] then return end
-  import_tried[loc.path] = true
+  if import_tried[loc.log] then return end
+  import_tried[loc.log] = true
 
   local legacy = config.legacy_storage_file()
   if vim.fn.filereadable(legacy) == 0 then return end
-  if utils.files_match(legacy, loc.path) then return end
+  if utils.files_match(legacy, loc.path) or utils.files_match(legacy, loc.log) then return end
 
-  local list, err = storage.load(legacy)
+  local raw = read_bytes(legacy)
+  local list, err = storage.parse(raw, legacy)
   if not list then
     vim.notify('quickfix-review: not importing from ' .. legacy .. ': ' .. err, vim.log.levels.WARN)
     return
@@ -229,134 +495,126 @@ local function import_legacy(loc)
     if c and utils.is_under(c.filename, loc.root) then
       if seen[c.id] then c.id = new_id() end
       seen[c.id] = true
-      table.insert(imported, c)
+      table.insert(imported, storage.serialise(c))
     end
   end
 
-  mkdir_for(loc.path)
-  local ok, message = storage.save(imported, loc.path)
-  if not ok then
-    vim.notify('quickfix-review: import from ' .. legacy .. ' failed: ' .. message, vim.log.levels.ERROR)
+  local got, ok, werr = locked(loc, function()
+    local st = uv.fs_stat(loc.log)
+    if st and st.size > 0 then return 'exists' end -- another Neovim did it
+    local import = log.event('import', { source_sha256 = vim.fn.sha256(raw), comments = imported })
+    return log.append(loc.log, { log.new_header(), import })
+  end)
+  if not got or not ok then
+    vim.notify('quickfix-review: import from ' .. legacy .. ' failed: ' .. tostring(got and werr or ok),
+      vim.log.levels.ERROR)
     return
   end
-  if #imported > 0 then
+  if ok == true and #imported > 0 then
     vim.notify(string.format('quickfix-review: imported %d comments from %s', #imported, legacy))
   end
 end
 
--- Re-read the storage file if it isn't the version `comments` reflects
+-- The log is missing (or empty): migrate comments.json into it, or import
+-- from the legacy global file, or leave it to the first change to create
 -- Returns: ok (boolean), err (string or nil)
-local function sync()
+local function init_storage(loc)
+  if uv.fs_stat(loc.path) then return migrate(loc) end
+  if not loc.explicit then import_legacy(loc) end
+  return true, nil
+end
+
+-- comments.json versions (path:size:mtime) already looked at
+local reappeared_seen = {}
+
+-- comments.json next to an existing log: either a migration that crashed
+-- before its rename (the log holds an import with its sha256), which is
+-- finished now, or something wrote it after the migration (an external tool,
+-- an older plugin). That one is not read, and not deleted: warn once.
+local function check_reappeared(loc)
+  local st = uv.fs_stat(loc.path)
+  if not st then return end
+  local key = string.format('%s:%d:%d.%d', loc.path, st.size, st.mtime.sec, st.mtime.nsec)
+  if reappeared_seen[key] then return end
+  reappeared_seen[key] = true
+  local raw = read_bytes(loc.path)
+  if raw and synced.imports[vim.fn.sha256(raw)] then
+    locked(loc, function()
+      if uv.fs_stat(loc.path) then uv.fs_rename(loc.path, loc.path .. MIGRATED) end
+    end)
+    return
+  end
+  vim.notify(string.format('quickfix-review: %s reappeared next to the review log %s; it is not read'
+    .. ' (the log is the review) and is left alone', loc.path, loc.log), vim.log.levels.WARN)
+end
+
+-- Bring the comments up to date with the log (migrating or importing first
+-- when there is none). opts.full replays the whole log, ignoring the cache.
+-- Returns: ok (boolean), err (string or nil)
+local function sync(opts)
+  opts = opts or {}
   local loc = resolve()
-  local path = loc.path
-  local current = mtime(path)
-  if current == nil and not loc.explicit then
-    import_legacy(loc)
-    current = mtime(path)
+  local changed = false
+  if synced.log ~= loc.log then
+    flush()
+    reset(loc)
+    changed = true
   end
-  if path == synced.path and current == synced.mtime then return true end
-
-  local list, err, upgraded = storage.load(path)
-  -- Keep the file as it was before an upgrade rewrites it
-  if upgraded then
-    local backed_up, berr = storage.backup_once(path, '.pre-v' .. storage.VERSION .. '.bak')
-    if not backed_up then list, err = nil, berr end
-  end
-  local function refuse(e)
-    local key = path .. ':' .. tostring(current)
-    if key ~= bad_file_notified then
-      bad_file_notified = key
-      vim.notify('quickfix-review: ' .. e .. '; the review will not be modified until the file is fixed',
-        vim.log.levels.ERROR)
+  local stat = uv.fs_stat(loc.log)
+  if not stat or stat.size == 0 then
+    -- The log was removed: so is the review
+    if synced.log_id then
+      reset(loc)
+      changed = true
     end
-    return false, e
+    local ok, err = init_storage(loc)
+    if not ok then return refuse(err) end
+    stat = uv.fs_stat(loc.log)
   end
-  if not list then return refuse(err) end
-
-  local loaded = {}
-  -- An upgraded file is rewritten in the current schema, once
-  local rewrite = upgraded
-  local dropped = 0
-  local seen = {}
-  for _, item in ipairs(list) do
-    local c = normalize(item)
-    if not c then
-      dropped = dropped + 1
-    else
-      if not has_id(item) or type(item.created_at) ~= 'number' then rewrite = true end
-      -- A legacy text field (merged by normalize) and numeric-string line
-      -- numbers are rewritten in the current schema, once
-      if type(item.text) == 'string' or type(item.lnum) == 'string' or type(item.end_lnum) == 'string' then
-        rewrite = true
-      end
-      -- A hand-copied comment shares its id; give the copy its own, so
-      -- remove(id) never deletes both
-      if seen[c.id] then
-        c.id = new_id()
-        rewrite = true
-      end
-      seen[c.id] = true
-      table.insert(loaded, c)
+  if stat and stat.size > 0 then
+    local ok, err, read_changed = read_log(loc, stat, opts)
+    if not ok then return refuse(err) end
+    changed = changed or read_changed
+    check_reappeared(loc)
+  end
+  bad_notified = nil
+  if changed then
+    local list = {}
+    for _, r in ipairs(reduced.comments) do
+      local c = view_of(r)
+      if c then table.insert(list, c) end
     end
+    comments = list
+    refresh_view()
+    on_change(comments)
   end
-  -- Records that can't be shown (no file, or no valid line number) are
-  -- dropped, and the file rewritten without them: keep the original first.
-  -- If that backup fails the review stays read-only, so nothing is lost.
-  if dropped > 0 then
-    local bak_suffix = '.pre-repair.bak'
-    local backed_up, berr = storage.backup_once(path, bak_suffix)
-    if not backed_up then return refuse(berr) end
-    vim.notify(string.format('quickfix-review: dropped %d comment(s) with an invalid line number or no file in %s;'
-      .. ' original kept at %s', dropped, path, path .. bak_suffix), vim.log.levels.WARN)
-    rewrite = true
-  end
-  bad_file_notified = nil
-  comments = loaded
-  synced = { path = path, mtime = current }
-  -- Persist ids (and creation times) given to comments that had none, once,
-  -- so they stay stable.
-  -- An upgraded file is rewritten too (after the backup above).
-  -- Not write(): on failure that would forget the synced version, so every
-  -- sync would re-read the file and hand out new ids. A failure is left
-  -- silent; the next real change retries the write and reports it.
-  if rewrite and storage.save(comments, path) then
-    synced = { path = path, mtime = mtime(path) }
-  end
-  refresh_view()
-  on_change(comments)
+  if unsaved >= FLUSH_EVERY then flush() end
   return true
 end
 
--- On failure the file is untouched, so `comments` no longer reflects it:
--- forget the synced version so the next sync() re-reads the file.
-local function write()
-  local path = resolve().path
-  mkdir_for(path)
-  local ok, message = storage.save(comments, path)
-  if ok then
-    synced = { path = path, mtime = mtime(path) }
-  else
-    synced = { path = nil, mtime = nil }
-  end
-  return ok, message
-end
-
--- Apply `fn` to the latest comments and write the result through to disk.
--- Refuses to change anything if the storage file can't be read, so an
--- unreadable file is never silently overwritten (sync() reports that once).
--- If the write fails the change is dropped: `comments` is re-read from the
--- untouched file, so memory never holds a change that isn't on disk.
--- Returns: whatever fn returns, or nil if the change was refused
-local function update(fn)
-  if not sync() then return nil end
-  local result = fn()
-  local saved, message = write()
-  if not saved then
-    vim.notify('quickfix-review: ' .. message, vim.log.levels.ERROR)
+-- Append the events build() returns to the log, built against its latest
+-- state, all with the log locked. Memory changes only by reading back what
+-- was appended, so it never holds a change that isn't on disk. Refuses to
+-- change anything if the log (or a comments.json to migrate) is unusable
+-- (sync() reports that once) or the lock can't be taken.
+-- build() returns: events (a list, possibly empty), result
+-- Returns: result, or nil if the change was refused or failed
+local function mutate(build)
+  local loc = resolve()
+  local got, result, err = locked(loc, function()
+    if not sync() then return nil end
+    local events, res = build()
+    if #events == 0 then return res end
+    local stat = uv.fs_stat(loc.log)
+    if not stat or stat.size == 0 then table.insert(events, 1, log.new_header()) end
+    local wrote, werr = log.append(loc.log, events)
+    -- Read back what was written: all of it, some or none
     sync()
-  end
-  refresh_view()
-  on_change(comments)
+    if not wrote then return nil, 'Could not write ' .. loc.log .. ': ' .. tostring(werr) end
+    return res
+  end)
+  if not got then result, err = nil, result end
+  if err then vim.notify('quickfix-review: ' .. err, vim.log.levels.ERROR) end
   return result
 end
 
@@ -374,11 +632,10 @@ end
 -- Add a comment
 -- Returns: true if it was added, false if it has no file or the change was refused
 function M.add(item)
-  return update(function()
+  return mutate(function()
     local c = normalize(item)
-    if not c then return false end
-    table.insert(comments, c)
-    return true
+    if not c then return {}, false end
+    return { log.event('add', { comment = storage.serialise(c) }) }, true
   end) == true
 end
 
@@ -391,16 +648,30 @@ function M.get(id)
   return nil
 end
 
--- Remove every comment for which pred(comment) is true
+-- The deleted comments, by id (kept in the log, so they can be restored).
+-- Treat as read-only.
+function M.trash()
+  sync()
+  local out = {}
+  for id, r in pairs(reduced.trash) do
+    out[id] = view_of(r) or r
+  end
+  return out
+end
+
+-- Remove every comment for which pred(comment) is true: one delete event,
+-- holding the comment, per match
 -- Returns: number removed, or nil if the change was refused (unreadable file)
 function M.remove_if(pred)
-  return update(function()
-    local kept, removed = {}, 0
-    for _, c in ipairs(comments) do
-      if pred(c) then removed = removed + 1 else table.insert(kept, c) end
+  return mutate(function()
+    local events = {}
+    for _, r in ipairs(reduced.comments) do
+      local c = view_of(r)
+      if c and pred(c) then
+        table.insert(events, log.event('delete', { id = r.id, comment = r }))
+      end
     end
-    comments = kept
-    return removed
+    return events, #events
   end)
 end
 
@@ -410,30 +681,42 @@ function M.remove(id)
   return M.remove_if(function(c) return c.id == id end)
 end
 
--- Remove every comment
+-- Remove every comment (one clear event holding them all)
 -- Returns: true, or nil if the change was refused
 function M.clear()
-  return update(function()
-    comments = {}
-    return true
+  return mutate(function()
+    if #reduced.comments == 0 then return {}, true end
+    return { log.event('clear', { comments = reduced.comments }) }, true
   end)
 end
 
--- Re-read the storage file even if it looks unchanged
+-- Replay the whole log, ignoring the cache
 -- Returns: ok (boolean), message (string)
 function M.reload()
-  synced = { path = nil, mtime = nil }
-  local ok, err = sync()
+  local ok, err = sync({ full = true })
   if not ok then return false, err end
   return true, string.format('Review loaded: %d comments', #comments)
 end
 
--- Write the comments to disk even though every change already is
+-- Write the cache (state.json) now. Every change is already in the log, so
+-- this is never needed for the review to be saved.
 -- Returns: ok (boolean), message (string)
 function M.save()
   local ok, err = sync()
   if not ok then return false, err end
-  return write()
+  if not synced.log_id then
+    return true, 'Review saved (no comments yet)'
+  end
+  local wrote, werr = flush(true)
+  if not wrote then
+    return false, 'Could not write ' .. synced.state .. ': ' .. tostring(werr)
+  end
+  return true, string.format('Review saved to %s (%d comments)', synced.log, #comments)
+end
+
+-- Write the cache if events were applied since it was last written (on exit)
+function M.flush()
+  flush()
 end
 
 -- Publish the comments as a quickfix list and make it the current one

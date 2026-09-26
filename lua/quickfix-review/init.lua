@@ -203,8 +203,8 @@ function M.comments()
   return store.all()
 end
 
--- Save review to file. Every change is already saved as it is made; this
--- only forces a write.
+-- Save the review. Every change is already appended to the review's log as
+-- it is made; this only writes the cache of the replayed log (state.json).
 function M.save_review()
   local ok, message = store.save()
   if ok then
@@ -214,7 +214,7 @@ function M.save_review()
   end
 end
 
--- Re-read the review from file and show it in the quickfix list
+-- Replay the review's log (ignoring the cache) and show it in the quickfix list
 function M.load_review()
   local ok, message = store.reload()
   if ok then store.show() end
@@ -635,6 +635,12 @@ function M.setup(opts)
     group = augroup,
     pattern = 'global',
     callback = function() store.all() end,
+  })
+
+  -- Cache the replayed log on exit, so the next start reads only its tail
+  vim.api.nvim_create_autocmd('VimLeavePre', {
+    group = augroup,
+    callback = function() store.flush() end,
   })
 
   -- Auto-show floating comment after navigating the review's quickfix list

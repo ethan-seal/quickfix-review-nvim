@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-0scv
 title: Event log core, reducer, cache and migration
-status: todo
+status: completed
 type: task
 priority: high
 created_at: 2026-09-26T04:57:59Z
-updated_at: 2026-09-26T04:57:59Z
+updated_at: 2026-09-26T06:33:01Z
 parent: quickfix-review-nvim-oyi9
 blocked_by:
     - quickfix-review-nvim-hffh

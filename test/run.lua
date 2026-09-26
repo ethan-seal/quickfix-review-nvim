@@ -39,6 +39,10 @@ run_file('test/test_comments.lua')
 -- Run sign tests
 run_file('test/test_signs.lua')
 
+-- Run event reducer and event log tests
+run_file('test/test_reduce.lua')
+run_file('test/test_log.lua')
+
 -- Run persistence tests
 run_file('test/test_persistence.lua')
 

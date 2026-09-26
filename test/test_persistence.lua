@@ -1,5 +1,5 @@
--- Tests for persistence: the review lives in the plugin, is written through to
--- disk on every change, and the quickfix list is only a view of it
+-- Tests for persistence: the review lives in the plugin, every change is
+-- appended to its event log on disk, and the quickfix list is only a view of it
 local test_helper = dofile('test/init.lua')
 local assert = dofile('test/assertions.lua')
 
@@ -15,23 +15,17 @@ line 5
 ]])
 
 local storage_file = test_helper.storage_file
+local log_file = test_helper.log_path()
 
 local function reset()
   vim.fn.setqflist({}, 'f')
-  os.remove(storage_file)
-  os.remove(storage_file .. '.pre-v2.bak')
+  test_helper.remove_storage()
   qf.clear_review()
 end
 
--- The comment list of a saved (version 2) review
-local function decode(str)
-  local doc = vim.json.decode(str, { luanil = { object = true, array = true } })
-  assert.equals(doc.version, 2, 'saved as version 2')
-  return doc.comments
-end
-
-local function saved()
-  return decode(table.concat(vim.fn.readfile(storage_file), '\n'))
+-- The live comments in the log of `path` (default: the test storage file)
+local function saved(path)
+  return test_helper.saved(test_helper.log_path(path))
 end
 
 -- A version 2 file holding these comments
@@ -39,8 +33,12 @@ local function envelope(list)
   return vim.json.encode({ version = 2, comments = list })
 end
 
--- Simulate quitting and reopening Neovim: drop every module and set up again
-local function restart(path)
+-- Simulate quitting and reopening Neovim: drop every module and set up again.
+-- Quitting writes the cache (VimLeavePre), unless opts.no_flush.
+local function restart(path, opts)
+  if not (opts and opts.no_flush) and package.loaded['quickfix-review.store'] then
+    package.loaded['quickfix-review.store'].flush()
+  end
   for name, _ in pairs(package.loaded) do
     if name:match('^quickfix%-review') then package.loaded[name] = nil end
   end
@@ -88,7 +86,10 @@ assert.run_test('every change is written through to disk', function()
 
   qf.delete_comment({ 3, 3 })
   assert.length(saved(), 0, 'deletion saved')
-  assert.equals(vim.fn.glob(storage_file .. '.tmp.*'), '', 'no temp files left behind')
+  assert.length(test_helper.log_ops(log_file, 'delete'), 1, 'as a delete event')
+  assert.equals(vim.fn.filereadable(storage_file), 0, 'no comments.json written')
+  assert.equals(vim.fn.glob(storage_file .. '*.tmp.*'), '', 'no temp files left behind')
+  assert.equals(vim.fn.isdirectory(test_helper.lock_path()), 0, 'no lock left behind')
 end)
 
 assert.run_test('comments survive a restart', function()
@@ -161,10 +162,12 @@ assert.run_test('changes made on disk are picked up', function()
   vim.fn.cursor(1, 1)
   qf.add_comment('ISSUE')
 
-  local list = saved()
-  table.insert(list, { filename = vim.fn.fnamemodify(test_file, ':p'), lnum = 4, kind = 'note', body = 'from elsewhere' })
-  vim.uv.sleep(10)
-  vim.fn.writefile({ envelope(list) }, storage_file)
+  -- Another Neovim appends to the log
+  local log = require('quickfix-review.log')
+  assert.truthy(log.append(log_file, { log.event('add', { comment = {
+    id = '00000000000000e1', filename = vim.fn.fnamemodify(test_file, ':p'), lnum = 4, end_lnum = 4,
+    kind = 'note', body = 'from elsewhere', created_at = 1700000000,
+  } }) }), 'appended')
 
   assert.length(qf.comments(), 2, 'external comment visible')
   vim.fn.cursor(5, 1)
@@ -179,8 +182,12 @@ assert.run_test('clearing persists', function()
   qf.clear_review()
 
   assert.length(saved(), 0, 'cleared on disk')
+  assert.length(test_helper.log_ops(log_file, 'clear'), 1, 'as a clear event')
   qf = restart()
   assert.length(qf.comments(), 0, 'still cleared after restart')
+  local trash = vim.tbl_values(require('quickfix-review.store').trash())
+  assert.length(trash, 1, 'the cleared comment is in the trash')
+  assert.equals(trash[1].kind, 'issue', 'with its content')
 end)
 
 assert.run_test('an unreadable file is not overwritten', function()
@@ -195,6 +202,8 @@ assert.run_test('an unreadable file is not overwritten', function()
   end)
 
   assert.equals(vim.fn.readfile(storage_file)[1], 'not json', 'file untouched')
+  assert.equals(vim.fn.filereadable(log_file), 0, 'no log written')
+  assert.equals(vim.fn.filereadable(storage_file .. '.pre-log.bak'), 0, 'not moved aside')
   assert.length(errors_mentioning(calls, storage_file), 1, 'reported exactly once, with the path')
   assert.length(errors_mentioning(calls, 'will not be modified'), 1, 'says the file will not be modified')
 end)
@@ -218,8 +227,12 @@ assert.run_test('a failed save leaves the file intact', function()
   fh:write(seed)
   fh:close()
 
+  local log_path = test_helper.log_path(path)
+
   local ok, err = pcall(function()
     qf = restart(path)
+    assert.equals(read_bytes(path .. '.pre-log.bak'), seed, 'migrated, original kept')
+    local logged = read_bytes(log_path)
     vim.fn.setfperm(dir, 'r-xr-xr-x')
 
     local calls = capture_notify(function()
@@ -227,7 +240,7 @@ assert.run_test('a failed save leaves the file intact', function()
       qf.add_comment('ISSUE')
     end)
 
-    assert.equals(read_bytes(path), seed, 'file byte-identical')
+    assert.equals(read_bytes(log_path), logged, 'log byte-identical')
     assert.truthy(#errors_mentioning(calls, path) >= 1, 'error notified with the path')
     assert.equals(vim.fn.glob(path .. '.tmp.*'), '', 'no temp files left behind')
     local list = qf.comments()
@@ -237,7 +250,7 @@ assert.run_test('a failed save leaves the file intact', function()
     vim.fn.setfperm(dir, 'rwxr-xr-x')
     vim.fn.cursor(3, 1)
     qf.add_comment('ISSUE')
-    local on_disk = decode(read_bytes(path))
+    local on_disk = saved(path)
     assert.length(on_disk, 2, 'saving works again once writable')
     assert.equals(vim.fn.glob(path .. '.tmp.*'), '', 'no temp files after recovering')
   end)
@@ -269,6 +282,7 @@ end)
 -- Write raw JSON to the storage file, as an older version or another tool would
 local function seed_legacy(json)
   vim.fn.setqflist({}, 'f')
+  test_helper.remove_storage()
   local fh = io.open(storage_file, 'w')
   fh:write(json)
   fh:close()
@@ -332,7 +346,7 @@ assert.run_test('adding a comment gives it a 16 hex char id', function()
   assert.equals(require('quickfix-review.store').get(id), qf.comments()[1], 'store.get finds it')
 end)
 
-assert.run_test('comments without ids get them on load, written once', function()
+assert.run_test('comments without ids get them on migration, logged once', function()
   local abs = vim.fn.fnamemodify(test_file, ':p')
   seed_legacy(string.format(
     '[{"filename":%q,"lnum":1,"col":1,"text":"[NOTE] a"},{"filename":%q,"lnum":3,"col":1,"text":"[NOTE] b"}]',
@@ -343,18 +357,14 @@ assert.run_test('comments without ids get them on load, written once', function(
   assert.truthy(is_id(list[1].id) and is_id(list[2].id), 'both got ids')
   assert.not_equals(list[1].id, list[2].id, 'ids differ')
   local on_disk = saved()
-  assert.equals(on_disk[1].id, list[1].id, 'first id written back')
-  assert.equals(on_disk[2].id, list[2].id, 'second id written back')
+  assert.equals(on_disk[1].id, list[1].id, 'first id logged')
+  assert.equals(on_disk[2].id, list[2].id, 'second id logged')
 
-  local bytes = read_bytes(storage_file)
-  local stat = vim.uv.fs_stat(storage_file)
-  vim.uv.sleep(10)
+  local bytes = read_bytes(log_file)
   qf = restart()
   local again = qf.comments()
-  assert.equals(read_bytes(storage_file), bytes, 'second load leaves the file alone')
-  local stat2 = vim.uv.fs_stat(storage_file)
-  assert.equals(stat2.mtime.sec .. '.' .. stat2.mtime.nsec, stat.mtime.sec .. '.' .. stat.mtime.nsec,
-    'second load does not rewrite')
+  assert.equals(read_bytes(log_file), bytes, 'second load does not append')
+  assert.length(test_helper.log_ops(log_file, 'import'), 1, 'imported once')
   assert.equals(again[1].id, list[1].id, 'first id stable')
   assert.equals(again[2].id, list[2].id, 'second id stable')
 end)
@@ -373,13 +383,161 @@ assert.run_test('two Neovim processes give their comments different ids', functi
       '-c', 'qall!',
     }):wait()
     assert.equals(result.code, 0, 'child nvim exits cleanly: ' .. tostring(result.stderr))
-    local list = decode(read_bytes(file))
-    os.remove(file)
+    local list = saved(file)
+    test_helper.remove_storage(file)
     assert.length(list, 1, 'child saved its comment')
     ids[i] = list[1].id
     assert.truthy(is_id(ids[i]), 'child id is 16 hex chars: ' .. tostring(ids[i]))
   end
   assert.not_equals(ids[1], ids[2], 'ids differ across processes')
+end)
+
+assert.run_test('two Neovims appending at once lose nothing and tear nothing', function()
+  local abs = vim.fn.fnamemodify(test_file, ':p')
+  local file = vim.fn.tempname() .. '-concurrent.json'
+  local script = vim.fn.tempname() .. '-writer.lua'
+  -- Each writer adds 50 comments whose lines are over 8 KB, so a line is
+  -- larger than any stdio buffer or pipe atomicity guarantee
+  vim.fn.writefile({
+    'local who = ...',
+    string.format('require("quickfix-review").setup({ storage_file = %q })', file),
+    'local store = require("quickfix-review.store")',
+    'local ok = 0',
+    'for i = 1, 50 do',
+    string.format('  if store.add({ filename = %q, lnum = 1, kind = "note",', abs),
+    '    body = who .. " " .. i .. " " .. string.rep("x", 9000) }) then ok = ok + 1 end',
+    'end',
+    'if ok ~= 50 then io.stderr:write("only " .. ok .. " adds succeeded\\n") vim.cmd("cquit 3") end',
+  }, script)
+  local function writer(who)
+    return vim.system({
+      vim.v.progpath, '--headless', '--clean',
+      '--cmd', 'set rtp^=' .. vim.fn.getcwd(),
+      '-c', string.format('lua assert(loadfile(%q))(%q)', script, who),
+      '-c', 'qall!',
+    })
+  end
+  -- Both started before either is waited on
+  local one, two = writer('one'), writer('two')
+  local r1, r2 = one:wait(60000), two:wait(60000)
+  local ok, err = pcall(function()
+    assert.equals(r1.code, 0, 'writer one exits cleanly: ' .. tostring(r1.stderr))
+    assert.equals(r2.code, 0, 'writer two exits cleanly: ' .. tostring(r2.stderr))
+
+    local lines = vim.split(read_bytes(test_helper.log_path(file)), '\n', { plain = true })
+    assert.equals(lines[#lines], '', 'the log ends in a newline')
+    table.remove(lines)
+    assert.length(lines, 101, 'a header and 100 records')
+    local eids, per_writer = {}, { one = 0, two = 0 }
+    for i, line in ipairs(lines) do
+      local decoded, ev = pcall(vim.json.decode, line)
+      assert.truthy(decoded and type(ev) == 'table', 'line ' .. i .. ' decodes')
+      if i == 1 then
+        assert.equals(ev.op, 'header', 'first line is the header')
+      else
+        assert.equals(ev.op, 'add', 'line ' .. i .. ' is an add')
+        assert.truthy(#line > 8192, 'line ' .. i .. ' is over 8 KB')
+        assert.falsy(eids[ev.eid], 'eid ' .. tostring(ev.eid) .. ' is unique')
+        eids[ev.eid] = true
+        local who = ev.comment.body:match('^(%a+) ')
+        per_writer[who] = per_writer[who] + 1
+      end
+    end
+    assert.equals(per_writer.one, 50, 'all of writer one')
+    assert.equals(per_writer.two, 50, 'all of writer two')
+    assert.length(saved(file), 100, '100 live comments')
+    assert.equals(vim.fn.isdirectory(test_helper.lock_path(file)), 0, 'no lock left behind')
+  end)
+  test_helper.remove_storage(file)
+  os.remove(script)
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('deleting state.json rebuilds the identical state from the log', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('ISSUE')
+  vim.fn.cursor(2, 1)
+  qf.add_comment('NOTE')
+  vim.fn.cursor(4, 1)
+  qf.add_comment('SUGGESTION')
+  qf.delete_comment({ 2, 2 })
+  vim.fn.cursor(5, 1)
+  qf.add_comment('PRAISE')
+
+  qf = restart() -- writes the cache on the way out
+  local store = require('quickfix-review.store')
+  assert.equals(vim.fn.filereadable(test_helper.state_path()), 1, 'state.json written')
+  local cached_comments, cached_trash = store.all(), store.trash()
+  assert.length(cached_comments, 3, 'three live comments')
+  assert.length(vim.tbl_keys(cached_trash), 1, 'one in the trash')
+
+  os.remove(test_helper.state_path())
+  qf = restart(nil, { no_flush = true })
+  store = require('quickfix-review.store')
+  assert.truthy(vim.deep_equal(store.all(), cached_comments), 'same comments after a rebuild')
+  assert.truthy(vim.deep_equal(store.trash(), cached_trash), 'same trash after a rebuild')
+end)
+
+assert.run_test('a migration that crashed before its rename is finished without duplicates', function()
+  reset()
+  local abs = vim.fn.fnamemodify(test_file, ':p')
+  local records = {
+    { id = '00000000000000c1', filename = abs, lnum = 1, end_lnum = 1, kind = 'issue', body = 'one',
+      created_at = 1700000000 },
+    { id = '00000000000000c2', filename = abs, lnum = 3, end_lnum = 3, kind = 'note', body = 'two',
+      created_at = 1700000000 },
+  }
+  local raw = envelope(records)
+  local fh = io.open(storage_file, 'wb')
+  fh:write(raw)
+  fh:close()
+  -- What the migration had written when it crashed: the log, with the import
+  -- of comments.json, but comments.json not yet renamed
+  local log = require('quickfix-review.log')
+  assert.truthy(log.append(log_file, {
+    log.new_header(),
+    log.event('import', { source_sha256 = vim.fn.sha256(raw), comments = records }),
+  }), 'seeded')
+
+  local calls = capture_notify(function() qf = restart() end)
+  local list = qf.comments()
+  assert.length(list, 2, 'no duplicates')
+  assert.equals(list[1].body, 'one', 'first comment')
+  assert.length(test_helper.log_ops(log_file, 'import'), 1, 'imported once')
+  assert.equals(read_bytes(storage_file .. '.pre-log.bak'), raw, 'original kept as .pre-log.bak')
+  assert.equals(vim.fn.filereadable(storage_file), 0, 'comments.json moved aside')
+  for _, c in ipairs(calls) do
+    assert.falsy(c.level == vim.log.levels.WARN or c.level == vim.log.levels.ERROR, 'no warning: ' .. c.msg)
+  end
+
+  qf = restart()
+  assert.length(qf.comments(), 2, 'still two after another restart')
+end)
+
+assert.run_test('a comments.json written next to the log is warned about once and ignored', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('ISSUE')
+  local other = envelope({ { id = '00000000000000d9', filename = vim.fn.fnamemodify(test_file, ':p'),
+    lnum = 2, end_lnum = 2, kind = 'note', body = 'stray', created_at = 1700000000 } })
+  local fh = io.open(storage_file, 'wb')
+  fh:write(other)
+  fh:close()
+  local calls = capture_notify(function()
+    qf.comments()
+    vim.fn.cursor(3, 1)
+    qf.add_comment('NOTE')
+    qf.comments()
+  end)
+  local warns = {}
+  for _, c in ipairs(calls) do
+    if c.level == vim.log.levels.WARN then table.insert(warns, c) end
+  end
+  assert.length(warns, 1, 'warned once')
+  assert.truthy(warns[1].msg:find(storage_file, 1, true), 'names the file')
+  assert.length(qf.comments(), 2, 'the stray file is not read')
+  assert.equals(read_bytes(storage_file), other, 'and is left alone')
 end)
 
 assert.run_test('an empty object round-trips as {}', function()
@@ -388,17 +546,20 @@ assert.run_test('an empty object round-trips as {}', function()
     '[{"id":"00000000000000aa","filename":%q,"lnum":1,"col":1,"text":"[NOTE] seeded","user_data":{}}]', abs))
   assert.equals(type(qf.comments()[1].context), 'table', 'loads as a table')
 
+  local bytes = read_bytes(log_file) -- the import of the seeded comment
+  assert.truthy(bytes:find('"context":{}', 1, true), 'seeded {} logged as {}: ' .. bytes)
+  assert.falsy(bytes:find('"context":[]', 1, true), 'not logged as []')
   vim.fn.cursor(3, 1)
-  qf.add_comment('NOTE') -- forces a save of the seeded comment
-  local bytes = read_bytes(storage_file)
-  assert.truthy(bytes:find('"context":{}', 1, true), 'seeded {} saved as {}: ' .. bytes)
-  assert.falsy(bytes:find('"context":[]', 1, true), 'not saved as []')
+  qf.add_comment('NOTE')
+  qf = restart() -- writes and then reads the cache
+  assert.truthy(read_bytes(test_helper.state_path()):find('"context":{}', 1, true), 'cached as {}')
+  assert.equals(type(qf.comments()[1].context), 'table', 'reloads from the cache as a table')
 
   reset()
   require('quickfix-review.store').add({ filename = abs, lnum = 2, kind = 'note', body = 'x', context = vim.empty_dict() })
-  bytes = read_bytes(storage_file)
-  assert.truthy(bytes:find('"context":{}', 1, true), 'empty_dict saved as {}: ' .. bytes)
-  assert.falsy(bytes:find('[]', 1, true), 'no [] in the file')
+  bytes = read_bytes(log_file)
+  assert.truthy(bytes:find('"context":{}', 1, true), 'empty_dict logged as {}: ' .. bytes)
+  assert.falsy(bytes:find('[]', 1, true), 'no [] in the log')
   qf = restart()
   assert.equals(type(qf.comments()[1].context), 'table', 'reloads as a table')
 end)
@@ -426,13 +587,14 @@ assert.run_test('a null in the comment list is rejected, not truncated', functio
       qf.comments()
     end)
     assert.equals(read_bytes(storage_file), json, name .. ': file untouched')
+    assert.equals(vim.fn.filereadable(log_file), 0, name .. ': no log written')
     assert.length(errors_mentioning(calls, storage_file), 1, name .. ': reported exactly once, with the path')
   end
-  os.remove(storage_file)
+  test_helper.remove_storage()
   qf = restart()
 end)
 
-assert.run_test('duplicate ids are split on load and persisted once', function()
+assert.run_test('duplicate ids are split on migration', function()
   local abs = vim.fn.fnamemodify(test_file, ':p')
   seed_legacy(string.format(
     '[{"id":"00000000000000aa","filename":%q,"lnum":1,"col":1,"text":"[NOTE] a"},'
@@ -444,7 +606,7 @@ assert.run_test('duplicate ids are split on load and persisted once', function()
   assert.truthy(is_id(list[2].id), 'copy got a fresh id')
   assert.not_equals(list[2].id, list[1].id, 'ids differ')
   local on_disk = saved()
-  assert.equals(on_disk[2].id, list[2].id, 'fresh id written back')
+  assert.equals(on_disk[2].id, list[2].id, 'fresh id logged')
 
   assert.equals(require('quickfix-review.store').remove('00000000000000aa'), 1, 'remove deletes one')
   local left = qf.comments()
@@ -452,21 +614,25 @@ assert.run_test('duplicate ids are split on load and persisted once', function()
   assert.equals(left[1].body, 'copy', 'the copy remains')
 end)
 
-assert.run_test('a symlinked storage file stays a link and its target is updated', function()
+assert.run_test('a symlinked storage file is migrated without touching its target', function()
   local target = vim.fn.tempname() .. '-target.json'
   local link = vim.fn.tempname() .. '-link.json'
-  vim.fn.writefile({ '[]' }, target)
+  local abs = vim.fn.fnamemodify(test_file, ':p')
+  local seed = envelope({ { id = '00000000000000f1', filename = abs, lnum = 1, end_lnum = 1, kind = 'note',
+    body = 'linked', created_at = 1700000000 } })
+  vim.fn.writefile({ seed }, target)
   assert.truthy(vim.uv.fs_symlink(target, link), 'symlink created')
   local ok, err = pcall(function()
     qf = restart(link)
+    assert.equals(qf.comments()[1].body, 'linked', 'read through the link')
     vim.fn.cursor(2, 1)
     qf.add_comment('ISSUE')
-    assert.equals(vim.uv.fs_lstat(link).type, 'link', 'still a symlink')
-    assert.length(decode(read_bytes(target)), 1, 'target has the comment')
-    assert.equals(vim.fn.glob(target .. '.tmp.*'), '', 'no temp files left behind')
+    assert.equals(vim.uv.fs_lstat(link .. '.pre-log.bak').type, 'link', 'the link is moved aside, still a link')
+    assert.length(saved(link), 2, 'the log next to the link has both comments')
+    assert.equals(read_bytes(target), seed .. '\n', 'target untouched')
   end)
   qf = restart()
-  os.remove(link)
+  test_helper.remove_storage(link)
   os.remove(target)
   if not ok then error(err, 0) end
 end)
@@ -479,11 +645,13 @@ assert.run_test('the storage file keeps its permission bits', function()
     qf = restart(path)
     vim.fn.cursor(2, 1)
     qf.add_comment('ISSUE')
-    assert.length(decode(read_bytes(path)), 1, 'comment saved')
-    assert.equals(vim.fn.getfperm(path), 'rw-------', 'mode 0600 kept')
+    assert.length(saved(path), 1, 'comment saved')
+    assert.equals(vim.fn.getfperm(test_helper.log_path(path)), 'rw-------', 'log gets mode 0600')
+    require('quickfix-review.store').flush()
+    assert.equals(vim.fn.getfperm(test_helper.state_path(path)), 'rw-------', 'cache gets mode 0600')
   end)
   qf = restart()
-  os.remove(path)
+  test_helper.remove_storage(path)
   if not ok then error(err, 0) end
 end)
 

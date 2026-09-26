@@ -80,19 +80,22 @@ assert.run_test('dd in the review list deletes the comment on that row', functio
   close_lists()
 end)
 
-assert.run_test('dd deletes by id after the file is reordered on disk', function()
+assert.run_test('dd deletes by id after another Neovim reorders the review', function()
   add_two_comments()
   qf.open_list()
   -- Row 1 (not 2): re-rendering the view moves the cursor back to row 1,
   -- so only row 1 exposes a positional lookup
   vim.fn.cursor(1, 1) -- the line 1 comment
 
-  local storage_file = test_helper.storage_file
-  local doc = vim.json.decode(table.concat(vim.fn.readfile(storage_file), '\n'),
-    { luanil = { object = true, array = true } })
-  local list = doc.comments
-  vim.uv.sleep(10) -- so the rewrite gets a new mtime
-  vim.fn.writefile({ vim.json.encode({ version = 2, comments = { list[2], list[1] } }) }, storage_file)
+  -- Another Neovim deletes the line 1 comment and restores it, which moves
+  -- it to the end of the review
+  local log_path = test_helper.log_path()
+  local first = test_helper.saved(log_path)[1]
+  local log = require('quickfix-review.log')
+  assert.truthy(log.append(log_path, {
+    log.event('delete', { id = first.id, comment = first }),
+    log.event('restore', { id = first.id, comment = first }),
+  }), 'appended')
 
   pcall(vim.cmd, 'normal dd')
   local left = qf.comments()
@@ -164,9 +167,8 @@ assert.run_test('dd with an unreadable storage file says so and deletes nothing'
   add_two_comments()
   qf.open_list()
   vim.fn.cursor(1, 1)
-  local storage_file = test_helper.storage_file
-  vim.uv.sleep(10) -- so the rewrite gets a new mtime
-  vim.fn.writefile({ 'not json' }, storage_file)
+  local log_path = test_helper.log_path()
+  vim.fn.writefile({ 'not json' }, log_path)
 
   local calls = {}
   local original_notify, original_print = vim.notify, print
@@ -185,9 +187,10 @@ assert.run_test('dd with an unreadable storage file says so and deletes nothing'
   for _, line in ipairs(printed) do
     assert.falsy(line:find('no longer exists', 1, true), 'does not claim the comment is gone')
   end
-  assert.equals(vim.fn.readfile(storage_file)[1], 'not json', 'file untouched')
+  assert.equals(vim.fn.readfile(log_path)[1], 'not json', 'log untouched')
+  assert.length(vim.fn.readfile(log_path), 1, 'nothing appended')
 
-  os.remove(storage_file)
+  test_helper.remove_storage()
   close_lists()
 end)
 

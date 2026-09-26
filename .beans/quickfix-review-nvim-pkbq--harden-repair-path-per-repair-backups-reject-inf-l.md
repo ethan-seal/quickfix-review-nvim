@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: normal
 created_at: 2026-09-26T05:59:32Z
-updated_at: 2026-09-26T05:59:32Z
+updated_at: 2026-09-26T06:33:01Z
 ---
 
 Follow-ups from t1m3 review (store.lua sync/normalize/to_line):
@@ -17,3 +17,7 @@ Follow-ups from t1m3 review (store.lua sync/normalize/to_line):
 - [ ] Test: two repairs dropping different records → two distinct backups, WARN names each
 - [ ] Test: lnum "1e999" → dropped (not a save failure)
 - [ ] Test: record with body "a" and text "[ISSUE:L1] b" → text preserved in extra after save
+
+
+
+Note (0scv): .pre-repair.bak / backup_once repair rewrites no longer exist — migration keeps original bytes in comments.json.pre-log.bak and repairs apply only to records in the import event. First bullet is obsolete unless a repair path still drops records without a backup (check legacy-global import: the global file is read-only so its bytes survive). The inf-lnum and unconsumed-text bullets still apply (to normalize, which feeds import/add events).

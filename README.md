@@ -145,21 +145,26 @@ require('quickfix-review').setup({
 
 ### Where reviews are stored
 
-Each project has its own review, kept in `comments.json` inside a per-project storage directory. By default that is:
+Each project has its own review, kept as an append-only event log, `log.jsonl`, inside a per-project storage directory. By default that is:
 
 ```
 stdpath('data')/quickfix-review/<basename(root)>-<first 12 hex chars of sha256(root)>/
 ```
 
-e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/comments.json`, readable in a file browser.
+e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/log.jsonl`, readable in a file browser.
+
+- **The log**: one JSON object per line. The first line is a header; every later line is an event (`add`, `delete`, `clear`, `restore`, `import`, ...), and the review is those events replayed in order. Lines are only ever appended, in a single write under a lock, so several Neovims can share a review and no change can overwrite another. Deleted and cleared comments stay in the log. A line that can't be read is skipped with a warning naming its line number.
+- **`state.json`**: a cache of the replayed log next to it, written on exit and every 50 events. It is never needed: delete it and it is rebuilt from the log.
 
 - **Project root**: the git toplevel of Neovim's global working directory, or that directory itself outside git (symlinks resolved). Each git worktree has its own toplevel, so each worktree gets its own review.
 - **Switching projects**: after `:cd` into another project, the review is re-read from that project's directory and the quickfix view and signs follow. `:lcd` and `:tcd` don't switch projects. The root is looked up once per directory per session, so running `git init` in an open directory takes effect after a restart.
 - **`storage_dir`**: a function receives the resolved root and returns the directory to use; a string is used as-is, so every project shares it.
 
-**Migrating from the global file.** Older versions kept every project's comments in one file, `stdpath('data')/quickfix-review.json`. The first time you open a project that has no `comments.json` yet, the comments in that file whose path is inside the project are imported (you'll see "imported N comments from ..."). The global file is only read, never changed. This happens once per project: once its `comments.json` exists, even empty, nothing is imported again.
+**Migrating from `comments.json`.** Earlier versions kept the review in `comments.json` in the same directory. When a project has a `comments.json` but no log yet, its comments are copied into a new log as one `import` event and the file is renamed to `comments.json.pre-log.bak`, byte for byte as it was. From then on the log is the review: a `comments.json` that reappears next to it (written by an older version or another tool) is not read; you get one warning and the file is left alone.
 
-**`storage_file` (deprecated).** If you set `storage_file`, that single file is used for every project, as before: no storage directory, no switching on `:cd`, and no import. If you copied the old "full configuration" example, remove its `storage_file` line to get per-project reviews.
+**Migrating from the global file.** Older versions kept every project's comments in one file, `stdpath('data')/quickfix-review.json`. The first time you open a project that has neither a log nor a `comments.json`, the comments in that file whose path is inside the project are imported (you'll see "imported N comments from ..."). The global file is only read, never changed. This happens once per project: once its log exists, even with nothing imported, nothing is imported again.
+
+**`storage_file` (deprecated).** If you set `storage_file`, one review is used for every project, as before: no storage directory, no switching on `:cd`, and no import from the global file. Its log and cache sit next to the path you give: `<storage_file>.log.jsonl` and `<storage_file>.state.json` (plus a `<storage_file>.lock` directory while writing); an existing file at that path is migrated to the log and renamed to `<storage_file>.pre-log.bak`. If you copied the old "full configuration" example, remove its `storage_file` line to get per-project reviews.
 
 ### Multiple signs per line
 
@@ -229,8 +234,8 @@ A pattern that doesn't accept those four values falls back to the default with a
 | `:ReviewView` | View comment at cursor |
 | `:ReviewExport` | Export to markdown and clipboard |
 | `:ReviewClear` | Clear all comments (asks first; `:ReviewClear!` doesn't) |
-| `:ReviewSave` | Write review to disk (changes are already saved as they are made) |
-| `:ReviewLoad` | Re-read review from disk and show it in the quickfix list |
+| `:ReviewSave` | Write the `state.json` cache (every change is already in the log as it is made) |
+| `:ReviewLoad` | Replay the review's log from disk and show it in the quickfix list |
 | `:ReviewSummary` | Show comment summary |
 | `:ReviewGoto` | Jump to real file from diff |
 

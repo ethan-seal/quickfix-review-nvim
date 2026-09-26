@@ -25,8 +25,33 @@ local function write_bytes(path, content)
   fh:close()
 end
 
-local function decode(str)
-  return vim.json.decode(str, { luanil = { object = true, array = true } })
+-- The live records in the event log of the review at `path`
+local function logged(path)
+  return test_helper.saved(test_helper.log_path(path))
+end
+
+-- The import events in the log of the review at `path`
+local function imports(path)
+  return test_helper.log_ops(test_helper.log_path(path), 'import')
+end
+
+-- Run fn with vim.notify replaced by a recorder; returns the recorded calls
+local function capture_notify(fn)
+  local calls = {}
+  local original = vim.notify
+  vim.notify = function(msg, level) table.insert(calls, { msg = msg, level = level }) end
+  local ok, err = pcall(fn)
+  vim.notify = original
+  if not ok then error(err, 0) end
+  return calls
+end
+
+local function warnings(calls)
+  local found = {}
+  for _, c in ipairs(calls) do
+    if c.level == vim.log.levels.WARN then table.insert(found, c) end
+  end
+  return found
 end
 
 -- Simulate quitting and reopening Neovim on `path`
@@ -177,7 +202,7 @@ assert.run_test('upgrade leaves a version 2 document alone', function()
   assert.equals(storage.upgrade(doc), doc, 'same document')
 end)
 
-assert.run_test('a v1 file loads as v2, is backed up once and rewritten', function()
+assert.run_test('a v1 file is migrated to the log as v2 records, the original kept', function()
   with_file(V1, function(path)
     qf = restart(path)
     local list = qf.comments()
@@ -197,17 +222,18 @@ assert.run_test('a v1 file loads as v2, is backed up once and rewritten', functi
       assert.equals(c.bufnr, nil, 'comment ' .. i .. ' has no bufnr')
     end
 
-    assert.equals(read_bytes(path .. '.pre-v2.bak'), V1, 'backup holds the original bytes')
-    local doc = decode(read_bytes(path))
-    assert.equals(doc.version, 2, 'file rewritten as version 2')
-    assert.length(doc.comments, 4, 'all comments written')
-    for i, c in ipairs(doc.comments) do
+    assert.equals(read_bytes(path .. '.pre-log.bak'), V1, 'original kept, byte for byte')
+    assert.equals(vim.fn.filereadable(path), 0, 'comments.json moved aside')
+    assert.length(imports(path), 1, 'one import event')
+    local on_disk = logged(path)
+    assert.length(on_disk, 4, 'all comments logged')
+    for i, c in ipairs(on_disk) do
       assert.equals(c.text, nil, 'comment ' .. i .. ' has no text')
       assert.equals(c.user_data, nil, 'comment ' .. i .. ' has no user_data')
       assert.equals(c.id, list[i].id, 'comment ' .. i .. ' id written')
       assert.equals(type(c.created_at), 'number', 'comment ' .. i .. ' has created_at')
     end
-    assert.equals(doc.comments[1].context.commit_short, '01234567', 'context written')
+    assert.equals(on_disk[1].context.commit_short, '01234567', 'context logged')
 
     -- The qf view looks as it did in v1
     qf.show_list()
@@ -218,21 +244,27 @@ assert.run_test('a v1 file loads as v2, is backed up once and rewritten', functi
     assert.equals(rows[2].user_data.id, list[2].id, 'row carries the id')
     vim.fn.setqflist({}, 'f')
 
-    -- Loading again leaves the file and backup alone
-    local bytes = read_bytes(path)
+    -- Loading again leaves the log and the original alone
+    local bytes = read_bytes(test_helper.log_path(path))
     qf = restart(path)
     assert.length(qf.comments(), 4, 'reloads')
-    assert.equals(read_bytes(path), bytes, 'v2 file not rewritten')
+    assert.equals(read_bytes(test_helper.log_path(path)), bytes, 'log not appended to')
 
-    -- Another v1 write (e.g. an older tool) upgrades again, keeping the first backup
+    -- Another v1 write (e.g. an older tool) is not read once a log exists: it
+    -- is warned about once and left alone
     local other = string.format('[{"filename":%q,"lnum":1,"text":"[NOTE] later"}]', abs)
-    vim.uv.sleep(10)
     write_bytes(path, other)
-    local later = qf.comments()
-    assert.length(later, 1, 'second v1 file loaded')
-    assert.equals(later[1].body, 'later', 'second v1 file upgraded')
-    assert.equals(read_bytes(path .. '.pre-v2.bak'), V1, 'first backup not overwritten')
-    assert.equals(decode(read_bytes(path)).version, 2, 'rewritten as version 2 again')
+    local later
+    local calls = capture_notify(function()
+      later = qf.comments()
+      qf.comments()
+    end)
+    assert.length(later, 4, 'the review is still the log')
+    local warns = warnings(calls)
+    assert.length(warns, 1, 'warned once')
+    assert.truthy(warns[1].msg:find('reappeared', 1, true), 'says the file reappeared: ' .. warns[1].msg)
+    assert.equals(read_bytes(path), other, 'the new file left alone')
+    assert.equals(read_bytes(path .. '.pre-log.bak'), V1, 'first original not overwritten')
   end)
 end)
 
@@ -240,15 +272,13 @@ assert.run_test('an empty v1 file upgrades cleanly', function()
   with_file('[]', function(path)
     qf = restart(path)
     assert.length(qf.comments(), 0, 'no comments')
-    assert.equals(read_bytes(path .. '.pre-v2.bak'), '[]', 'backed up')
-    local doc = decode(read_bytes(path))
-    assert.equals(doc.version, 2, 'rewritten as version 2')
-    assert.length(doc.comments, 0, 'empty list')
-    assert.truthy(read_bytes(path):find('"comments":[]', 1, true), 'written as a JSON array')
+    assert.equals(read_bytes(path .. '.pre-log.bak'), '[]', 'original kept')
+    assert.length(imports(path), 1, 'an (empty) import logged')
+    assert.length(logged(path), 0, 'empty review')
 
     vim.fn.cursor(2, 1)
     qf.add_comment('NOTE')
-    assert.length(decode(read_bytes(path)).comments, 1, 'adding works')
+    assert.length(logged(path), 1, 'adding works')
   end)
 end)
 
@@ -256,7 +286,7 @@ assert.run_test('an empty comments object loads as an empty list', function()
   with_file('{"version":2,"comments":{}}', function(path)
     qf = restart(path)
     assert.length(qf.comments(), 0, 'no comments')
-    assert.falsy(vim.uv.fs_stat(path .. '.pre-v2.bak'), 'no backup for a v2 file')
+    assert.truthy(vim.uv.fs_stat(path .. '.pre-log.bak'), 'migrated')
   end)
 end)
 
@@ -282,7 +312,7 @@ assert.run_test('issue and insight keep distinct kinds through save and load', f
     local list = qf.comments()
     assert.equals(list[1].kind, 'issue', 'issue in memory')
     assert.equals(list[2].kind, 'insight', 'insight in memory')
-    local on_disk = decode(read_bytes(path)).comments
+    local on_disk = logged(path)
     assert.equals(on_disk[1].kind, 'issue', 'issue on disk')
     assert.equals(on_disk[2].kind, 'insight', 'insight on disk')
 
@@ -319,25 +349,6 @@ assert.run_test('view_comment shows the response on its own line', function()
   end)
 end)
 
--- Run fn with vim.notify replaced by a recorder; returns the recorded calls
-local function capture_notify(fn)
-  local calls = {}
-  local original = vim.notify
-  vim.notify = function(msg, level) table.insert(calls, { msg = msg, level = level }) end
-  local ok, err = pcall(fn)
-  vim.notify = original
-  if not ok then error(err, 0) end
-  return calls
-end
-
-local function warnings(calls)
-  local found = {}
-  for _, c in ipairs(calls) do
-    if c.level == vim.log.levels.WARN then table.insert(found, c) end
-  end
-  return found
-end
-
 -- A v2 file holding `records` (Lua tables, encoded as JSON)
 local function v2_json(records)
   return vim.json.encode({ version = 2, comments = records })
@@ -355,17 +366,16 @@ assert.run_test('a legacy text field in a v2 record is merged and dropped', func
     assert.equals(list[1].response, 'fixed', 'response taken from text')
     assert.equals(list[1].body, 'foo', 'body kept')
     assert.equals(list[1].extra, nil, 'text is not an extra')
-    local doc = decode(read_bytes(path))
-    assert.equals(doc.comments[1].text, nil, 'text dropped from the file')
-    assert.equals(doc.comments[1].response, 'fixed', 'response written')
+    local on_disk = logged(path)
+    assert.equals(on_disk[1].text, nil, 'text dropped from the logged record')
+    assert.equals(on_disk[1].response, 'fixed', 'response logged')
     assert.truthy(export(list):find(' | Response: fixed', 1, true), 'export shows the response')
-    assert.falsy(vim.uv.fs_stat(path .. '.pre-v2.bak'), 'no upgrade backup')
-    assert.falsy(vim.uv.fs_stat(path .. '.pre-repair.bak'), 'no repair backup')
+    assert.equals(read_bytes(path .. '.pre-log.bak'), json, 'original kept as it was')
 
-    local bytes = read_bytes(path)
+    local bytes = read_bytes(test_helper.log_path(path))
     qf = restart(path)
     assert.equals(qf.comments()[1].response, 'fixed', 'response after restart')
-    assert.equals(read_bytes(path), bytes, 'not rewritten again')
+    assert.equals(read_bytes(test_helper.log_path(path)), bytes, 'not logged again')
   end)
 
   -- Text without a headline keeps the record's kind and body
@@ -413,28 +423,29 @@ assert.run_test('an unknown record field survives load and save', function()
   with_file(json, function(path)
     qf = restart(path)
     assert.equals(qf.comments()[1].extra.foo, 1, 'kept in memory as an extra')
-    assert.equals(read_bytes(path), json, 'loading alone does not rewrite')
+    assert.equals(read_bytes(path .. '.pre-log.bak'), json, 'original kept byte for byte')
 
     vim.cmd('edit ' .. test_file)
     vim.fn.cursor(2, 1)
     qf.add_comment('NOTE')
-    local doc = decode(read_bytes(path))
-    assert.length(doc.comments, 2, 'saved')
-    assert.equals(doc.comments[1].foo, 1, 'written back at the top level')
-    assert.equals(doc.comments[1].extra, nil, 'no extra key on disk')
-    assert.equals(doc.comments[2].extra, nil, 'no extra key on a new comment')
+    local on_disk = logged(path)
+    assert.length(on_disk, 2, 'saved')
+    assert.equals(on_disk[1].foo, 1, 'logged at the top level')
+    assert.equals(on_disk[1].extra, nil, 'no extra key on disk')
+    assert.equals(on_disk[2].extra, nil, 'no extra key on a new comment')
 
     qf = restart(path)
+    assert.equals(qf.comments()[1].extra.foo, 1, 'an extra again after restart')
     vim.fn.cursor(3, 1)
     qf.add_comment('NOTE')
-    doc = decode(read_bytes(path))
-    assert.length(doc.comments, 3, 'saved again')
-    assert.equals(doc.comments[1].foo, 1, 'still at the top level')
-    assert.equals(doc.comments[1].extra, nil, 'still no extra key')
+    on_disk = logged(path)
+    assert.length(on_disk, 3, 'saved again')
+    assert.equals(on_disk[1].foo, 1, 'still at the top level')
+    assert.equals(on_disk[1].extra, nil, 'still no extra key')
   end)
 end)
 
-assert.run_test('a record with a bad lnum is dropped with a warning after a backup', function()
+assert.run_test('a record with a bad lnum is dropped with a warning, the original kept', function()
   local json = v2_json({
     { id = '00000000000000d1', filename = abs, lnum = 'x', end_lnum = 1, kind = 'note', body = 'bad',
       created_at = 1700000000 },
@@ -453,27 +464,27 @@ assert.run_test('a record with a bad lnum is dropped with a warning after a back
     local warns = warnings(calls)
     assert.length(warns, 1, 'one warning')
     assert.truthy(warns[1].msg:find(path, 1, true), 'warning names the file')
-    assert.equals(read_bytes(path .. '.pre-repair.bak'), json, 'backup holds the original bytes')
+    assert.equals(read_bytes(path .. '.pre-log.bak'), json, 'original kept byte for byte')
 
     assert.equals(list[1].lnum, 12, 'numeric string lnum coerced')
     assert.equals(list[1].end_lnum, 13, 'numeric string end_lnum coerced')
-    local doc = decode(read_bytes(path))
-    assert.length(doc.comments, 2, 'file rewritten without the bad record')
-    assert.equals(doc.comments[1].lnum, 12, 'lnum written as a number')
-    assert.equals(doc.comments[1].end_lnum, 13, 'end_lnum written as a number')
+    local on_disk = logged(path)
+    assert.length(on_disk, 2, 'logged without the bad record')
+    assert.equals(on_disk[1].lnum, 12, 'lnum logged as a number')
+    assert.equals(on_disk[1].end_lnum, 13, 'end_lnum logged as a number')
 
     qf.show_list()
     assert.length(vim.fn.getqflist(), 2, 'quickfix view built')
     vim.fn.setqflist({}, 'f')
     assert.truthy(export(list), 'export works')
 
-    local bytes = read_bytes(path)
+    local bytes = read_bytes(test_helper.log_path(path))
     calls = capture_notify(function()
       qf = restart(path)
       assert.length(qf.comments(), 2, 'reloads')
     end)
     assert.length(warnings(calls), 0, 'no warning on the second load')
-    assert.equals(read_bytes(path), bytes, 'not rewritten again')
+    assert.equals(read_bytes(test_helper.log_path(path)), bytes, 'not logged again')
   end)
 end)
 

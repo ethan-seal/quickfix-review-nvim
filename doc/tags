@@ -1,6 +1,10 @@
+:ReviewAdd	quickfix-review.txt	/*:ReviewAdd*
+:ReviewAdd<Type>	quickfix-review.txt	/*:ReviewAdd<Type>*
+:ReviewAddInsight	quickfix-review.txt	/*:ReviewAddInsight*
 :ReviewAddIssue	quickfix-review.txt	/*:ReviewAddIssue*
 :ReviewAddNote	quickfix-review.txt	/*:ReviewAddNote*
 :ReviewAddPraise	quickfix-review.txt	/*:ReviewAddPraise*
+:ReviewAddQuestion	quickfix-review.txt	/*:ReviewAddQuestion*
 :ReviewAddSuggestion	quickfix-review.txt	/*:ReviewAddSuggestion*
 :ReviewClear	quickfix-review.txt	/*:ReviewClear*
 :ReviewDelete	quickfix-review.txt	/*:ReviewDelete*

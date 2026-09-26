@@ -309,7 +309,9 @@ assert.run_test('commands work before setup()', function()
     assert.truthy(clipboard:find('**[QUESTION]**', 1, true), 'export has the comment')
     local original_input = vim.ui.input
     vim.ui.input = function(_, on_confirm) on_confirm(nil) end
-    for _, cmd in ipairs({ 'ReviewTrash', 'ReviewHistory', 'ReviewReanchor', 'ReviewEdit' }) do
+    for _, cmd in ipairs({ 'ReviewTrash', 'ReviewHistory', 'ReviewReanchor', 'ReviewEdit',
+      'ReviewAddIssue', 'ReviewAddSuggestion', 'ReviewAddNote', 'ReviewAddPraise',
+      'ReviewAddQuestion', 'ReviewAddInsight', 'ReviewAdd note' }) do
       local cok, cerr = pcall(vim.cmd, cmd)
       assert.truthy(cok, ':' .. cmd .. ' does not error: ' .. tostring(cerr))
     end
@@ -322,6 +324,84 @@ assert.run_test('commands work before setup()', function()
   end
   for name, mod in pairs(saved_modules) do package.loaded[name] = mod end
   if not ok then error(err, 0) end
+end)
+
+-- The names of the :ReviewAdd<Type> commands, sorted
+local function add_commands()
+  local names = {}
+  for name in pairs(vim.api.nvim_get_commands({})) do
+    if name:match('^ReviewAdd%u') then table.insert(names, name) end
+  end
+  table.sort(names)
+  return names
+end
+
+local nit = { sign = 'n', highlight = 'DiagnosticHint', description = 'Nitpicks' }
+
+assert.run_test('setup() makes a ranged :ReviewAdd<Type> for a custom type', function()
+  local ok, err = pcall(function()
+    qf.setup({ storage_file = test_helper.storage_file,
+      additional_comment_types = { nit = nit, needs_work = nit } })
+    local cmds = vim.api.nvim_get_commands({})
+    assert.truthy(cmds.ReviewAddNit, ':ReviewAddNit exists')
+    assert.truthy(cmds.ReviewAddNit.range ~= '', ':ReviewAddNit takes a range')
+    assert.truthy(cmds.ReviewAddNeedsWork, 'snake_case type is CamelCased')
+    assert.truthy(cmds.ReviewAddIssue and cmds.ReviewAddIssue.range ~= '', 'defaults kept, with a range')
+    assert.truthy(cmds.ReviewAdd and cmds.ReviewAdd.range ~= '', ':ReviewAdd takes a range')
+    assert.truthy(cmds.ReviewDelete.range ~= '', ':ReviewDelete takes a range')
+  end)
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('setup() twice keeps the same :ReviewAdd commands', function()
+  local ok, err = pcall(function()
+    local opts = { storage_file = test_helper.storage_file, additional_comment_types = { nit = nit } }
+    qf.setup(opts)
+    local once = add_commands()
+    qf.setup(opts)
+    assert.truthy(vim.deep_equal(add_commands(), once), 'same commands: ' .. vim.inspect(add_commands()))
+  end)
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('setup() without a type deletes its :ReviewAdd command', function()
+  local ok, err = pcall(function()
+    qf.setup({ storage_file = test_helper.storage_file, additional_comment_types = { nit = nit } })
+    assert.truthy(vim.api.nvim_get_commands({}).ReviewAddNit, 'made')
+    qf.setup({ storage_file = test_helper.storage_file })
+    local cmds = vim.api.nvim_get_commands({})
+    assert.falsy(cmds.ReviewAddNit, 'gone after the type is dropped')
+    assert.truthy(cmds.ReviewAddIssue, 'default kept')
+  end)
+  test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('a type that cannot name a command warns and gets none', function()
+  local calls = {}
+  local original_notify = vim.notify
+  vim.notify = function(msg, level) table.insert(calls, { msg = msg, level = level }) end
+  local ok, err = pcall(function()
+    qf.setup({ storage_file = test_helper.storage_file, additional_comment_types = { ['needs-work'] = nit } })
+  end)
+  vim.notify = original_notify
+  local ok2, err2 = pcall(function()
+    assert.truthy(ok, 'setup does not throw: ' .. tostring(err))
+    local warned = false
+    for _, c in ipairs(calls) do
+      if c.level == vim.log.levels.WARN and c.msg:find('needs-work', 1, true) then warned = true end
+    end
+    assert.truthy(warned, 'warned about needs-work')
+    for _, name in ipairs(add_commands()) do
+      assert.falsy(name:match('^ReviewAddNeeds'), 'no command for needs-work: ' .. name)
+    end
+    assert.truthy(vim.tbl_contains(vim.fn.getcompletion('ReviewAdd ', 'cmdline'), 'needs-work'),
+      ':ReviewAdd still completes it')
+  end)
+  test_helper.setup_test_environment()
+  if not ok2 then error(err2, 0) end
 end)
 
 test_helper.cleanup_test_environment()

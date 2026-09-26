@@ -376,24 +376,50 @@ press `dd` to delete the comment under cursor.
 ==============================================================================
 5. COMMANDS                                           *quickfix-review-commands*
 
+                                                              *:ReviewAdd*
+:[range]ReviewAdd {type}
+                        Add a comment of {type} at the current line, or
+                        over [range]. <Tab> completes the configured types.
+
                                                           *:ReviewAddIssue*
-:ReviewAddIssue         Add an ISSUE comment at the current line.
-                        Issues indicate problems that must be fixed.
+:[range]ReviewAddIssue  Add an ISSUE comment at the current line, or over
+                        [range]. Issues indicate problems that must be fixed.
 
                                                      *:ReviewAddSuggestion*
-:ReviewAddSuggestion    Add a SUGGESTION comment at the current line.
-                        Suggestions are improvements to consider.
+:[range]ReviewAddSuggestion
+                        Add a SUGGESTION comment. Suggestions are
+                        improvements to consider.
 
                                                            *:ReviewAddNote*
-:ReviewAddNote          Add a NOTE comment at the current line.
-                        Notes are observations or explanations.
+:[range]ReviewAddNote   Add a NOTE comment. Notes are observations or
+                        explanations.
 
                                                          *:ReviewAddPraise*
-:ReviewAddPraise        Add a PRAISE comment at the current line.
-                        Praise highlights good code or practices.
+:[range]ReviewAddPraise Add a PRAISE comment. Praise highlights good code or
+                        practices.
+
+                                                       *:ReviewAddQuestion*
+:[range]ReviewAddQuestion
+                        Add a QUESTION comment.
+
+                                                        *:ReviewAddInsight*
+:[range]ReviewAddInsight
+                        Add an INSIGHT comment.
+
+                                                         *:ReviewAdd<Type>*
+:[range]ReviewAdd<Type> setup() makes one such command for every configured
+                        comment type, custom ones included, CamelCased from
+                        the type name: `nit` gives `:ReviewAddNit`,
+                        `needs_work` gives `:ReviewAddNeedsWork`. Only names
+                        of lowercase letters, digits and `_` get a command;
+                        any other name warns and is reachable through
+                        |:ReviewAdd|. A type left out of the configuration
+                        (e.g. when `comment_types` replaces the defaults)
+                        loses its command.
 
                                                            *:ReviewDelete*
-:ReviewDelete           Delete comment(s) at the current line.
+:[range]ReviewDelete    Delete comment(s) at the current line, or every
+                        comment overlapping [range].
 
                                                              *:ReviewView*
 :ReviewView             View comment at the current line.

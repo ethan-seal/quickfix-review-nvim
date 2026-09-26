@@ -251,11 +251,14 @@ A pattern that doesn't accept those four values falls back to the default with a
 
 | Command | Description |
 |---------|-------------|
-| `:ReviewAddIssue` | Add an ISSUE comment |
-| `:ReviewAddSuggestion` | Add a SUGGESTION comment |
-| `:ReviewAddNote` | Add a NOTE comment |
-| `:ReviewAddPraise` | Add a PRAISE comment |
-| `:ReviewDelete` | Delete comment at cursor |
+| `:[range]ReviewAdd {type}` | Add a comment of `{type}` (Tab completes the configured types) |
+| `:[range]ReviewAddIssue` | Add an ISSUE comment |
+| `:[range]ReviewAddSuggestion` | Add a SUGGESTION comment |
+| `:[range]ReviewAddNote` | Add a NOTE comment |
+| `:[range]ReviewAddPraise` | Add a PRAISE comment |
+| `:[range]ReviewAddQuestion` | Add a QUESTION comment |
+| `:[range]ReviewAddInsight` | Add an INSIGHT comment |
+| `:[range]ReviewDelete` | Delete comment(s) at cursor, or overlapping the range |
 | `:ReviewView` | View comment at cursor |
 | `:ReviewEdit` | Edit the text of the comment at cursor, or of the row under the cursor in the review's quickfix window (single line; the change shows in `:ReviewHistory`) |
 | `:ReviewExport` | Export to markdown and clipboard |
@@ -268,6 +271,8 @@ A pattern that doesn't accept those four values falls back to the default with a
 | `:ReviewLoad` | Replay the review's log from disk and show it in the quickfix list |
 | `:ReviewSummary` | Show comment summary |
 | `:ReviewGoto` | Jump to real file from diff |
+
+With a range (`:3,5ReviewAddNote`, or `:'<,'>` from visual mode) a comment covers those lines; without one, the current line. `setup()` makes a `:ReviewAdd<Type>` command for every configured comment type, custom ones included, CamelCased from the type name (`nit` gives `:ReviewAddNit`, `needs_work` gives `:ReviewAddNeedsWork`). Only type names of lowercase letters, digits and `_` get one; any other name warns and is reachable through `:ReviewAdd {type}`. A type left out of the config (for example when `comment_types` replaces the defaults) loses its command.
 
 ## Documentation
 

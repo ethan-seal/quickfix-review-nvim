@@ -1148,6 +1148,7 @@ function M.setup(opts)
   sync_cycle_state()
   utils.init_signs(config.options)
   setup_keymaps()
+  require('quickfix-review.commands').create()
 
   -- Load the saved review now, so it's in place before any change is made
   store.set_on_change(refresh_all_signs)

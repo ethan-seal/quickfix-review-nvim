@@ -7,21 +7,9 @@ end
 vim.g.loaded_quickfix_review = 1
 
 -- Create user commands
-vim.api.nvim_create_user_command('ReviewAddIssue', function()
-  require('quickfix-review').add_comment('ISSUE')
-end, { desc = 'Add an ISSUE comment at current line' })
-
-vim.api.nvim_create_user_command('ReviewAddSuggestion', function()
-  require('quickfix-review').add_comment('SUGGESTION')
-end, { desc = 'Add a SUGGESTION comment at current line' })
-
-vim.api.nvim_create_user_command('ReviewAddNote', function()
-  require('quickfix-review').add_comment('NOTE')
-end, { desc = 'Add a NOTE comment at current line' })
-
-vim.api.nvim_create_user_command('ReviewAddPraise', function()
-  require('quickfix-review').add_comment('PRAISE')
-end, { desc = 'Add a PRAISE comment at current line' })
+-- :ReviewAdd {type} and :ReviewAdd<Type> for each comment type (setup()
+-- recreates them for the configured types)
+require('quickfix-review.commands').create()
 
 vim.api.nvim_create_user_command('ReviewExport', function()
   require('quickfix-review').export_review()
@@ -79,6 +67,6 @@ vim.api.nvim_create_user_command('ReviewEdit', function()
   require('quickfix-review').edit_comment()
 end, { desc = 'Edit comment at current line' })
 
-vim.api.nvim_create_user_command('ReviewDelete', function()
-  require('quickfix-review').delete_comment()
-end, { desc = 'Delete comment at current line' })
+vim.api.nvim_create_user_command('ReviewDelete', function(o)
+  require('quickfix-review').delete_comment(require('quickfix-review.commands').range_of(o))
+end, { range = true, desc = 'Delete comment(s) at current line or range' })

@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-2ay0
 title: Generated :ReviewAdd<Type> commands with ranges and completion
-status: todo
+status: completed
 type: feature
 priority: low
 created_at: 2026-09-26T04:31:20Z
-updated_at: 2026-09-26T04:57:49Z
+updated_at: 2026-09-26T10:29:27Z
 blocked_by:
     - quickfix-review-nvim-vj7e
 ---

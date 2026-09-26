@@ -380,6 +380,7 @@ assert.run_test('setup() with fewer types resets a cycle past the end', function
 
     qf.setup({ storage_file = test_helper.storage_file, comment_types = types({ 'aaa', 'bbb' }) })
     assert.equals(qf.cycle_next_comment_type(), 'bbb', 'next from the first type after the reset')
+    assert.falsy(vim.api.nvim_get_commands({}).ReviewAddCcc, ':ReviewAddCcc deleted with its type')
     assert.equals(qf.cycle_previous_comment_type(), 'aaa', 'previous works too')
     qf.clear_review()
     vim.fn.cursor(4, 1)
@@ -591,6 +592,52 @@ assert.run_test(':ReviewRestore <id> restores that comment; completion lists the
     'restored id no longer completed')
   assert.truthy(vim.tbl_contains(vim.fn.getcompletion('ReviewHistory ', 'cmdline'), first),
     'history completes live ids')
+  qf.clear_review()
+end)
+
+assert.run_test(':3,5ReviewAddNote adds a range comment', function()
+  qf.clear_review()
+  vim.cmd('3,5ReviewAddNote')
+  local list = qf.comments()
+  assert.length(list, 1, 'one comment')
+  assert.equals(list[1].lnum, 3, 'start line')
+  assert.equals(list[1].end_lnum, 5, 'end line')
+  assert.equals(list[1].kind, 'note', 'kind')
+  qf.clear_review()
+end)
+
+assert.run_test(':ReviewAdd {type} adds at the cursor or over a range', function()
+  qf.clear_review()
+  vim.fn.cursor(2, 1)
+  vim.cmd('ReviewAdd question')
+  vim.cmd('2,4ReviewAdd issue')
+  local list = qf.comments()
+  assert.length(list, 2, 'two comments')
+  local by_kind = {}
+  for _, c in ipairs(list) do by_kind[c.kind] = c end
+  assert.equals(by_kind.question.lnum, 2, 'question at the cursor')
+  assert.equals(by_kind.question.end_lnum, 2, 'question is one line')
+  assert.equals(by_kind.issue.lnum, 2, 'issue start')
+  assert.equals(by_kind.issue.end_lnum, 4, 'issue end')
+  qf.clear_review()
+end)
+
+assert.run_test(':ReviewAdd completes the configured types', function()
+  local all = vim.fn.getcompletion('ReviewAdd ', 'cmdline')
+  for _, t in ipairs({ 'issue', 'suggestion', 'note', 'praise', 'question', 'insight' }) do
+    assert.truthy(vim.tbl_contains(all, t), 'completes ' .. t)
+  end
+  assert.truthy(vim.deep_equal(vim.fn.getcompletion('ReviewAdd in', 'cmdline'), { 'insight' }), 'prefix narrows')
+end)
+
+assert.run_test(':3,4ReviewDelete deletes comments in the range', function()
+  qf.clear_review()
+  qf.add_comment('ISSUE', { 4, 6 })
+  qf.add_comment('NOTE', { 8, 8 })
+  vim.cmd('3,4ReviewDelete')
+  local list = qf.comments()
+  assert.length(list, 1, 'one left')
+  assert.equals(list[1].lnum, 8, 'the one outside the range')
   qf.clear_review()
 end)
 

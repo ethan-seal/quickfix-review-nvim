@@ -21,3 +21,6 @@ Follow-ups from qugx review (all narrow; one rollup, don't spawn further follow-
 - [ ] Test: take() with lock dir removed before pid write retries and succeeds
 - [ ] Test: first sync with a bad line and comments.json beside the log warns once
 - [ ] Test: partial remove_if message doesn't claim nothing was deleted
+
+
+Note (2ay0): commands.lua create() deletes every ^ReviewAdd%u command not in the wanted set, including user-defined ones. Track generated names (e.g. a vim.g list or a marker in the command desc) and only delete those.

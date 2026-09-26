@@ -34,10 +34,16 @@ local function normalize(item)
     filename = vim.fn.bufname(item.bufnr)
   end
   if not filename or filename == '' then return nil end
+  -- Older saves were raw getqflist() items, where end_lnum 0 means "unset";
+  -- an end before the start is never valid, so treat it as a single line.
+  local end_lnum = item.end_lnum
+  if type(end_lnum) ~= 'number' or type(item.lnum) ~= 'number' or end_lnum < item.lnum then
+    end_lnum = item.lnum
+  end
   return {
     filename = vim.fn.fnamemodify(filename, ':p'),
     lnum = item.lnum,
-    end_lnum = item.end_lnum,
+    end_lnum = end_lnum,
     col = item.col or 1,
     text = item.text,
     type = item.type,

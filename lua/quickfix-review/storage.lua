@@ -66,7 +66,9 @@ function M.load(filepath)
     return {}, nil
   end
 
-  local ok, comments = pcall(vim.fn.json_decode, content)
+  -- luanil: JSON null becomes nil at every depth (vim.fn.json_decode would
+  -- give vim.NIL, which is truthy), e.g. the null commit migrate.ts wrote
+  local ok, comments = pcall(vim.json.decode, content, { luanil = { object = true, array = true } })
   if not ok or type(comments) ~= 'table' then
     return nil, 'Failed to parse saved review at ' .. filepath .. ' (invalid JSON)'
   end

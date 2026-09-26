@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: high
 created_at: 2026-09-26T04:57:33Z
-updated_at: 2026-09-26T04:57:33Z
+updated_at: 2026-09-26T05:15:30Z
 blocked_by:
     - quickfix-review-nvim-mspz
     - quickfix-review-nvim-hh4t
@@ -26,3 +26,6 @@ Comments have no identity: delete-from-quickfix maps a qf row to the Nth stored 
 - [ ] Two headless nvim processes each add a comment → different ids
 - [ ] qf `dd` deletes by id: reorder stored comments on disk between opening the list and pressing dd → the right comment is deleted
 - [ ] Empty-table round-trip test: a comment with `user_data = vim.empty_dict()` saves as `{}` and loads as a table
+
+
+- [ ] (from mspz review) storage.load decodes with `luanil.array=true`, so a `null` element in the top-level comments array becomes a hole and `ipairs` silently drops every later comment; the next save persists the truncation. Reject such files via the existing parse-error path (check `#list == vim.tbl_count(list)` / iterate with pairs over integer keys), with a test.

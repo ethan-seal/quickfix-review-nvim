@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-mspz
 title: 'Harden load: clamp end_lnum, decode JSON null as nil'
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-09-26T04:31:20Z
-updated_at: 2026-09-26T04:57:49Z
+updated_at: 2026-09-26T05:15:30Z
 blocked_by:
     - quickfix-review-nvim-46kf
 ---

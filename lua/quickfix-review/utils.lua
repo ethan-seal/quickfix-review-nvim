@@ -162,7 +162,7 @@ function M.refresh_buffer_signs(bufnr, file, comments)
   -- Place signs based on collected info
   local buf_line_count = vim.api.nvim_buf_line_count(bufnr)
   for line, info in pairs(line_info) do
-    if line > buf_line_count then goto continue end
+    if line < 1 or line > buf_line_count then goto continue end
     if info.is_continuation and info.count == 0 then
       -- Pure continuation line - show continuation sign for each type
       local seen_types = {}

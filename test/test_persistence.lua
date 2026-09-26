@@ -251,6 +251,57 @@ assert.run_test('dd in the quickfix view deletes that comment', function()
   assert.length(saved(), 1, 'deletion saved')
 end)
 
+-- Write raw JSON to the storage file, as an older version or migrate.ts would
+local function seed_legacy(json)
+  vim.fn.setqflist({}, 'f')
+  local fh = io.open(storage_file, 'w')
+  fh:write(json)
+  fh:close()
+  qf = restart()
+end
+
+local function export_markdown()
+  local config = require('quickfix-review.config')
+  local content, err = require('quickfix-review.export').to_markdown(qf.comments(), config.options)
+  assert.truthy(content, 'export succeeds: ' .. tostring(err))
+  return content
+end
+
+assert.run_test('legacy end_lnum = 0 loads as a single line', function()
+  local abs = vim.fn.fnamemodify(test_file, ':p')
+  seed_legacy(string.format(
+    '[{"filename":%q,"lnum":5,"end_lnum":0,"col":1,"text":"[ISSUE] legacy"}]', abs))
+
+  assert.equals(qf.comments()[1].end_lnum, 5, 'end_lnum clamped to lnum')
+
+  vim.cmd('edit ' .. test_file)
+  local ok, err = pcall(vim.cmd, 'doautocmd BufEnter')
+  assert.truthy(ok, 'BufEnter does not error: ' .. tostring(err))
+
+  local md = export_markdown()
+  assert.truthy(md:find('test_file.txt:5`', 1, true), 'export shows :5')
+  assert.falsy(md:find(':5-0', 1, true), 'export does not show :5-0')
+
+  qf.delete_comment({ 5, 5 })
+  assert.length(qf.comments(), 0, 'delete on line 5 removes it')
+  assert.length(saved(), 0, 'deletion saved')
+end)
+
+assert.run_test('legacy JSON null decodes as nil, even nested', function()
+  local abs = vim.fn.fnamemodify(test_file, ':p')
+  seed_legacy(string.format(
+    '[{"filename":%q,"lnum":2,"end_lnum":2,"col":1,"text":"[NOTE] migrated",'
+      .. '"user_data":{"commit":null,"commit_short":null,"snippet":["   2  line 2"]}}]', abs))
+
+  local ctx = qf.comments()[1].user_data
+  assert.equals(ctx.commit, nil, 'nested null commit is nil')
+  assert.equals(ctx.commit_short, nil, 'nested null commit_short is nil')
+
+  local md = export_markdown()
+  assert.falsy(md:find('commit', 1, true), 'export has no commit line')
+  assert.truthy(md:find('line 2', 1, true), 'snippet still exported')
+end)
+
 -- Final cleanup
 test_helper.cleanup_test_environment()
 

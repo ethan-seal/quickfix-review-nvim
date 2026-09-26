@@ -27,6 +27,9 @@ end
 -- Run utility tests first (no plugin dependency)
 run_file('test/test_utils.lua')
 
+-- Run context capture tests
+run_file('test/test_context.lua')
+
 -- Run configuration tests
 run_file('test/test_config.lua')
 

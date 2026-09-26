@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-1ig6
 title: Run git per-file-repo via vim.system in context capture
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-09-26T04:31:20Z
-updated_at: 2026-09-26T05:27:42Z
+updated_at: 2026-09-26T06:02:33Z
 blocked_by:
     - quickfix-review-nvim-46kf
 ---

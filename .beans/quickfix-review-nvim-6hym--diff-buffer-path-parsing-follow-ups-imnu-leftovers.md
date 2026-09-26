@@ -21,3 +21,7 @@ Leftovers accepted in imnu (don't spawn further follow-ups from this bean).
 
 ## Also (leftover from sxwk)
 - test/test_relocate.lua refresh-cost test puts all 300 comments on unloaded files; add 1-3 comments per loaded buffer so the batched from_mark/place/draw_signs path is covered at scale (count calls, no wall clock).
+
+## Also (leftovers from w9y6)
+- context.lua:58: if the user's env has GIT_LITERAL_PATHSPECS=1, ':(literal)rel' is taken as a literal filename and the diff is empty. Instead set env GIT_LITERAL_PATHSPECS=1 on the vim.system call and pass bare rel.
+- store.lua view_item: quickfix rows use store.headline(c) raw; a multi-line body puts '\n' in qf text. Use the first line (as the edit picker now does).

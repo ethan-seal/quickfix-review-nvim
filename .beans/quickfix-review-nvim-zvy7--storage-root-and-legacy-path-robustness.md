@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-zvy7
 title: Storage root and legacy-path robustness
-status: todo
+status: in-progress
 type: bug
 priority: normal
 created_at: 2026-09-26T12:22:52Z
-updated_at: 2026-09-26T12:22:52Z
+updated_at: 2026-09-26T12:58:02Z
 ---
 
 From review cycle 2 (details, repros and suggested fixes: /tmp/claude-1001/-home-ethans-Programming-quickfix-review-nvim/cfc4ea53-3598-4975-b59b-e35c5f93f346/scratchpad/review2/fable-storage.md, /tmp/claude-1001/-home-ethans-Programming-quickfix-review-nvim/cfc4ea53-3598-4975-b59b-e35c5f93f346/scratchpad/review2/opus-edge.md).

@@ -88,8 +88,9 @@ All options are optional. Here's the full configuration with defaults:
 
 ```lua
 require('quickfix-review').setup({
-  -- Storage file for saving/loading reviews
-  storage_file = vim.fn.stdpath('data') .. '/quickfix-review.json',
+  -- Per-project storage directory: nil (the default below), a string, or
+  -- function(root) -> string. See "Where reviews are stored".
+  storage_dir = nil,
 
   -- Export filename (nil = clipboard only)
   export_file = nil,
@@ -141,6 +142,24 @@ require('quickfix-review').setup({
   },
 })
 ```
+
+### Where reviews are stored
+
+Each project has its own review, kept in `comments.json` inside a per-project storage directory. By default that is:
+
+```
+stdpath('data')/quickfix-review/<basename(root)>-<first 12 hex chars of sha256(root)>/
+```
+
+e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/comments.json`, readable in a file browser.
+
+- **Project root**: the git toplevel of Neovim's global working directory, or that directory itself outside git (symlinks resolved). Each git worktree has its own toplevel, so each worktree gets its own review.
+- **Switching projects**: after `:cd` into another project, the review is re-read from that project's directory and the quickfix view and signs follow. `:lcd` and `:tcd` don't switch projects. The root is looked up once per directory per session, so running `git init` in an open directory takes effect after a restart.
+- **`storage_dir`**: a function receives the resolved root and returns the directory to use; a string is used as-is, so every project shares it.
+
+**Migrating from the global file.** Older versions kept every project's comments in one file, `stdpath('data')/quickfix-review.json`. The first time you open a project that has no `comments.json` yet, the comments in that file whose path is inside the project are imported (you'll see "imported N comments from ..."). The global file is only read, never changed. This happens once per project: once its `comments.json` exists, even empty, nothing is imported again.
+
+**`storage_file` (deprecated).** If you set `storage_file`, that single file is used for every project, as before: no storage directory, no switching on `:cd`, and no import. If you copied the old "full configuration" example, remove its `storage_file` line to get per-project reviews.
 
 ### Multiple signs per line
 

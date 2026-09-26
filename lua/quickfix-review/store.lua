@@ -9,6 +9,7 @@ local M = {}
 
 local config = require('quickfix-review.config')
 local storage = require('quickfix-review.storage')
+local utils = require('quickfix-review.utils')
 
 local QF_TITLE = 'Code Review Comments'
 
@@ -147,11 +148,112 @@ local function refresh_view()
   end
 end
 
+-- Where the review lives: the explicit (deprecated, global) storage_file, or
+-- comments.json in the project's storage dir. The project root is the git
+-- toplevel of the global cwd, else the cwd itself (symlinks resolved).
+-- Memoized on the cwd and the storage_dir option, so it is a string compare
+-- on every store call.
+local resolved = {}
+
+local function resolve()
+  local explicit = config.options.storage_file
+  if explicit ~= nil then
+    return { path = explicit, dir = vim.fn.fnamemodify(explicit, ':h'), explicit = true }
+  end
+  local cwd = vim.fn.getcwd(-1, -1)
+  local opt = config.options.storage_dir
+  if resolved.cwd == cwd and resolved.opt == opt then return resolved end
+
+  local root = utils.realpath(utils.git_toplevel(cwd) or cwd)
+  local dir
+  if type(opt) == 'function' then
+    dir = opt(root)
+  elseif type(opt) == 'string' then
+    dir = opt
+  end
+  if type(dir) ~= 'string' or dir == '' then
+    dir = vim.fn.stdpath('data') .. '/quickfix-review/'
+      .. vim.fn.fnamemodify(root, ':t') .. '-' .. vim.fn.sha256(root):sub(1, 12)
+  end
+  -- ~ and $VARS are expanded; the result is absolute, without a trailing slash
+  dir = (vim.fn.fnamemodify(vim.fs.normalize(dir), ':p'):gsub('(.)/+$', '%1'))
+  resolved = { cwd = cwd, opt = opt, root = root, dir = dir, path = dir .. '/comments.json' }
+  return resolved
+end
+
+-- The storage file the review is read from and written to
+function M.path()
+  return resolve().path
+end
+
+-- The project's storage directory (for an explicit storage_file, its directory)
+function M.dir()
+  return resolve().dir
+end
+
+-- The project root the storage dir belongs to, or nil for an explicit storage_file
+function M.root()
+  return resolve().root
+end
+
+local function mkdir_for(path)
+  local parent = vim.fn.fnamemodify(path, ':h')
+  if vim.fn.isdirectory(parent) == 0 then vim.fn.mkdir(parent, 'p') end
+end
+
+-- Storage paths whose legacy import has been tried this session
+local import_tried = {}
+
+-- First use of a project with no comments.json: copy the comments under the
+-- project root out of the legacy global file (old default storage_file). The
+-- legacy file is only read, never upgraded, backed up or rewritten. The
+-- comments.json is written even when nothing matches, so the import happens
+-- once per project, across restarts.
+local function import_legacy(loc)
+  if import_tried[loc.path] then return end
+  import_tried[loc.path] = true
+
+  local legacy = config.legacy_storage_file()
+  if vim.fn.filereadable(legacy) == 0 then return end
+  if utils.files_match(legacy, loc.path) then return end
+
+  local list, err = storage.load(legacy)
+  if not list then
+    vim.notify('quickfix-review: not importing from ' .. legacy .. ': ' .. err, vim.log.levels.WARN)
+    return
+  end
+
+  local imported, seen = {}, {}
+  for _, item in ipairs(list) do
+    local c = type(item) == 'table' and normalize(item) or nil
+    if c and utils.is_under(c.filename, loc.root) then
+      if seen[c.id] then c.id = new_id() end
+      seen[c.id] = true
+      table.insert(imported, c)
+    end
+  end
+
+  mkdir_for(loc.path)
+  local ok, message = storage.save(imported, loc.path)
+  if not ok then
+    vim.notify('quickfix-review: import from ' .. legacy .. ' failed: ' .. message, vim.log.levels.ERROR)
+    return
+  end
+  if #imported > 0 then
+    vim.notify(string.format('quickfix-review: imported %d comments from %s', #imported, legacy))
+  end
+end
+
 -- Re-read the storage file if it isn't the version `comments` reflects
 -- Returns: ok (boolean), err (string or nil)
 local function sync()
-  local path = config.options.storage_file
+  local loc = resolve()
+  local path = loc.path
   local current = mtime(path)
+  if current == nil and not loc.explicit then
+    import_legacy(loc)
+    current = mtime(path)
+  end
   if path == synced.path and current == synced.mtime then return true end
 
   local list, err, upgraded = storage.load(path)
@@ -228,7 +330,8 @@ end
 -- On failure the file is untouched, so `comments` no longer reflects it:
 -- forget the synced version so the next sync() re-reads the file.
 local function write()
-  local path = config.options.storage_file
+  local path = resolve().path
+  mkdir_for(path)
   local ok, message = storage.save(comments, path)
   if ok then
     synced = { path = path, mtime = mtime(path) }

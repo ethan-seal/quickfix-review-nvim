@@ -23,8 +23,15 @@ M.default_type_keymaps = {
 
 -- Default configuration
 M.defaults = {
-  -- Storage file path for saving/loading reviews
-  storage_file = vim.fn.stdpath('data') .. '/quickfix-review.json',
+  -- Per-project storage directory: a string (used as-is, for every project)
+  -- or function(root) -> string. nil = stdpath('data')/quickfix-review/
+  -- <basename(root)>-<first 12 hex of sha256(root)>. The review lives in
+  -- comments.json inside it.
+  storage_dir = nil,
+
+  -- Deprecated: a single storage file shared by every project. When set,
+  -- storage_dir is ignored and nothing is imported.
+  storage_file = nil,
 
   -- Default export filename (nil = clipboard only, set to 'quickfix-review.md' to also save to file)
   export_file = nil,
@@ -71,6 +78,13 @@ M.defaults = {
     view = '<leader>cv',
   },
 }
+
+-- The old default storage_file, one global file for every project. Read (never
+-- written) once per project to import that project's comments. Evaluated on
+-- each call so a changed XDG_DATA_HOME is honoured.
+function M.legacy_storage_file()
+  return vim.fn.stdpath('data') .. '/quickfix-review.json'
+end
 
 -- Order of the default comment types, used wherever types are listed
 M.default_type_order = { 'issue', 'suggestion', 'note', 'praise', 'question', 'insight' }

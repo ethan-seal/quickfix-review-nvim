@@ -628,6 +628,15 @@ function M.setup(opts)
   store.set_on_change(refresh_all_signs)
   refresh_all_signs(store.all())
 
+  -- The project follows the global cwd: after :cd, re-read the review from the
+  -- new project's storage dir (the list view and signs refresh on change).
+  -- :lcd and :tcd leave the project alone.
+  vim.api.nvim_create_autocmd('DirChanged', {
+    group = augroup,
+    pattern = 'global',
+    callback = function() store.all() end,
+  })
+
   -- Auto-show floating comment after navigating the review's quickfix list
   vim.api.nvim_create_autocmd('QuickFixCmdPost', {
     group = augroup,

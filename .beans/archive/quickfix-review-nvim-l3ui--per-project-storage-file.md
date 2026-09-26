@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-l3ui
 title: Per-project storage directory
-status: todo
+status: completed
 type: feature
 priority: normal
 created_at: 2026-09-26T04:31:20Z
-updated_at: 2026-09-26T04:57:49Z
+updated_at: 2026-09-26T06:10:52Z
 blocked_by:
     - quickfix-review-nvim-hffh
     - quickfix-review-nvim-0edn

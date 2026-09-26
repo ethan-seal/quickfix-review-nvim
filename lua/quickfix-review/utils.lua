@@ -81,6 +81,24 @@ function M.files_match(file1, file2)
   return abs1 == abs2
 end
 
+M.realpath = realpath
+
+-- Whether `path` is `root` or inside it (symlinks resolved on both sides; a
+-- path that no longer exists is compared in its absolute form). /repo does
+-- not contain /repo2.
+function M.is_under(path, root)
+  local abs = vim.fn.fnamemodify(path, ':p')
+  local p = vim.uv.fs_realpath(abs)
+  if not p then
+    -- A deleted file: resolve its directory instead, if that still exists
+    local dir = vim.uv.fs_realpath(vim.fn.fnamemodify(abs, ':h'))
+    p = dir and (dir .. '/' .. vim.fn.fnamemodify(abs, ':t')) or abs
+  end
+  local r = (realpath(vim.fn.fnamemodify(root, ':p')):gsub('/+$', ''))
+  if r == '' then return true end
+  return p == r or p:sub(1, #r + 1) == r .. '/'
+end
+
 -- Build extmark options helper
 local function make_extmark_opts(text, hl_group, prio)
   return {

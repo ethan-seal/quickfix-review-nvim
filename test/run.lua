@@ -45,6 +45,9 @@ run_file('test/test_persistence.lua')
 -- Run storage schema and upgrade tests
 run_file('test/test_schema.lua')
 
+-- Run per-project storage directory tests
+run_file('test/test_storage_dir.lua')
+
 -- Run setup idempotency tests
 run_file('test/test_setup.lua')
 

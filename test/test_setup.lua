@@ -26,7 +26,7 @@ assert.run_test('setup() twice keeps the same QuickfixReview autocmds', function
 end)
 
 assert.run_test('setup() leaves no ungrouped plugin autocmds', function()
-  for _, event in ipairs({ 'BufEnter', 'QuickFixCmdPost', 'FileChangedShellPost', 'FileType' }) do
+  for _, event in ipairs({ 'BufEnter', 'QuickFixCmdPost', 'FileChangedShellPost', 'FileType', 'DirChanged' }) do
     assert.length(ungrouped(event), 0, 'ungrouped ' .. event .. ' handlers')
   end
 end)

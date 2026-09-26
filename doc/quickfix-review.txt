@@ -63,8 +63,9 @@ options are optional; defaults are shown below.
 
 >lua
     require('quickfix-review').setup({
-      -- Storage file path for saving/loading reviews
-      storage_file = vim.fn.stdpath('data') .. '/quickfix-review.json',
+      -- Per-project storage directory: nil (default), a string, or
+      -- function(root) -> string. See |quickfix-review-storage|.
+      storage_dir = nil,
 
       -- Default export filename (nil = clipboard only)
       export_file = nil,
@@ -111,6 +112,42 @@ options are optional; defaults are shown below.
       },
     })
 <
+                                                      *quickfix-review-storage*
+Storage:~
+
+Each project has its own review, kept in `comments.json` inside the
+project's storage directory. By default that is: >
+    stdpath('data')/quickfix-review/<basename(root)>-<sha256(root)[1..12]>/
+<
+where the last part is the first 12 hex characters of the SHA-256 of the
+project root, e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/`.
+
+The project root is the git toplevel of Neovim's global working directory,
+or that directory itself outside git, with symlinks resolved. Each git
+worktree has its own toplevel, so each worktree has its own review. After
+|:cd| into another project the review is re-read from that project's
+directory; the quickfix view and signs follow. |:lcd| and |:tcd| don't
+switch projects. The root is looked up once per directory per session, so
+`git init` in an open directory takes effect after a restart.
+
+                                                  *quickfix-review-storage_dir*
+`storage_dir` may be a function, called with the resolved root, returning
+the directory to use, or a string, used as-is (shared by every project).
+
+                                                 *quickfix-review-migration*
+Older versions kept every project's comments in one global file,
+`stdpath('data')/quickfix-review.json`. The first time a project without a
+`comments.json` is opened, the comments in that file whose path is inside
+the project are imported ("imported N comments from ..."). The global file
+is only read, never changed. The import happens once per project: once its
+`comments.json` exists, even empty, nothing is imported again.
+
+                                                 *quickfix-review-storage_file*
+`storage_file` is deprecated. When set, that single file is used for every
+project, as before: no storage directory, no switching on |:cd|, and no
+import. If you copied the old full configuration example, remove its
+`storage_file` line to get per-project reviews.
+
                                                 *quickfix-review-comment-types*
 Custom comment types:~
 
@@ -229,7 +266,8 @@ Use `]r` and `[r` to jump between review comments across all files.
 Where comments live:~
 
 The plugin keeps comments itself, not in the quickfix list, and writes
-every change to `storage_file` immediately. The review is read back at
+every change to the project's `comments.json` (see
+|quickfix-review-storage|) immediately. The review is read back at
 setup, and re-read whenever the file changes on disk (another Neovim, or
 an external script), so it is never lost when you quit.
 
@@ -280,7 +318,8 @@ press `dd` to delete the comment under cursor.
                                                              *:ReviewSave*
 :ReviewSave             Write the review to disk. Every change is already
                         saved as it is made, so this is rarely needed.
-                        Uses the configured storage_file path.
+                        Uses the project's storage file (see
+                        |quickfix-review-storage|).
 
                                                              *:ReviewLoad*
 :ReviewLoad             Re-read the review from disk and show it in the

@@ -86,6 +86,8 @@ assert.run_test('options hold the defaults before setup()', function()
   assert.truthy(fresh.options.signs.issue, 'signs derived')
   assert.matches(fresh.options.export.type_legend, '^Comment types: ISSUE', 'legend derived')
   assert.equals(fresh.options.keymaps.add_issue, '<leader>ci', 'type keymaps derived')
+  assert.equals(fresh.options.storage_file, nil, 'no storage_file by default')
+  assert.equals(fresh.options.storage_dir, nil, 'default storage_dir')
 end)
 
 -- Put the test configuration back for the files that run after this one

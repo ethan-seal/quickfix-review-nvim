@@ -305,6 +305,12 @@ function M.history_rows(id)
     end
   end
   counts(events)
+  -- The logs read, by log_id: a rotation that crashed after linking the log
+  -- to its rotated name leaves that log under two names (or more, once it is
+  -- rotated again). The newest one read holds all of it, so the older copies
+  -- are skipped.
+  local ids = {}
+  if res.log_id then ids[res.log_id] = true end
   local older = store.rotated_logs()
   for i = #older, 1, -1 do
     local first = events[1]
@@ -313,8 +319,11 @@ function M.history_rows(id)
     if id ~= nil and not history.checkpoint_knows(first, id) then break end
     local r = read(older[i])
     if not r then break end
-    counts(r.events)
-    events = vim.list_extend(vim.list_extend({}, r.events), events)
+    if not (r.log_id and ids[r.log_id]) then
+      if r.log_id then ids[r.log_id] = true end
+      counts(r.events)
+      events = vim.list_extend(vim.list_extend({}, r.events), events)
+    end
   end
   return history.rows(events, id)
 end

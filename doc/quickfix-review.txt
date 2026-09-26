@@ -163,6 +163,11 @@ in their name) are deleted when the review is first read in a session.
 Deleted comments stay restorable, as the trash is in the checkpoint. Only
 rotated logs are ever deleted. A version of this plugin from before
 rotation can't read a rotated log's checkpoint and shows the review empty.
+Logs are written in format v2; from this version on, a log written by a
+newer version of the plugin is refused with an ERROR and left unmodified,
+rather than shown empty. A log is rotated again only once it is also more
+than twice the size of the checkpoint it starts with, so a review whose
+checkpoint alone exceeds `log_max_bytes` doesn't rotate on every change.
 
 The project root is the git toplevel of Neovim's global working directory,
 or that directory itself outside git, with symlinks resolved. Each git

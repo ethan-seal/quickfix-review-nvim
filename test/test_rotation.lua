@@ -379,6 +379,162 @@ assert.run_test('two Neovims appending while rotating lose and duplicate nothing
   if not ok then error(err, 0) end
 end)
 
+local function now_ms()
+  local sec, usec = uv.gettimeofday()
+  return sec * 1000 + math.floor(usec / 1000)
+end
+
+-- Rewrite the log's header with format version `v`, keeping its log_id
+local function set_version(v)
+  local lines = vim.fn.readfile(log_file, 'b')
+  local header = vim.json.decode(lines[1])
+  header.v = v
+  lines[1] = vim.json.encode(header)
+  vim.fn.writefile(lines, log_file, 'b')
+end
+
+assert.run_test('a checkpoint above log_max_bytes does not rotate on every change', function()
+  reset()
+  for l = 1, 4 do add_at(l) end
+  local store
+  qf, store = restart({ log_max_bytes = 1 })
+  local ids = ids_of(store.all())
+  for i = 1, 5 do assert.equals(store.edit(store.all()[1].id, 'body ' .. i), 'edited', 'edit ' .. i) end
+  local after_edits = #rotated()
+  assert.truthy(after_edits >= 1, 'the first change still rotates')
+  assert.truthy(after_edits <= 2, '5 changes, not 5 rotations: ' .. after_edits)
+  -- A restart does not know the checkpoint's size yet: still bounded
+  qf, store = restart({ log_max_bytes = 1 })
+  for i = 6, 10 do assert.equals(store.edit(store.all()[1].id, 'body ' .. i), 'edited', 'edit ' .. i) end
+  assert.truthy(#rotated() <= after_edits + 1, '5 more changes after a restart: ' .. #rotated())
+  assert.equals(ids_of(store.all()), ids, 'every comment kept')
+  assert.equals(store.all()[1].body, 'body 10', 'the last edit')
+  os.remove(test_helper.state_path())
+  qf, store = restart({}, true)
+  assert.equals(ids_of(store.all()), ids, 'replayed from the log alone')
+end)
+
+assert.run_test('a rotated log hard-linked to the live log shows its events once', function()
+  reset()
+  add_at(1)
+  local store
+  qf, store = restart({ log_max_bytes = 1 })
+  add_at(2) -- rotates
+  assert.length(rotated(), 1, 'rotated')
+  local id = store.all()[1].id
+  assert.equals(store.edit(id, 'edited'), 'edited', 'edited')
+  local function ops()
+    local rows = qf.history_rows()
+    local out, seen = {}, {}
+    for i, r in ipairs(rows) do
+      out[i] = r.op
+      local key = tostring(r.ts) .. r.op .. tostring(r.id) .. r.changes
+      assert.falsy(seen[key], 'row shown once: ' .. r.text)
+      seen[key] = true
+    end
+    return table.concat(out, ',')
+  end
+  local before = ops()
+  assert.equals(before, 'add,add,update', 'history before the link')
+  -- A rotation that crashed between its link and its rename
+  uv.sleep(2)
+  assert.truthy(uv.fs_link(log_file, storage_file .. '.log.' .. now_ms() .. '.jsonl'), 'linked')
+  assert.length(rotated(), 2, 'two rotated names')
+  assert.equals(ops(), before, 'each event once after the crash')
+  assert.equals(#qf.history_rows(id), 2, 'the comment\'s add and update once')
+  -- Rotated again: both rotated names of that log are the same inode now
+  uv.sleep(2)
+  local n = #rotated()
+  for i = 1, 100 do
+    if #rotated() > n then break end
+    assert.equals(store.edit(id, 'again ' .. i), 'edited', 'edit ' .. i)
+  end
+  assert.equals(#rotated(), n + 1, 'rotated again')
+  local after = ops()
+  assert.equals(after:sub(1, #before), before, 'each event once after another rotation: ' .. after)
+  local _, updates = after:gsub('update', '')
+  assert.equals(#vim.split(after, ','), 2 + updates, 'no event twice')
+end)
+
+assert.run_test('history of a log with no complete header line does not raise', function()
+  reset()
+  add_at(1)
+  qf = restart({ log_max_bytes = 1 })
+  add_at(2) -- rotates, so an older log exists
+  assert.length(rotated(), 1, 'rotated')
+  local function check(label)
+    local ok, rows, err = pcall(qf.history_rows)
+    assert.truthy(ok, label .. ': no error raised: ' .. tostring(rows))
+    if rows then
+      assert.length(rows, 0, label .. ': no rows')
+    else
+      assert.truthy(err, label .. ': an error message')
+    end
+  end
+  vim.fn.writefile({}, log_file, 'b') -- a 0-byte log
+  check('empty log')
+  local f = io.open(log_file, 'wb')
+  assert.truthy(f, 'opened')
+  f:write('{"op":"header","v":2')
+  f:close()
+  check('torn header')
+end)
+
+assert.run_test('a stray .rotating file of a dead process is removed at rotation', function()
+  reset()
+  add_at(1)
+  local child = vim.system({ 'true' })
+  child:wait()
+  local dead = log_file .. '.rotating-' .. child.pid
+  local live = log_file .. '.rotating-' .. uv.os_getppid()
+  vim.fn.writefile({ 'stray' }, dead)
+  vim.fn.writefile({ 'in flight' }, live)
+  qf = restart({ log_max_bytes = 1 })
+  add_at(2) -- rotates
+  assert.length(rotated(), 1, 'rotated')
+  assert.equals(vim.fn.filereadable(dead), 0, 'the dead process\'s temp file is removed')
+  assert.equals(vim.fn.filereadable(live), 1, 'a live process\'s is kept')
+  os.remove(live)
+end)
+
+assert.run_test('a log from a newer version is refused, not shown empty', function()
+  local log = require('quickfix-review.log')
+  assert.equals(log.VERSION, 2, 'the log format is v2')
+  reset()
+  add_at(1)
+  local store
+  qf, store = restart() -- caches state.json for this log
+  assert.equals(test_helper.log_records(log_file)[1].v, 2, 'new logs are v2')
+  set_version(log.VERSION + 1)
+  local bytes = table.concat(vim.fn.readfile(log_file, 'b'), '\n')
+  local function check(label)
+    local calls = capture_notify(function()
+      qf, store = restart({}, true)
+      store.all()
+      assert.falsy(store.add({ filename = abs, lnum = 2, kind = 'note', body = 'x' }), label .. ': add refused')
+    end)
+    local errors = mentioning(calls, 'newer version')
+    assert.truthy(#errors >= 1, label .. ': an error: ' .. vim.inspect(calls))
+    assert.equals(errors[1].level, vim.log.levels.ERROR, label .. ': an ERROR')
+    assert.truthy(errors[1].msg:find('upgrade', 1, true), label .. ': says to upgrade')
+    assert.equals(table.concat(vim.fn.readfile(log_file, 'b'), '\n'), bytes, label .. ': the log is unchanged')
+    assert.length(vim.fn.glob(log_file .. '.torn-*', true, true), 0, label .. ': not moved aside')
+  end
+  check('cached')
+  os.remove(test_helper.state_path())
+  check('uncached')
+
+  -- A v1 log that holds a checkpoint still reads
+  set_version(1)
+  qf, store = restart({ log_max_bytes = 1 }, true)
+  add_at(2) -- rotates
+  assert.equals(test_helper.log_records(log_file)[2].op, 'checkpoint', 'rotated')
+  set_version(1)
+  os.remove(test_helper.state_path())
+  qf, store = restart({}, true)
+  assert.length(store.all(), 2, 'a v1 log with a checkpoint reads')
+end)
+
 qf = restart({}, true)
 test_helper.cleanup_test_environment()
 

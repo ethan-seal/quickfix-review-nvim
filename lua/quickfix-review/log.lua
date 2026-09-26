@@ -1,6 +1,6 @@
 -- The append-only event log that holds a review: log.jsonl, one JSON object
 -- per line, each line ending in \n. The first line is a header,
--- {"op":"header","log_id":"<16 hex>","v":1}; every other line is an event
+-- {"op":"header","log_id":"<16 hex>","v":2}; every other line is an event
 -- (see reduce.lua for what each op means). Events carry `eid` (a per-process
 -- nonce, "-", a counter) and `ts` (unix ms, informational only): the order of
 -- events is the order of the lines.
@@ -13,7 +13,9 @@ local M = {}
 
 local uv = vim.uv or vim.loop
 
-M.VERSION = 1
+-- The log format. 2: logs may hold a checkpoint event (rotation). A log
+-- whose header has a higher v is refused (never shown empty, nor appended to).
+M.VERSION = 2
 
 local function hex(bytes)
   return (bytes:gsub('.', function(b) return string.format('%02x', b:byte()) end))
@@ -44,6 +46,12 @@ end
 
 local function is_header(ev)
   return type(ev) == 'table' and ev.op == 'header' and type(ev.log_id) == 'string' and ev.log_id ~= ''
+end
+
+-- A header written by a newer version of the plugin, in a format this one
+-- may not understand
+local function too_new(ev)
+  return type(ev.v) == 'number' and ev.v > M.VERSION
 end
 
 -- Append `events` to the log at `path` (created with `mode` if missing) in a
@@ -137,6 +145,10 @@ function M.read(path, from, lines, seen)
           .. ' interrupted write); to rebuild it, move it aside (e.g. rename it to ' .. path .. '.bad) and restart'
           .. ' Neovim: comments.json beside it, if any, is migrated again'
       end
+      if too_new(ev) then
+        return nil, string.format('%s was written by a newer version of quickfix-review (log format v%s, this'
+          .. ' version reads up to v%d); upgrade the plugin to read or change it', path, tostring(ev.v), M.VERSION)
+      end
       result.log_id = ev.log_id
     elseif ev then
       table.insert(result.events, ev)
@@ -159,7 +171,13 @@ function M.read_id(path)
   local line = head and head:match('^([^\n]*)\n')
   if not line then return nil end
   local ok, ev = pcall(vim.json.decode, line)
-  return ok and is_header(ev) and ev.log_id or nil
+  return ok and is_header(ev) and not too_new(ev) and ev.log_id or nil
+end
+
+-- Whether process `pid` may be alive: only a definite ESRCH says it is not
+function M.pid_alive(pid)
+  local alive, _, name = uv.kill(pid, 0)
+  return alive or name ~= 'ESRCH'
 end
 
 local STALE_SECONDS = 10
@@ -186,8 +204,7 @@ local function stale(lockdir)
   -- No pid yet: the holder is between its mkdir and writing the pid
   if not pid then return false end
   if pid == uv.os_getpid() then return true, pid end
-  local alive, _, name = uv.kill(pid, 0)
-  return not alive and name == 'ESRCH', pid
+  return not M.pid_alive(pid), pid
 end
 
 local function unlock(lockdir)

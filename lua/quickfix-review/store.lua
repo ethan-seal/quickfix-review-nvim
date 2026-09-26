@@ -879,6 +879,43 @@ function M.rotated_logs()
   return out
 end
 
+-- The size of the header and checkpoint a rotated-to log starts with, by
+-- log path: { ino (of that log), bytes }. A log is rotated again only once
+-- it is larger than twice that, so a checkpoint that alone exceeds
+-- log_max_bytes does not rotate on every change.
+local head = {}
+
+-- The size above which the log (stat'ed as `stat`) at `loc` is rotated
+local function rotate_limit(loc, stat)
+  local limit = positive(config.options.log_max_bytes, config.defaults.log_max_bytes)
+  local h = head[loc.log]
+  if h and h.ino == stat.ino then limit = math.max(limit, 2 * h.bytes) end
+  return limit
+end
+
+-- A .rotating-<pid> temp file older than this is removed even if its pid is
+-- alive (a reused pid)
+local STRAY_SECONDS = 10 * 60
+
+-- Remove the .rotating-<pid> temp files of rotations that crashed (their
+-- process is gone, or they are old). Call with the lock held.
+local function remove_strays(loc)
+  local dir = vim.fn.fnamemodify(loc.log, ':h')
+  local pattern = '^' .. vim.pesc(vim.fn.fnamemodify(loc.log, ':t')) .. '%.rotating%-(%d+)$'
+  local me = uv.os_getpid()
+  local handle = uv.fs_scandir(dir)
+  while handle do
+    local name = uv.fs_scandir_next(handle)
+    if not name then break end
+    local pid = tonumber(name:match(pattern) or '')
+    if pid and pid ~= me then
+      local path = dir .. '/' .. name
+      local st = uv.fs_stat(path)
+      if st and (not log.pid_alive(pid) or os.time() - st.mtime.sec > STRAY_SECONDS) then os.remove(path) end
+    end
+  end
+end
+
 -- Rotate the log at `loc` (see above). Call with the lock held. A failure
 -- leaves the log as it was and is only warned about: the change that
 -- triggered it is already in the log.
@@ -892,6 +929,14 @@ local function rotate(loc)
   if not old then return false end
   local res, err = log.read(loc.log, 0, 0, seen_lines(loc))
   if not res then return warn(err) end
+  -- Not known yet (another Neovim rotated, or a restart): how large the
+  -- log's leading checkpoint is, so it isn't rotated again too soon
+  if res.events[1] and res.events[1].op == 'checkpoint' and not (head[loc.log] and head[loc.log].ino == old.ino) then
+    local ok, cp = pcall(vim.json.encode, res.events[1])
+    local bytes = (ok and #cp or 0) + #vim.json.encode(log.new_header()) + 2
+    head[loc.log] = { ino = old.ino, bytes = bytes }
+    if old.size <= 2 * bytes then return false end
+  end
   local state, imports = reduce.new(), {}
   for _, ev in ipairs(res.events) do
     if ev.op == 'import' and type(ev.source_sha256) == 'string' then imports[ev.source_sha256] = true end
@@ -906,6 +951,7 @@ local function rotate(loc)
 
   local mode = bit.band(old.mode, 511)
   local tmp = loc.log .. '.rotating-' .. uv.os_getpid()
+  remove_strays(loc)
   os.remove(tmp)
   local wrote, werr = log.append(tmp, { log.new_header(), checkpoint }, mode)
   if not wrote then
@@ -931,6 +977,8 @@ local function rotate(loc)
     os.remove(rotated)
     return warn(rerr)
   end
+  local new = uv.fs_stat(loc.log)
+  if new then head[loc.log] = { ino = new.ino, bytes = new.size } end
   return true
 end
 
@@ -1050,8 +1098,7 @@ local function mutate(build)
     -- Read back what was written: all of it, some or none
     sync()
     local grown = uv.fs_stat(loc.log)
-    if wrote and grown and grown.size > positive(config.options.log_max_bytes, config.defaults.log_max_bytes)
-        and rotate(loc) then
+    if wrote and grown and grown.size > rotate_limit(loc, grown) and rotate(loc) then
       -- The new log (another inode) is replayed from its checkpoint, and
       -- the cache keyed to it
       sync()

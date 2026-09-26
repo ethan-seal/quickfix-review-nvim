@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-8a67
 title: 'Rotation edge cases: re-rotation loop, crash-window duplicate history'
-status: todo
+status: completed
 type: bug
 priority: low
 created_at: 2026-09-26T10:58:50Z
-updated_at: 2026-09-26T10:58:50Z
+updated_at: 2026-09-26T11:09:10Z
 ---
 
 Follow-ups from l13q review (one rollup; don't spawn further follow-ups):

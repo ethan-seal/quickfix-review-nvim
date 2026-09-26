@@ -556,6 +556,37 @@ assert.run_test('a non-finite lnum is dropped, not a save failure', function()
   end)
 end)
 
+assert.run_test('a non-finite number in an unknown field or in context is dropped with a warning', function()
+  local json = '{"version":2,"comments":['
+    .. '{"id":"00000000000000f5","filename":' .. vim.json.encode(abs)
+    .. ',"lnum":2,"end_lnum":2,"kind":"note","body":"weird","created_at":1700000000,'
+    .. '"weird":1e999,"keep":[1,1e999,2],"context":{"x":1e999,"y":"kept"}}'
+    .. ']}'
+  with_file(json, function(path)
+    local list
+    local calls = capture_notify(function()
+      qf = restart(path)
+      list = qf.comments()
+    end)
+    assert.length(list, 1, 'the record loads')
+    local warns = warnings(calls)
+    assert.length(warns, 1, 'one warning: ' .. vim.inspect(warns))
+    assert.truthy(warns[1].msg:find('00000000000000f5', 1, true), 'names the record: ' .. warns[1].msg)
+    assert.equals(vim.fn.filereadable(path .. '.pre-log.bak'), 1, 'migrated')
+    local on_disk = logged(path)
+    assert.length(on_disk, 1, 'logged')
+    assert.equals(on_disk[1].weird, nil, 'inf field dropped')
+    assert.truthy(vim.deep_equal(on_disk[1].keep, { 1, 2 }), 'list kept without a hole: ' .. vim.inspect(on_disk[1].keep))
+    assert.equals(on_disk[1].context.x, nil, 'inf context value dropped')
+    assert.equals(on_disk[1].context.y, 'kept', 'the rest of context kept')
+
+    vim.cmd('edit ' .. test_file)
+    vim.fn.cursor(4, 1)
+    qf.add_comment('NOTE')
+    assert.length(logged(path), 2, 'a later add still logs')
+  end)
+end)
+
 assert.run_test('legacy text the record did not take is kept as extra.legacy_text', function()
   local json = v2_json({
     { id = '00000000000000a1', filename = abs, lnum = 1, end_lnum = 1, kind = 'issue', body = 'a',

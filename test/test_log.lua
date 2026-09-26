@@ -147,6 +147,22 @@ assert.run_test('a lock left by a dead process or by this one is broken', functi
   assert.equals(vim.fn.isdirectory(dir), 0, 'released')
 end)
 
+assert.run_test('a broken lock leaves nothing aside, and the new holder\'s pid is in it', function()
+  local dir = vim.fn.tempname() .. '-lock'
+  local child = vim.system({ 'true' })
+  child:wait()
+  seed_lock(dir, child.pid)
+  local held
+  assert.truthy(log.with_lock(dir, function()
+    local fh = io.open(dir .. '/pid', 'r')
+    held = fh and tonumber(fh:read('*l'))
+    if fh then fh:close() end
+  end), 'broken and taken')
+  assert.equals(held, uv.os_getpid(), 'this process holds it')
+  assert.length(vim.fn.glob(dir .. '.stale-*', true, true), 0, 'no stale lock left aside')
+  assert.equals(vim.fn.isdirectory(dir), 0, 'released')
+end)
+
 assert.run_test('a live lock is waited on, then times out; an old one is broken', function()
   local dir = vim.fn.tempname() .. '-lock'
   local holder = vim.system({ 'sleep', '30' })

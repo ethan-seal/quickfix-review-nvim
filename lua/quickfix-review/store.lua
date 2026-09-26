@@ -65,6 +65,37 @@ local function to_line(v)
   return v
 end
 
+local function has_nonfinite(v)
+  if type(v) == 'number' then return finite(v) == nil end
+  if type(v) ~= 'table' then return false end
+  for _, x in pairs(v) do
+    if has_nonfinite(x) then return true end
+  end
+  return false
+end
+
+-- `v` without its non-finite numbers, at any depth; a list is rebuilt
+-- without holes. Only tables that held one are copied.
+local function drop_nonfinite(v)
+  if not has_nonfinite(v) then return v end
+  if type(v) ~= 'table' then return nil end
+  local n = 0
+  for _ in pairs(v) do n = n + 1 end
+  local out = setmetatable({}, getmetatable(v))
+  if n == #v then
+    for _, x in ipairs(v) do
+      local kept = drop_nonfinite(x)
+      if kept ~= nil then table.insert(out, kept) end
+    end
+  else
+    for k, x in pairs(v) do out[k] = drop_nonfinite(x) end
+  end
+  return out
+end
+
+-- Records whose non-finite numbers were dropped, by id, so each is warned about once
+local nonfinite_warned = {}
+
 local function nonempty(s)
   return type(s) == 'string' and s ~= '' and s or nil
 end
@@ -135,15 +166,28 @@ local function normalize(item)
   end
   if legacy_text and extra.legacy_text == nil then extra.legacy_text = legacy_text end
 
+  local id = has_id(item) and item.id or new_id()
+  local context = type(item.context) == 'table' and item.context or nil
+  -- inf and NaN (1e999 in JSON) can't be written back: vim.json.encode
+  -- refuses them
+  if has_nonfinite(extra) or has_nonfinite(context) then
+    extra, context = drop_nonfinite(extra), drop_nonfinite(context)
+    if not nonfinite_warned[id] then
+      nonfinite_warned[id] = true
+      vim.notify(string.format('quickfix-review: dropped infinite or NaN numbers from comment %s', id),
+        vim.log.levels.WARN)
+    end
+  end
+
   return {
-    id = has_id(item) and item.id or new_id(),
+    id = id,
     filename = vim.fn.fnamemodify(filename, ':p'),
     kind = kind and kind:lower() or 'note',
     body = body or '',
     response = response,
     lnum = lnum,
     end_lnum = end_lnum,
-    context = type(item.context) == 'table' and item.context or nil,
+    context = context,
     anchor = parse_anchor(item.anchor),
     created_at = finite(item.created_at) or os.time(),
     extra = next(extra) ~= nil and extra or nil,
@@ -371,6 +415,10 @@ end
 local synced
 -- Events applied since state.json was last written
 local unsaved = 0
+-- Set when `reduced` is a comments.json loaded read-only (its storage dir is
+-- not writable, so it can't be migrated): { log = the log it stands in for,
+-- key = the comments.json version (size:mtime) loaded }
+local readonly = nil
 
 local function fresh_sync(loc)
   return { log = loc and loc.log, state = loc and loc.state, offset = 0, lines = 0, imports = {} }
@@ -380,6 +428,7 @@ local function reset(loc)
   synced = fresh_sync(loc)
   reduced = reduce.new()
   unsaved = 0
+  readonly = nil
 end
 reset(nil)
 
@@ -491,13 +540,11 @@ end
 -- Returns: ok (boolean), err (string or nil), changed (boolean)
 local function read_log(loc, stat, opts)
   local full = opts.full or not synced.log_id or synced.ino ~= stat.ino or stat.size < synced.offset
+  -- A log of the same inode, and no shorter, may still be another one
+  -- (rewritten in place rather than renamed over): a different (or no)
+  -- header log_id means replay it from the start
+  if not full and log.read_id(loc.log) ~= synced.log_id then full = true end
   if not full and stat.size == synced.offset then return true, nil, false end
-  -- A log that grew may still be another one (rewritten in place rather than
-  -- renamed over): a different header log_id means replay it from the start
-  if not full then
-    local id = log.read_id(loc.log)
-    if id and id ~= synced.log_id then full = true end
-  end
 
   local base, state = synced, reduced
   local cached = false
@@ -575,8 +622,12 @@ local function migrate(loc)
     local records, lerr = load_records(raw, loc.path)
     if not records then return nil, lerr end
     local import = log.event('import', { source_sha256 = vim.fn.sha256(raw), comments = serialise_all(records) })
-    local wrote, werr = log.append(loc.log, { log.new_header(), import }, bit.band(src.mode, 511))
-    if not wrote then return nil, 'Could not write ' .. loc.log .. ': ' .. werr end
+    local wrote, werr, landed = log.append(loc.log, { log.new_header(), import }, bit.band(src.mode, 511))
+    if not wrote and landed ~= 2 then return nil, 'Could not write ' .. loc.log .. ': ' .. werr end
+    if not wrote then
+      vim.notify(string.format('quickfix-review: migrated %s into %s, but it may not be durable: %s',
+        loc.path, loc.log, tostring(werr)), vim.log.levels.WARN)
+    end
     local renamed, rerr = uv.fs_rename(loc.path, loc.path .. MIGRATED)
     if not renamed then
       vim.notify(string.format('quickfix-review: migrated %s into %s but could not rename it: %s',
@@ -639,13 +690,84 @@ local function import_legacy(loc)
   end
 end
 
--- The log is missing (or empty): migrate comments.json into it, or import
--- from the legacy global file, or leave it to the first change to create
--- Returns: ok (boolean), err (string or nil)
+-- comments.json in a storage dir that is not writable, so it can't be
+-- migrated: load it read-only into `reduced` (as if imported, but nothing is
+-- written), again only when it changes. Changes are refused (see mutate).
+-- Returns: ok (boolean), err (string or nil), changed (boolean)
+local function load_readonly(loc, src)
+  local key = string.format('%d:%d.%d', src.size, src.mtime.sec, src.mtime.nsec)
+  if readonly and readonly.log == loc.log and readonly.key == key then return true, nil, false end
+  local raw = read_bytes(loc.path)
+  if not raw then return false, 'Could not read ' .. loc.path end
+  local records, err = load_records(raw, loc.path)
+  if not records then return false, err end
+  reset(loc)
+  reduce.apply(reduced, { op = 'import', comments = serialise_all(records) })
+  readonly = { log = loc.log, key = key }
+  return true, nil, true
+end
+
+-- The log is missing (or empty): migrate comments.json into it (or load it
+-- read-only if its dir is not writable), or import from the legacy global
+-- file, or leave it to the first change to create
+-- Returns: ok (boolean), err (string or nil), changed (boolean: `reduced`
+-- was replaced)
 local function init_storage(loc)
-  if uv.fs_stat(loc.path) then return migrate(loc) end
-  if not loc.explicit then import_legacy(loc) end
-  return true, nil
+  local src = uv.fs_stat(loc.path)
+  if src and not uv.fs_access(loc.dir, 'W') then return load_readonly(loc, src) end
+  -- No longer read-only: what was shown is migrated now, or gone
+  local was_readonly = readonly ~= nil
+  if was_readonly then reset(loc) end
+  local ok, err = true, nil
+  if src then
+    ok, err = migrate(loc)
+  elseif not loc.explicit then
+    import_legacy(loc)
+  end
+  return ok, err, was_readonly
+end
+
+-- The first line of the log at `path` is incomplete (no \n at all), or the
+-- log is only a header while comments.json sits beside it: the header and
+-- import of a migration (or the header and first event of a change) were
+-- torn by a short write, so nothing but a partial header or event is lost.
+local function is_torn(loc)
+  local fd = uv.fs_open(loc.log, 'r', 0)
+  if not fd then return false end
+  local head = uv.fs_read(fd, 4096, 0)
+  uv.fs_close(fd)
+  if not head then return false end
+  if not head:find('\n', 1, true) then return #head > 0 end
+  if not uv.fs_stat(loc.path) then return false end
+  local res = log.read(loc.log, 0, 0)
+  return res ~= nil and #res.events == 0
+end
+
+-- A torn log (see is_torn) is moved aside, to log.jsonl.torn-<unix time>,
+-- and the migration (or import) retried
+-- Returns: ok (boolean), err (string or nil)
+local function recover_torn(loc)
+  -- Checked again under the lock, where no write is in flight
+  if not is_torn(loc) then return true, nil end
+  local got, moved = locked(loc, function()
+    if not is_torn(loc) then return nil end
+    local aside, n = loc.log .. '.torn-' .. os.time(), 1
+    while uv.fs_stat(aside) do
+      aside, n = loc.log .. '.torn-' .. os.time() .. '-' .. n, n + 1
+    end
+    local renamed, rerr = uv.fs_rename(loc.log, aside)
+    if not renamed then
+      vim.notify(string.format('quickfix-review: %s is incomplete, but could not be moved aside: %s',
+        loc.log, tostring(rerr)), vim.log.levels.WARN)
+      return nil
+    end
+    vim.notify(string.format('quickfix-review: %s was incomplete (an interrupted write); moved it to %s',
+      loc.log, aside), vim.log.levels.WARN)
+    return aside
+  end)
+  if not got or not moved then return true, nil end
+  local ok, err = init_storage(loc)
+  return ok, err
 end
 
 -- comments.json versions (path:size:mtime) already looked at
@@ -701,7 +823,18 @@ local function sync(opts)
       reset(loc)
       changed = true
     end
-    local ok, err = init_storage(loc)
+    local ok, err, replaced = init_storage(loc)
+    changed = changed or replaced
+    if not ok then return fail(err) end
+    stat = uv.fs_stat(loc.log)
+  elseif readonly then
+    -- A log appeared (another Neovim migrated): it is the review now
+    reset(loc)
+    changed = true
+  end
+  -- A log not read yet may be one whose first write was torn
+  if stat and stat.size > 0 and not synced.log_id then
+    local ok, err = recover_torn(loc)
     if not ok then return fail(err) end
     stat = uv.fs_stat(loc.log)
   end
@@ -733,19 +866,44 @@ end
 -- (sync() reports that once) or the lock can't be taken.
 -- build() returns: events (a list, possibly empty), result
 -- Returns: result, or nil if the change was refused or failed
+-- The error for a change to a review loaded read-only, or nil
+local function readonly_error(loc)
+  if not (readonly and readonly.log == loc.log) then return nil end
+  return string.format('%s is not writable: %s is shown read-only; the change was not saved', loc.dir, loc.path)
+end
+
 local function mutate(build)
   local loc = resolve()
+  -- Before locking: the lock can't be taken in a dir that is not writable
+  if readonly_error(loc) then sync() end
+  local ro_err = readonly_error(loc)
+  if ro_err then
+    vim.notify('quickfix-review: ' .. ro_err, vim.log.levels.ERROR)
+    return nil
+  end
   local got, result, err = locked(loc, function()
     if not sync() then return nil end
     local events, res = build()
     if #events == 0 then return res end
     local stat = uv.fs_stat(loc.log)
-    if not stat or stat.size == 0 then table.insert(events, 1, log.new_header()) end
-    local wrote, werr = log.append(loc.log, events)
+    local header = (not stat or stat.size == 0) and 1 or 0
+    if header == 1 then table.insert(events, 1, log.new_header()) end
+    local wrote, werr, landed = log.append(loc.log, events)
     -- Read back what was written: all of it, some or none
     sync()
-    if not wrote then return nil, 'Could not write ' .. loc.log .. ': ' .. tostring(werr) end
-    return res
+    if wrote then return res end
+    landed = (landed or 0) - header
+    if landed >= #events - header then
+      -- In the log, which is the review: only its fsync (or close) failed
+      vim.notify(string.format('quickfix-review: the change was written to %s but may not be durable: %s',
+        loc.log, tostring(werr)), vim.log.levels.WARN)
+      return res
+    end
+    if landed > 0 then
+      return nil, string.format('Could not write all of the change to %s: %s; the change may be incomplete',
+        loc.log, tostring(werr))
+    end
+    return nil, 'Could not write ' .. loc.log .. ': ' .. tostring(werr)
   end)
   if not got then result, err = nil, result end
   if err then vim.notify('quickfix-review: ' .. err, vim.log.levels.ERROR) end
@@ -954,6 +1112,9 @@ end
 function M.save()
   local ok, err = sync()
   if not ok then return false, err end
+  if readonly then
+    return false, string.format('%s is not writable: %s is shown read-only', resolve().dir, resolve().path)
+  end
   if not synced.log_id then
     return true, 'Review saved (no comments yet)'
   end

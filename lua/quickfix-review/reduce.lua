@@ -55,7 +55,8 @@ local function trash(state, id, ev)
   if not i then return 'unknown' end
   table.remove(state.comments, i)
   state.trash[id] = c
-  table.insert(state.removed, { id = id, op = ev.op, eid = ev.eid, ts = ev.ts })
+  -- ts is informational: a hand-edited or foreign log may hold anything there
+  table.insert(state.removed, { id = id, op = ev.op, eid = ev.eid, ts = type(ev.ts) == 'number' and ev.ts or nil })
   return nil
 end
 

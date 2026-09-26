@@ -43,9 +43,12 @@ function M.lock_path(file) return (file or M.storage_file) .. '.lock' end
 -- comments.json and its backups, the log, the cache, the lock
 function M.remove_storage(file)
   file = file or M.storage_file
-  for _, suffix in ipairs({ '', '.pre-log.bak', '.pre-v2.bak', '.pre-repair.bak', '.log.jsonl', '.state.json' }) do
+  for _, suffix in ipairs({ '', '.pre-log.bak', '.pre-v2.bak', '.log.jsonl', '.state.json' }) do
     os.remove(file .. suffix)
   end
+  -- Torn logs moved aside, and stale locks broken by renaming them aside
+  for _, p in ipairs(vim.fn.glob(M.log_path(file) .. '.torn-*', true, true)) do os.remove(p) end
+  for _, p in ipairs(vim.fn.glob(M.lock_path(file) .. '.stale-*', true, true)) do vim.fn.delete(p, 'rf') end
   vim.fn.delete(M.lock_path(file), 'rf')
   vim.fn.delete(file .. '.snapshots', 'rf')
 end

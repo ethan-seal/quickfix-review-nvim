@@ -53,7 +53,10 @@ end
 -- write, or a torn record), a \n is written first, so the torn record stays
 -- one undecodable line instead of swallowing this one. The fd is not kept.
 -- Call with the log's lock held.
--- Returns: ok (boolean), err (string or nil)
+-- Returns: ok (boolean), err (string or nil), landed: how many of `events`
+-- are in the log as complete lines (#events on success; on a failed write,
+-- fsync or close, the ones written whole, which a read will see; nil when
+-- nothing was written)
 function M.append(path, events, mode)
   local parts = {}
   for i, ev in ipairs(events) do
@@ -65,37 +68,43 @@ function M.append(path, events, mode)
 
   local fd, err = uv.fs_open(path, 'a+', mode or 420)
   if not fd then return false, err end
-  local function fail(e)
+  local function fail(e, landed)
     uv.fs_close(fd)
-    return false, e or 'unknown error'
+    return false, e or 'unknown error', landed
   end
 
   local stat, serr = uv.fs_fstat(fd)
   if not stat then return fail(serr) end
+  local prefix = 0
   if stat.size > 0 then
     local last, rerr = uv.fs_read(fd, 1, stat.size - 1)
     if not last then return fail(rerr) end
-    if last ~= '\n' then data = '\n' .. data end
+    if last ~= '\n' then data, prefix = '\n' .. data, 1 end
   end
 
   local n, werr = uv.fs_write(fd, data)
   if not n then return fail(werr) end
-  if n ~= #data then return fail(string.format('short write (%d of %d bytes)', n, #data)) end
+  if n ~= #data then
+    -- The events whose \n was written landed whole
+    local _, landed = data:sub(prefix + 1, n):gsub('\n', '')
+    return fail(string.format('short write (%d of %d bytes)', n, #data), landed)
+  end
   local synced, ferr = uv.fs_fsync(fd)
-  if not synced then return fail(ferr) end
+  if not synced then return fail(ferr, #events) end
   local closed, cerr = uv.fs_close(fd)
-  if not closed then return false, cerr end
-  return true, nil
+  if not closed then return false, cerr, #events end
+  return true, nil, #events
 end
 
 -- Read the complete lines of the log at `path` from byte `from` (default 0,
 -- the start of a line; `lines` is how many lines precede it, for messages).
 -- Every line that fails to decode is skipped with a warning naming its line
 -- number. Bytes after the last \n are not consumed. Reading from 0, the
--- first line must be a header.
+-- first line must be a header. `seen`, a table the caller keeps, makes the
+-- warning once per line number: lines warned about are recorded in it.
 -- Returns: { events, offset, lines, log_id (from 0 only) }, or nil and an
 -- error when the file can't be read, is shorter than `from`, or has no header
-function M.read(path, from, lines)
+function M.read(path, from, lines, seen)
   from, lines = from or 0, lines or 0
   local fd, err = uv.fs_open(path, 'r', 0)
   if not fd then return nil, 'Could not read ' .. path .. ': ' .. tostring(err) end
@@ -128,7 +137,8 @@ function M.read(path, from, lines)
       result.log_id = ev.log_id
     elseif ev then
       table.insert(result.events, ev)
-    elseif line ~= '' then
+    elseif line ~= '' and not (seen and seen[result.lines]) then
+      if seen then seen[result.lines] = true end
       vim.notify(string.format('quickfix-review: skipping unreadable line %d of %s', result.lines, path),
         vim.log.levels.WARN)
     end
@@ -152,15 +162,22 @@ end
 local STALE_SECONDS = 10
 local WAIT_MS = 1000
 
+-- The pid in the lock `lockdir`, or nil
+local function read_pid(lockdir)
+  local fh = io.open(lockdir .. '/pid', 'r')
+  if not fh then return nil end
+  local pid = tonumber(fh:read('*l') or '')
+  fh:close()
+  return pid
+end
+
 -- A lock left by a process that is gone, or held for longer than any append
 -- takes. A lock this process holds is never stale (with_lock doesn't nest).
 local function stale(lockdir)
   local stat = uv.fs_stat(lockdir)
   if not stat then return false end
   if os.time() - stat.mtime.sec > STALE_SECONDS then return true end
-  local fh = io.open(lockdir .. '/pid', 'r')
-  local pid = fh and tonumber(fh:read('*l') or '')
-  if fh then fh:close() end
+  local pid = read_pid(lockdir)
   -- No pid yet: the holder is between its mkdir and writing the pid
   if not pid then return false end
   if pid == uv.os_getpid() then return true end
@@ -173,27 +190,51 @@ local function unlock(lockdir)
   uv.fs_rmdir(lockdir)
 end
 
+-- Break a stale lock: rename it aside, then remove it. Of two processes
+-- that both judged it stale, only one rename succeeds, so the other never
+-- removes a lock taken since.
+local function break_lock(lockdir)
+  local aside = string.format('%s.stale-%d-%s', lockdir, uv.os_getpid(), hex(assert(uv.random(4))))
+  if uv.fs_rename(lockdir, aside) then unlock(aside) end
+end
+
+-- Take `lockdir`: mkdir it and write this process's pid inside, then read
+-- the pid back, in case a breaker moved the dir away meanwhile.
+-- Returns: 'ok', 'busy' (it exists), 'lost' (someone else's now), or nil
+-- and an error
+local function take(lockdir)
+  local ok, err, name = uv.fs_mkdir(lockdir, 448) -- 0700
+  if not ok then
+    if name == 'EEXIST' then return 'busy' end
+    return nil, 'Could not lock ' .. lockdir .. ': ' .. tostring(err)
+  end
+  local me = uv.os_getpid()
+  local fh = io.open(lockdir .. '/pid', 'w')
+  local wrote = fh and fh:write(tostring(me), '\n')
+  if fh then fh:close() end
+  if not wrote then
+    uv.fs_rmdir(lockdir) -- only if still empty, so never another's
+    return nil, 'Could not lock ' .. lockdir .. ': could not write its pid'
+  end
+  return read_pid(lockdir) == me and 'ok' or 'lost'
+end
+
 -- Run fn with `lockdir` held: mkdir'ed, with this process's pid inside. A
 -- stale lock is broken; a live one is waited on for up to a second.
 -- Returns: true and fn's results, or false and an error (fn not run)
 function M.with_lock(lockdir, fn)
   local deadline = uv.hrtime() + WAIT_MS * 1e6
   while true do
-    local ok, err, name = uv.fs_mkdir(lockdir, 448) -- 0700
-    if ok then break end
-    if name ~= 'EEXIST' then return false, 'Could not lock ' .. lockdir .. ': ' .. tostring(err) end
-    if stale(lockdir) then
-      unlock(lockdir)
+    local got, err = take(lockdir)
+    if got == 'ok' then break end
+    if not got then return false, err end
+    if got == 'busy' and stale(lockdir) then
+      break_lock(lockdir)
     elseif uv.hrtime() > deadline then
       return false, 'Timed out waiting for the lock ' .. lockdir
     else
       uv.sleep(5)
     end
-  end
-  local fh = io.open(lockdir .. '/pid', 'w')
-  if fh then
-    fh:write(tostring(uv.os_getpid()), '\n')
-    fh:close()
   end
   local results = { pcall(fn) }
   unlock(lockdir)

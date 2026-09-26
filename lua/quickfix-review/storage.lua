@@ -148,17 +148,6 @@ function M.upgrade(doc)
   return doc
 end
 
--- Copy `path` to `path .. suffix` unless that already exists, so the first
--- backup is never overwritten. The copy keeps the file's permission bits.
--- Returns: ok (boolean), err (string or nil)
-function M.backup_once(path, suffix)
-  local bak = path .. suffix
-  if uv.fs_stat(bak) then return true, nil end
-  local ok, err = uv.fs_copyfile(path, bak, { excl = true })
-  if not ok then return false, 'Could not back up ' .. path .. ' to ' .. bak .. ': ' .. (err or 'unknown error') end
-  return true, nil
-end
-
 -- A record as written: its `extra` fields flattened back to the top level,
 -- where known fields win a clash. The in-memory record is not changed. This
 -- is also the payload format of the event log (see log.lua).

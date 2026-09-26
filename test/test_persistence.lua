@@ -323,6 +323,113 @@ assert.run_test('an add into a read-only storage dir is not reported as added', 
   if not ok then error(err, 0) end
 end)
 
+assert.run_test('comments.json in a read-only storage dir is listed, and changes are refused', function()
+  local uv = vim.uv or vim.loop
+  if uv.getuid and uv.getuid() == 0 then
+    print('  (skipped: running as root ignores directory permissions)')
+    return
+  end
+
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, 'p')
+  local path = dir .. '/review.json'
+  local abs = vim.fn.fnamemodify(test_file, ':p')
+  local fh = io.open(path, 'wb')
+  fh:write(envelope({
+    { id = '00000000000000e1', filename = abs, lnum = 1, end_lnum = 1, kind = 'issue', body = 'one',
+      created_at = 1700000000 },
+    { id = '00000000000000e2', filename = abs, lnum = 3, end_lnum = 3, kind = 'note', body = 'two',
+      created_at = 1700000000 },
+  }))
+  fh:close()
+  vim.fn.setfperm(dir, 'r-xr-xr-x')
+
+  local ok, err = pcall(function()
+    local loaded = capture_notify(function() qf = restart(path) end)
+    local list = qf.comments()
+    assert.length(list, 2, 'comments listed')
+    assert.equals(list[2].body, 'two', 'as in the file')
+    assert.length(errors_mentioning(loaded, ''), 0, 'no error on load: ' .. vim.inspect(loaded))
+
+    local store = require('quickfix-review.store')
+    local added
+    local calls = capture_notify(function()
+      added = store.add({ filename = test_file, kind = 'note', body = 'direct', lnum = 2, end_lnum = 2 })
+    end)
+    assert.equals(added, false, 'store.add returns false')
+    local errs = errors_mentioning(calls, dir)
+    assert.length(errs, 1, 'one error naming the dir: ' .. vim.inspect(calls))
+    assert.truthy(errs[1].msg:find('read-only', 1, true), 'says read-only: ' .. errs[1].msg)
+    assert.length(qf.comments(), 2, 'still listed')
+
+    qf = restart(path) -- flushes on the way out
+    assert.length(qf.comments(), 2, 'listed after a restart')
+    for _, suffix in ipairs({ '.log.jsonl', '.pre-log.bak', '.state.json' }) do
+      assert.equals(vim.fn.filereadable(path .. suffix), 0, 'no ' .. suffix .. ' written')
+    end
+
+    -- Writable again: migrated on the next read
+    vim.fn.setfperm(dir, 'rwxr-xr-x')
+    assert.length(qf.comments(), 2, 'still two')
+    assert.equals(vim.fn.filereadable(path .. '.pre-log.bak'), 1, 'migrated once writable')
+    assert.length(saved(path), 2, 'in the log')
+  end)
+
+  vim.fn.setfperm(dir, 'rwxr-xr-x')
+  qf = restart()
+  vim.fn.delete(dir, 'rf')
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('a change written to the log whose fsync failed is reported as made', function()
+  reset()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('ISSUE')
+  assert.length(qf.comments(), 1, 'seeded')
+
+  local store = require('quickfix-review.store')
+  local log = require('quickfix-review.log')
+  local original_append = log.append
+  log.append = function(...)
+    local _, _, landed = original_append(...)
+    return false, 'fsync failed', landed
+  end
+
+  local ok, err = pcall(function()
+    local added, updated, edited, removed, printed
+    local calls = capture_notify(function()
+      added = store.add({ filename = test_file, kind = 'note', body = 'direct', lnum = 4, end_lnum = 4 })
+      local c = qf.comments()[1]
+      updated = store.update({ { id = c.id, anchor = { sha = string.rep('a', 64), lnum = 5, end_lnum = 5 } } })
+      edited = store.edit(c.id, 'edited body')
+      removed = store.remove(qf.comments()[2].id)
+      printed = capture_print(function()
+        vim.fn.cursor(3, 1)
+        qf.add_comment('NOTE')
+      end)
+    end)
+
+    assert.equals(added, true, 'add returns true')
+    assert.equals(updated, 1, 'update returns the count')
+    assert.equals(edited, 'edited', 'edit returns edited')
+    assert.equals(removed, 1, 'remove returns the count')
+    assert.falsy(any_mentions(calls, 'not added'), 'no "not added": ' .. vim.inspect(calls))
+    assert.falsy(any_mentions(calls, 'not edited'), 'no "not edited"')
+    assert.falsy(any_mentions(calls, 'no comment was deleted'), 'no "no comment was deleted"')
+    assert.length(errors_mentioning(calls, ''), 0, 'no error: ' .. vim.inspect(calls))
+    assert.truthy(any_mentions(calls, 'may not be durable'), 'warns it may not be durable')
+    assert.truthy(any_mentions(printed, 'added'), 'add_comment reports the add: ' .. vim.inspect(printed))
+    local on_disk = saved()
+    assert.length(on_disk, 2, 'first comment and the NOTE live')
+    assert.equals(on_disk[1].body, 'edited body', 'edit applied')
+    assert.equals(on_disk[1].lnum, 5, 're-anchored')
+    assert.length(qf.comments(), 2, 'the list matches the log')
+  end)
+
+  log.append = original_append
+  if not ok then error(err, 0) end
+end)
+
 assert.run_test('a failed log append is reported as a failure by every change', function()
   reset()
   vim.fn.cursor(2, 1)
@@ -632,6 +739,50 @@ assert.run_test('a migration that crashed before its rename is finished without 
   assert.length(qf.comments(), 2, 'still two after another restart')
 end)
 
+-- A migration torn by a short write: `torn(header, import)` gives the bytes
+-- that reached the log
+for _, case in ipairs({
+  { what = 'header', torn = function(header) return header:sub(1, 20) end },
+  { what = 'import', torn = function(header, import) return header .. '\n' .. import:sub(1, 30) end },
+}) do
+  assert.run_test('a migration torn in its ' .. case.what .. ' is moved aside and retried', function()
+    reset()
+    local abs = vim.fn.fnamemodify(test_file, ':p')
+    local records = {
+      { id = '00000000000000b1', filename = abs, lnum = 1, end_lnum = 1, kind = 'issue', body = 'one',
+        created_at = 1700000000 },
+      { id = '00000000000000b2', filename = abs, lnum = 3, end_lnum = 3, kind = 'note', body = 'two',
+        created_at = 1700000000 },
+    }
+    local raw = envelope(records)
+    local fh = io.open(storage_file, 'wb')
+    fh:write(raw)
+    fh:close()
+    local log = require('quickfix-review.log')
+    local bytes = case.torn(vim.json.encode(log.new_header()),
+      vim.json.encode(log.event('import', { source_sha256 = vim.fn.sha256(raw), comments = records })))
+    fh = io.open(log_file, 'wb')
+    fh:write(bytes)
+    fh:close()
+
+    local calls = capture_notify(function() qf = restart(nil, { no_flush = true }) end)
+    local list = qf.comments()
+    assert.length(list, 2, 'the comments of comments.json')
+    assert.equals(list[1].body, 'one', 'first comment')
+    local aside = vim.fn.glob(log_file .. '.torn-*', true, true)
+    assert.length(aside, 1, 'the torn log kept aside')
+    assert.equals(read_bytes(aside[1]), bytes, 'with the torn bytes')
+    assert.equals(read_bytes(storage_file .. '.pre-log.bak'), raw, 'comments.json migrated')
+    assert.length(test_helper.log_ops(log_file, 'import'), 1, 'imported once')
+    assert.length(errors_mentioning(calls, ''), 0, 'no error: ' .. vim.inspect(calls))
+    assert.falsy(any_mentions(calls, 'reappeared'), 'no reappeared warning')
+
+    vim.fn.cursor(2, 1)
+    qf.add_comment('NOTE')
+    assert.length(saved(), 3, 'changes are logged')
+  end)
+end
+
 assert.run_test('a comments.json written next to the log is warned about once and ignored', function()
   reset()
   vim.fn.cursor(1, 1)
@@ -914,6 +1065,25 @@ assert.run_test('history without an id is the last 50 events', function()
   assert.truthy(#qf.history_rows() > 0, 'rows from the log')
   vim.cmd('ReviewHistory')
   qf.clear_review()
+end)
+
+assert.run_test(':ReviewHistory warns about an unreadable line once', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('ISSUE')
+  local fh = io.open(log_file, 'ab')
+  fh:write('garbage\n')
+  fh:close()
+  local calls = capture_notify(function()
+    assert.truthy(qf.history_rows(), 'rows')
+    assert.truthy(qf.history_rows(), 'rows again')
+  end)
+  local warns = 0
+  for _, c in ipairs(calls) do
+    if c.level == vim.log.levels.WARN and c.msg:find('unreadable line', 1, true) then warns = warns + 1 end
+  end
+  assert.equals(warns, 1, 'warned once: ' .. vim.inspect(calls))
+  capture_notify(function() qf.clear_review() end)
 end)
 
 -- Final cleanup

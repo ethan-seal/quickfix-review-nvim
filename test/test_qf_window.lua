@@ -329,6 +329,22 @@ assert.run_test(':ReviewTrash lists deleted comments, newest first, in a list of
   qf.clear_review()
 end)
 
+assert.run_test(':ReviewTrash shows ? for a removal whose ts is not a number', function()
+  add_two_comments()
+  local id = qf.comments()[1].id
+  local fh = io.open(test_helper.log_path(), 'ab')
+  fh:write(vim.json.encode({ op = 'delete', id = id, eid = 'foreign-1', ts = 'x' }) .. '\n')
+  fh:close()
+  local ok, err = pcall(qf.show_trash)
+  assert.truthy(ok, 'no error: ' .. tostring(err))
+  local list = vim.fn.getqflist({ title = 0, items = 0 })
+  assert.equals(list.title, 'Review trash', 'trash listed')
+  assert.equals(list.items[1].user_data.id, id, 'the deleted comment')
+  assert.truthy(list.items[1].text:find('^%? delete'), 'time shown as ?: ' .. list.items[1].text)
+  close_lists()
+  qf.clear_review()
+end)
+
 assert.run_test('navigating Review trash opens no float', function()
   add_two_comments()
   qf.delete_comment({ 1, 1 })

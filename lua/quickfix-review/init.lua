@@ -236,7 +236,7 @@ function M.show_trash()
     -- Where it was: its anchor, not store.range(), which would place a
     -- tracking mark for a comment that is not live
     local lnum = tonumber(type(c.anchor) == 'table' and c.anchor.lnum or c.lnum) or 1
-    local time = t.ts and os.date('%Y-%m-%d %H:%M', math.floor(t.ts / 1000)) or '?'
+    local time = type(t.ts) == 'number' and os.date('%Y-%m-%d %H:%M', math.floor(t.ts / 1000)) or '?'
     table.insert(items, {
       filename = c.filename,
       lnum = lnum,
@@ -279,9 +279,17 @@ function M.restore_comment(id)
   end
 end
 
+-- The unreadable lines of each log (by log_id) already warned about, so
+-- :ReviewHistory warns about each once rather than on every call
+local history_seen = {}
+
 -- The event history rows of comment `id`, or of the last 50 events
 function M.history_rows(id)
-  local res, err = require('quickfix-review.log').read(store.log_path(), 0, 0)
+  local log = require('quickfix-review.log')
+  local path = store.log_path()
+  local key = log.read_id(path) or path
+  history_seen[key] = history_seen[key] or {}
+  local res, err = log.read(path, 0, 0, history_seen[key])
   if not res then return nil, err end
   return require('quickfix-review.history').rows(res.events, id ~= '' and id or nil)
 end

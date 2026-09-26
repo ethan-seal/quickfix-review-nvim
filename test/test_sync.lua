@@ -219,6 +219,34 @@ assert.run_test('a log rewritten in place with another log_id is replayed from t
   reset()
 end)
 
+assert.run_test('a log rewritten in place to the same size with another log_id is replayed', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('NOTE')
+  assert.length(qf.comments(), 1, 'one comment')
+  local fh = io.open(log_file, 'rb')
+  local old = fh:read('*a')
+  fh:close()
+
+  -- A new header log_id and another body, both of the same length
+  local old_id = old:match('"log_id":"(%x+)"')
+  local new_id = require('quickfix-review.log').new_header().log_id
+  assert.equals(#new_id, #old_id, 'log_ids of one length')
+  local new = old:gsub(old_id, new_id, 1):gsub('"body":"([^"]*)"', function(b)
+    return '"body":"' .. string.rep('z', #b) .. '"'
+  end)
+  assert.equals(#new, #old, 'same size')
+  fh = io.open(log_file, 'r+b')
+  fh:write(new)
+  fh:close()
+
+  vim.api.nvim_exec_autocmds('CursorHold', {})
+  local list = qf.comments()
+  assert.length(list, 1, 'one comment')
+  assert.truthy(list[1].body:match('^z+$'), 'the new log\'s comment: ' .. list[1].body)
+  reset()
+end)
+
 local FIVE = { 'line 1', 'line 2', 'line 3', 'line 4', 'line 5' }
 
 local function outdated_sign_on_line(lnum)

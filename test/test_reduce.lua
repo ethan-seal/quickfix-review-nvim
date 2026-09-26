@@ -160,6 +160,15 @@ assert.run_test('removed lists trashed ids in the order they were removed', func
   assert.equals(state.removed[2].ts, 20, 'ts kept')
 end)
 
+assert.run_test('a removal whose ts is not a number keeps no ts', function()
+  local state = replay({
+    { op = 'add', comment = rec('a') },
+    { op = 'delete', id = 'a', eid = 'e1', ts = 'x' },
+  })
+  assert.equals(removed(state), 'a:delete:e1', 'still removed')
+  assert.equals(state.removed[1].ts, nil, 'no ts')
+end)
+
 assert.run_test('the comments of one clear share its eid', function()
   local events = {
     { op = 'add', comment = rec('a') },

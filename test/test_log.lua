@@ -125,6 +125,15 @@ local function seed_lock(dir, pid)
   write_bytes(dir .. '/pid', tostring(pid) .. '\n')
 end
 
+-- The pid in the lock `dir`, or nil
+local function read_pid_of(dir)
+  local fh = io.open(dir .. '/pid', 'r')
+  if not fh then return nil end
+  local pid = tonumber(fh:read('*l') or '')
+  fh:close()
+  return pid
+end
+
 assert.run_test('the lock runs fn, releases it, and re-raises its errors', function()
   local dir = vim.fn.tempname() .. '-lock'
   local ok, a, b = log.with_lock(dir, function() return 1, 2 end)
@@ -265,7 +274,7 @@ assert.run_test('a holder whose lock was broken meanwhile leaves the new holder\
   assert.equals(pid, holder.pid, 'with its pid')
 end)
 
-assert.run_test('a live lock is waited on, then times out; an old one is broken', function()
+assert.run_test('a live lock is waited on, then times out, however old it is', function()
   local dir = vim.fn.tempname() .. '-lock'
   local holder = vim.system({ 'sleep', '30' })
   seed_lock(dir, holder.pid)
@@ -277,11 +286,45 @@ assert.run_test('a live lock is waited on, then times out; an old one is broken'
   assert.truthy(waited >= 900, 'waited about a second, got ' .. waited .. 'ms')
   assert.equals(vim.fn.isdirectory(dir), 1, 'the live lock is left alone')
 
+  -- A holder paused (or rendering slowly) past STALE_SECONDS is still alive
   local old = os.time() - 60
   uv.fs_utime(dir, old, old)
-  assert.truthy(log.with_lock(dir, function() end), 'held for over 10s: broken')
+  local ok2, err2 = log.with_lock(dir, function() error('must not run') end)
+  local pid = read_pid_of(dir)
   holder:kill(9)
   holder:wait()
+  vim.fn.delete(dir, 'rf')
+  assert.falsy(ok2, 'an old lock with a live holder is not taken')
+  assert.truthy(tostring(err2):find('Timed out', 1, true), 'times out: ' .. tostring(err2))
+  assert.equals(pid, holder.pid, 'the live holder\'s lock is left in place')
+end)
+
+assert.run_test('an old lock with a dead pid, or with no pid, is broken', function()
+  local old = os.time() - 60
+  local dir = vim.fn.tempname() .. '-lock'
+  local child = vim.system({ 'true' })
+  child:wait()
+  seed_lock(dir, child.pid)
+  uv.fs_utime(dir, old, old)
+  assert.truthy(log.with_lock(dir, function() end), 'old, dead holder: broken')
+  assert.equals(vim.fn.isdirectory(dir), 0, 'released')
+
+  -- A holder that crashed between its mkdir and writing the pid
+  vim.fn.mkdir(dir, 'p')
+  uv.fs_utime(dir, old, old)
+  assert.truthy(log.with_lock(dir, function() end), 'old, no pid: broken')
+  assert.equals(vim.fn.isdirectory(dir), 0, 'released')
+end)
+
+assert.run_test('a fresh lock with no pid yet is waited on', function()
+  local dir = vim.fn.tempname() .. '-lock'
+  vim.fn.mkdir(dir, 'p')
+  local ok, err = log.with_lock(dir, function() error('must not run') end)
+  local left = vim.fn.isdirectory(dir)
+  vim.fn.delete(dir, 'rf')
+  assert.falsy(ok, 'not taken')
+  assert.truthy(tostring(err):find('Timed out', 1, true), 'times out: ' .. tostring(err))
+  assert.equals(left, 1, 'the dir is left')
 end)
 
 test_helper.cleanup_test_environment()

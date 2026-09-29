@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-x5ft
 title: Render after releasing the storage lock; never break a live holder's lock
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-09-29T20:45:35Z
-updated_at: 2026-09-29T20:45:35Z
+updated_at: 2026-09-29T20:54:17Z
 ---
 
 **Background.** `mutate_at` (lua/quickfix-review/store.lua:1401) runs `sync(opts)` twice (three times after a rotation) inside `locked(loc, fn)`. `sync` (store.lua:1214) calls `refresh_view()` (store.lua:275) and `on_change(comments)` (store.lua:1227, 1282), which redraw the quickfix list and every buffer's signs and float. That work happens while the cross-process lock is held. Meanwhile `log.lua` `stale()` (log.lua:219-223) breaks any lock whose dir mtime is older than `STALE_SECONDS` (10) even if the holder is alive, and `with_lock` (log.lua:283-303) busy-waits 1s on the main thread before failing. A slow render, or a holder paused by the OS or a debugger, lets a second instance break the lock mid-rotation and append to the log being rotated away, which loses the event. All three reviewers flagged this (Fable 2026-09-29 reproduced the age-based break by script).

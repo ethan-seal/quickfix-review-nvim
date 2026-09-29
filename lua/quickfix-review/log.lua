@@ -213,17 +213,19 @@ local function read_pid(lockdir)
   return pid
 end
 
--- A lock left by a process that is gone, or held for longer than any append
--- takes. A lock this process holds is never stale (with_lock doesn't nest).
--- Returns: stale (boolean), and the pid it was judged by (nil when judged
--- by age alone, before its pid was read)
+-- A lock left by a process that is gone. A lock naming a live process is
+-- never stale, however old: its holder may be slow or paused, and breaking
+-- it would let two writers in. Age is only used for a lock with no pid,
+-- whose holder crashed between its mkdir and writing the pid (a fresh one
+-- is a holder about to write it). A lock naming this process is stale: it
+-- is left by a crash before unlock (with_lock doesn't nest).
+-- Returns: stale (boolean), and the pid it was judged by (nil when there
+-- was none, and it was judged by age)
 local function stale(lockdir)
   local stat = uv.fs_stat(lockdir)
   if not stat then return false end
-  if os.time() - stat.mtime.sec > STALE_SECONDS then return true, read_pid(lockdir) end
   local pid = read_pid(lockdir)
-  -- No pid yet: the holder is between its mkdir and writing the pid
-  if not pid then return false end
+  if not pid then return os.time() - stat.mtime.sec > STALE_SECONDS, nil end
   if pid == uv.os_getpid() then return true, pid end
   return not M.pid_alive(pid), pid
 end
@@ -280,7 +282,8 @@ local function take(lockdir)
 end
 
 -- Run fn with `lockdir` held: mkdir'ed, with this process's pid inside. A
--- stale lock is broken; a live one is waited on for up to a second.
+-- stale lock (see stale) is broken; one whose holder is alive, however old,
+-- is waited on for up to a second.
 -- Returns: true and fn's results, or false and an error (fn not run)
 function M.with_lock(lockdir, fn)
   local deadline = uv.hrtime() + WAIT_MS * 1e6

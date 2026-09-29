@@ -604,6 +604,25 @@ assert.run_test('restoring a clear is one append under one lock', function()
   qf.clear_review()
 end)
 
+assert.run_test('a change renders after the lock is released', function()
+  qf.clear_review()
+  local store = require('quickfix-review.store')
+  local held = {}
+  store.set_on_change(function()
+    table.insert(held, vim.fn.isdirectory(test_helper.lock_path()))
+  end)
+  local ok, err = pcall(qf.add_comment, 'ISSUE', { 2, 2 })
+  -- Restores the real on_change handler
+  qf = test_helper.setup_test_environment()
+  if not ok then error(err, 0) end
+  assert.truthy(#held >= 1, 'on_change ran')
+  for i, h in ipairs(held) do
+    assert.equals(h, 0, 'the lock is not held during on_change #' .. i)
+  end
+  assert.length(qf.comments(), 1, 'the comment is there')
+  qf.clear_review()
+end)
+
 assert.run_test(':ReviewRestore of a live id says so and logs nothing', function()
   qf.clear_review()
   qf.add_comment('ISSUE', { 2, 2 })

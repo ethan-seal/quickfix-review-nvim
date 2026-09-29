@@ -93,6 +93,24 @@ assert.run_test('defaults: 5 MB, keep rotated logs; nothing rotates below the li
   assert.length(rotated(), 0, 'not rotated')
 end)
 
+assert.run_test('a change that rotates renders once, after the lock is released', function()
+  reset()
+  add_at(1)
+  local store
+  qf, store = restart({ log_max_bytes = 1 })
+  local held = {}
+  store.set_on_change(function()
+    table.insert(held, vim.fn.isdirectory(test_helper.lock_path()))
+  end)
+  local ok, err = pcall(add_at, 2)
+  local files = rotated()
+  qf, _ = restart() -- the real on_change, and the default limit
+  if not ok then error(err, 0) end
+  assert.length(files, 1, 'the change rotated')
+  assert.length(held, 1, 'on_change ran once')
+  assert.equals(held[1], 0, 'the lock is not held during on_change')
+end)
+
 assert.run_test('rotation keeps the state and the trash, and the new log is a checkpoint', function()
   reset()
   add_at(1, 'ISSUE')

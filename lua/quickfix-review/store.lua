@@ -1207,26 +1207,20 @@ local function apply_retention(loc)
 end
 
 -- Bring the comments up to date with the log (migrating or importing first
--- when there is none). opts.full replays the whole log, ignoring the cache.
--- opts.defer_view refills the quickfix view after the current event rather
--- than now (see refresh_view_later); on_change still runs now.
--- Returns: ok (boolean), err (string or nil)
-local function sync(opts)
+-- when there is none), without rendering them: safe to run under the lock.
+-- opts.full replays the whole log, ignoring the cache.
+-- Returns: ok (boolean), err (string or nil), changed (whether comments
+-- changed and the view needs rendering, even when not ok)
+local function sync_data(opts)
   opts = opts or {}
   local loc = resolve()
   local changed = false
-  local function refresh()
-    if opts.defer_view then refresh_view_later() else refresh_view() end
-  end
   -- A review that can't be read after a switch (or once its log is gone)
   -- shows nothing, rather than the previous review's comments
   local function fail(err)
-    if changed then
-      comments = {}
-      refresh()
-      on_change(comments)
-    end
-    return refuse(err)
+    if changed then comments = {} end
+    local ok, e = refuse(err)
+    return ok, e, changed
   end
   if synced.log ~= loc.log then
     flush()
@@ -1278,11 +1272,26 @@ local function sync(opts)
       if c then table.insert(list, c) end
     end
     comments = list
-    refresh()
-    on_change(comments)
   end
   if unsaved >= FLUSH_EVERY then flush() end
-  return true
+  return true, nil, changed
+end
+
+-- Render the comments: refill the quickfix view (after the current event
+-- when `defer_view`, see refresh_view_later; on_change still runs now), then
+-- on_change. Never called with the lock held.
+local function render(defer_view)
+  if defer_view then refresh_view_later() else refresh_view() end
+  on_change(comments)
+end
+
+-- sync_data, then render if the comments changed. opts.defer_view: as for
+-- render. Not for use under the lock (mutate_at renders after it instead).
+-- Returns: ok (boolean), err (string or nil)
+local function sync(opts)
+  local ok, err, changed = sync_data(opts)
+  if changed then render((opts or {}).defer_view) end
+  return ok, err
 end
 
 -- Append the events build() returns to the log, built against its latest
@@ -1407,8 +1416,18 @@ local function mutate_at(loc, build, opts)
     return nil
   end
   local partial = false
-  local got, result, err = locked(loc, function()
-    if not sync(opts) then return nil end
+  -- Only the log is read and written under the lock: the render any sync
+  -- inside it needs happens once, after the lock is released
+  local dirty = false
+  local function data()
+    local ok, _, changed = sync_data(opts)
+    dirty = dirty or changed
+    return ok
+  end
+  -- An error inside the lock still renders what was synced before it (its
+  -- sync already advanced, so no later one would), then is re-raised
+  local pok, got, result, err = pcall(locked, loc, function()
+    if not data() then return nil end
     local events, res = build()
     if #events == 0 then return res end
     local stat = uv.fs_stat(loc.log)
@@ -1422,12 +1441,12 @@ local function mutate_at(loc, build, opts)
     if header == 1 then table.insert(events, 1, log.new_header()) end
     local wrote, werr, landed = log.append(loc.log, events)
     -- Read back what was written: all of it, some or none
-    sync(opts)
+    data()
     local grown = uv.fs_stat(loc.log)
     if wrote and grown and grown.size > rotate_limit(loc, grown) and rotate(loc) then
       -- The new log (another inode) is replayed from its checkpoint, and
       -- the cache keyed to it
-      sync(opts)
+      data()
       flush(true)
       -- Outside this change: it reads every retained log, and takes the lock
       vim.schedule(function() gc(loc) end)
@@ -1447,6 +1466,8 @@ local function mutate_at(loc, build, opts)
     end
     return nil, 'Could not write ' .. loc.log .. ': ' .. tostring(werr)
   end)
+  if dirty then render(opts and opts.defer_view) end
+  if not pok then error(got, 0) end
   if not got then result, err = nil, result end
   if err then vim.notify('quickfix-review: ' .. err, vim.log.levels.ERROR) end
   if result == nil and partial then return nil, 'partial' end

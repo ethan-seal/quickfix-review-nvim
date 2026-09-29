@@ -57,7 +57,8 @@ checkpoints/
 snapshots/                    unchanged, content-addressed
 journal.lock                  empty file, locked with flock
                               (<storage_file>.journal.lock when storage_file is set)
-log.jsonl                     v2 tombstone after migration (see Migration)
+log.jsonl                     v2 tombstone: after migration (see Migration),
+                              and in every review born v3
 ```
 
 Segment and checkpoint names are zero-padded, so sorting by name sorts by
@@ -325,7 +326,13 @@ Corrections to the plan above, and where the code differs from it.
   unsaved`; they use `switch`, `load`, `load_v2`, `load_readonly`,
   `read_tail`, `create`, `append` and the state views.
 - **New reviews are born v3.** The first change (or the `comments.json` /
-  legacy import) creates `events/000001.jsonl`; no `log.jsonl` is written.
+  legacy import) creates `events/000001.jsonl`, then the tombstone
+  `log.jsonl` (the migration's shape, with the new `journal_id` as its
+  `log_id`), so a pre-v3 Neovim refuses the review instead of starting a v2
+  log beside it. It is created exclusively (a temp file hard-linked into
+  place), so an old Neovim's v2 `log.jsonl` is never replaced; that is then
+  the stray-v2 case. A journal with no `log.jsonl` (born before this, or a
+  crash between the two) gets its tombstone on the next load.
 - **The legacy import follows the legacy review's journal**: with
   `storage_file` once set to the legacy global file, its review is read from
   `<legacy>.events/` when that exists, else from `<legacy>.log.jsonl`

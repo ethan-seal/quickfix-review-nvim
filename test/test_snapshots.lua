@@ -359,6 +359,9 @@ assert.run_test('gc: no segments and no log.jsonl (events/ unlisted) collects no
   local events = store.events_dir()
   local aside = events .. '.aside'
   assert.truthy(os.rename(events, aside), 'events/ moved aside')
+  -- and the tombstone a born-v3 review has, so this is the no-log branch
+  local log_file = store.log_path()
+  assert.truthy(os.rename(log_file, log_file .. '.aside'), 'log.jsonl moved aside')
   local stamp = store.snapshots_dir() .. '/gc.stamp'
   assert.falsy(vim.uv.fs_stat(stamp), 'no gc.stamp yet')
   assert.equals(store.gc_snapshots({ force = true }), 0, 'nothing deleted')
@@ -366,6 +369,7 @@ assert.run_test('gc: no segments and no log.jsonl (events/ unlisted) collects no
   assert.truthy(exists(orphan), 'the orphan kept too')
   assert.falsy(vim.uv.fs_stat(stamp), 'gc.stamp not written')
   os.rename(aside, events)
+  os.rename(log_file .. '.aside', log_file)
 end)
 
 assert.run_test('gc: a checkpoint with empty refs past the header is not trusted', function()

@@ -97,7 +97,15 @@ assert.run_test('defaults: 4 MiB segments, a checkpoint every 500 events, 2 kept
   for l = 1, 3 do add_at(l) end
   assert.length(segs(), 1, 'one segment')
   assert.equals(test_helper.log_records(test_helper.log_path())[1].op, 'header', 'it starts with its header')
-  assert.equals(vim.fn.filereadable(test_helper.log_path()), 0, 'a new review has no log.jsonl')
+  -- A new review writes the v3 tombstone log.jsonl, so a pre-v3 Neovim
+  -- refuses it (log_id is what old code keys its header check on)
+  local lines = vim.fn.readfile(test_helper.log_path())
+  assert.length(lines, 1, 'a new review\'s log.jsonl is one line')
+  local tomb = vim.json.decode(lines[1])
+  assert.equals(tomb.op, 'header', 'a header')
+  assert.equals(tomb.v, 3, 'v3')
+  assert.equals(tomb.moved_to, 'events/', 'the tombstone')
+  assert.truthy(type(tomb.log_id) == 'string' and tomb.log_id ~= '', 'with a non-empty log_id')
 end)
 
 assert.run_test('log_max_bytes is an alias of segment_max_bytes; log_retention_days is ignored, each noted once', function()

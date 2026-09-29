@@ -308,14 +308,36 @@ local function file_mode()
   return st and bit.band(st.mode, 511) or 420
 end
 
+-- Write the tombstone log.jsonl (log.tombstone, `log_id` = the journal's
+-- id) beside the v3 journal at `loc`, so a pre-v3 Neovim refuses the
+-- review instead of starting a v2 log beside it. Created exclusively (see
+-- segment.create_file): an existing log.jsonl, e.g. an old Neovim's v2
+-- log, is never replaced. Call with the lock held, once segment 1 exists.
+-- Returns: as segment.create_file
+function M.write_tombstone(loc, journal_id, mode)
+  return segment.create_file(loc.log, vim.json.encode(log.tombstone(journal_id)) .. '\n', mode)
+end
+
 -- Start the v3 journal at `loc`: segment 1, holding a new header and
--- `events` (an import, when migrating comments.json), created complete.
+-- `events` (an import, when migrating comments.json), created complete;
+-- then the tombstone log.jsonl (after: a crash between them leaves a
+-- journal with no tombstone, which the next open writes, never a tombstone
+-- with no journal). A failed tombstone only warns: segment 1 is the review.
 -- Call with the lock held; the next sync loads it.
 -- Returns: 'created', 'exists', or nil and an error
 function M.create(loc, events, mode)
-  local all = { log.segment_header(log.new_journal_id(), 1) }
+  local jid = log.new_journal_id()
+  local all = { log.segment_header(jid, 1) }
   vim.list_extend(all, events or {})
-  return segment.create(loc.events, 1, all, mode)
+  local res, err = segment.create(loc.events, 1, all, mode)
+  if res == 'created' then
+    local tres, terr = M.write_tombstone(loc, jid, mode)
+    if not tres then
+      notify.once('tombstone:' .. loc.log, 'could not write the tombstone ' .. loc.log .. ': ' .. tostring(terr)
+        .. '; a Neovim running an older version could write to the review', vim.log.levels.WARN)
+    end
+  end
+  return res, err
 end
 
 -- Append `events` to the active segment (to log.jsonl in 'v2'). Call with

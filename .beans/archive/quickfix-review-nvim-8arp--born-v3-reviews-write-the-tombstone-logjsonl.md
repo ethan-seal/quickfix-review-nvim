@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-8arp
 title: Born-v3 reviews write the tombstone log.jsonl
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-09-29T22:54:22Z
-updated_at: 2026-09-29T22:54:22Z
+updated_at: 2026-09-29T23:55:20Z
 ---
 
 **Symptom**: a review created by v3 code has `events/` but no tombstone `log.jsonl`. If a Neovim is still running the old code, it will create a fresh v2 `log.jsonl` beside `events/` and write to it. v3 ignores that file with a 'stray-v2' warning. Snapshot GC (lua/quickfix-review/store/maintenance.lua:68-78) reads only segments, so any snapshot referenced only by the stray log becomes an orphan and is later deleted.

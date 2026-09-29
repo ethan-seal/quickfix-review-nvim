@@ -412,7 +412,8 @@ end
 
 -- Delete what a finished migration leaves behind (step 7): the rotated
 -- names (their inodes live on in `events/`), state.json, and .rotating-*
--- strays. Idempotent.
+-- strays. Idempotent. Run only beside a migrated tombstone, never a born-v3
+-- one: there the rotated names were never imported (M.open)
 local function cleanup(loc)
   for _, r in ipairs(maintenance.list_rotated(loc)) do os.remove(r.path) end
   os.remove(loc.state)
@@ -431,6 +432,26 @@ end
 local v2_tried = {}
 -- Reviews whose step-7 cleanup ran this session
 local cleaned = {}
+-- Per `loc.events`: the missing tombstone of a born-v3 review has been
+-- written (or tried) this session
+local tombstoned = {}
+
+-- A journal born before log.jsonl was written with it has none: write it
+-- (once a session, under both locks, so a pre-v3 Neovim holding the v2 lock
+-- cannot append to log.jsonl around it), so a pre-v3 Neovim refuses the
+-- review. Any failure (a read-only dir) is ignored: the review loads as before
+local function backfill_tombstone(loc)
+  if tombstoned[loc.events] then return end
+  tombstoned[loc.events] = true
+  local first = segment.path(loc.events, 1)
+  local st = uv.fs_stat(first)
+  if not st then return end
+  local h = log.read_header(first)
+  local jid = h and type(h.journal_id) == 'string' and h.journal_id ~= '' and h.journal_id or log.new_journal_id()
+  pcall(journal.locked, loc, function()
+    if not uv.fs_stat(loc.log) then journal.write_tombstone(loc, jid, bit.band(st.mode, 511)) end
+  end, true)
+end
 
 -- Migrate the v2 review at `loc` (log.jsonl and its rotated logs) into a v3
 -- journal, under both locks (docs/journal.md#migration):
@@ -510,7 +531,7 @@ local function migrate_v2(loc)
     end
     if hooks.crash_after == 5 then return nil, 'crashed (test)' end
     -- 6.
-    local tomb = vim.json.encode({ op = 'header', v = log.VERSION, log_id = h.log_id, moved_to = 'events/' })
+    local tomb = vim.json.encode(log.tombstone(h.log_id))
     local wrote, werr = segment.durable_write(loc.log, tomb .. '\n', mode)
     if not wrote then return abort('could not write the tombstone: ' .. tostring(werr)) end
     if hooks.crash_after == 6 then return nil, 'crashed (test)' end
@@ -540,8 +561,10 @@ function M.open(loc, opts)
   local lst = uv.fs_stat(loc.log)
   local segs = segment.list(loc.events)
 
-  -- `migrated`: log.jsonl is the tombstone, so the step-7 cleanup is due
-  -- (idempotent: once a session); otherwise only a stray state.json goes
+  -- `migrated`: log.jsonl is a migration's tombstone, so the step-7 cleanup
+  -- is due (idempotent: once a session); otherwise (a born-v3 review, with
+  -- or without its tombstone) only a stray state.json goes: rotated logs and
+  -- .rotating-* strays beside it were never imported, so they are kept
   local function load_v3(migrated)
     local ok, err = journal.load(loc, opts)
     if not ok then return false, err, was ~= nil end
@@ -558,7 +581,11 @@ function M.open(loc, opts)
     if #segs == 0 then
       return false, string.format('%s says the review was moved to %s, which is missing', loc.log, loc.events), false
     end
-    return load_v3(true)
+    -- A born-v3 tombstone's log_id is segment 1's journal_id; a migrated
+    -- one's is the v2 log's id (segment 1 is that v2 log, with no journal_id)
+    local first = log.read_header(segment.path(loc.events, 1))
+    local born = type(h.log_id) == 'string' and h.log_id ~= '' and first ~= nil and first.journal_id == h.log_id
+    return load_v3(not born)
   end
 
   if lst and lst.size > 0 then
@@ -584,7 +611,10 @@ function M.open(loc, opts)
     return true, nil, true
   end
 
-  if #segs > 0 then return load_v3(false) end
+  if #segs > 0 then
+    if not lst then backfill_tombstone(loc) end
+    return load_v3(false)
+  end
 
   -- Neither: nothing is shown until something starts the journal
   local ok, err, replaced = M.init_storage(loc)

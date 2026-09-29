@@ -99,18 +99,28 @@ function M.create(dir, n, events, mode)
     local ok = pcall(vim.fn.mkdir, dir, 'p')
     if not ok or vim.fn.isdirectory(dir) == 0 then return nil, 'Could not create ' .. dir end
   end
-  local tmp = dir .. '.tmp.' .. uv.os_getpid()
+  local res, err = M.create_file(M.path(dir, n), table.concat(parts), mode, dir .. '.tmp.' .. uv.os_getpid())
+  if res == 'created' then M.fsync_dir(vim.fn.fnamemodify(dir, ':h')) end
+  return res, err
+end
+
+-- Create `path` holding `str`, with `mode`, never replacing it: written to
+-- `tmp` (default `<path>.tmp.<pid>`), fsync'ed, hard-linked to `path`
+-- (which fails if it exists, as O_EXCL would, but never shows a partial
+-- file), and `path`'s dir fsync'ed.
+-- Returns: 'created', 'exists' (nothing written), or nil and an error
+function M.create_file(path, str, mode, tmp)
+  tmp = tmp or (path .. '.tmp.' .. uv.os_getpid())
   os.remove(tmp)
-  local ok, err = write_new(tmp, table.concat(parts), mode)
+  local ok, err = write_new(tmp, str, mode)
   if not ok then return nil, 'Could not write ' .. tmp .. ': ' .. tostring(err) end
-  local linked, lerr, lname = uv.fs_link(tmp, M.path(dir, n))
+  local linked, lerr, lname = uv.fs_link(tmp, path)
   os.remove(tmp)
   if not linked then
     if lname == 'EEXIST' then return 'exists' end
-    return nil, 'Could not create ' .. M.path(dir, n) .. ': ' .. tostring(lerr)
+    return nil, 'Could not create ' .. path .. ': ' .. tostring(lerr)
   end
-  M.fsync_dir(dir)
-  M.fsync_dir(vim.fn.fnamemodify(dir, ':h'))
+  M.fsync_dir(vim.fn.fnamemodify(path, ':h'))
   return 'created'
 end
 

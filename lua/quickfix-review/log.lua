@@ -12,7 +12,8 @@
 -- - v2 log (a migrated v2 segment, or an unmigrated log.jsonl):
 --   {"op":"header","log_id":"<16 hex>","v":2}
 -- - the v2 tombstone left in log.jsonl by the migration:
---   {"op":"header","v":3,"log_id":"<old id>","moved_to":"events/"}
+--   {"op":"header","v":3,"log_id":"<old id>","moved_to":"events/"}; a
+--   born-v3 review's is the same with its journal_id as log_id
 --
 -- Nothing in a segment is ever rewritten, so no change can lose data.
 -- Readers are tolerant: a line that fails to decode is skipped (with a
@@ -61,6 +62,14 @@ function M.segment_header(journal_id, seg, extra)
   local h = { op = 'header', v = M.VERSION, journal_id = journal_id, seg = seg }
   for k, v in pairs(extra or {}) do h[k] = v end
   return h
+end
+
+-- The tombstone log.jsonl holds once the review is a v3 journal (migrated
+-- or born v3), so a pre-v3 Neovim refuses it as too new. `log_id` must be a
+-- non-empty string: pre-v3 code takes a line for a header (and so refuses
+-- a too-new one) only when it has one
+function M.tombstone(log_id)
+  return { op = 'header', v = M.VERSION, log_id = log_id, moved_to = 'events/' }
 end
 
 -- A v2 log header, as log.jsonl started with before v3 (test fixtures)

@@ -311,7 +311,9 @@ assert.run_test('snapshot GC keeps what a stray v2 log.jsonl beside a v3 journal
   local orphan = snapshots.put({ 'orphan' })
   local day_ago = os.time() - 25 * 3600
   for _, sha in ipairs({ stray, orphan }) do uv.fs_utime(dir .. '/snapshots/' .. sha, day_ago, day_ago) end
-  -- An old Neovim's v2 log.jsonl, naming a snapshot
+  -- An old Neovim's v2 log.jsonl, naming a snapshot. A review born v3 now
+  -- has the tombstone, which old code refuses; this is a review born
+  -- before that (writefile replaces the tombstone to model it)
   vim.fn.writefile({
     vim.json.encode(log.v2_header()),
     vim.json.encode(log.event('add', { comment = { id = 'x', filename = abs, lnum = 1, kind = 'note', body = 's',
@@ -321,6 +323,156 @@ assert.run_test('snapshot GC keeps what a stray v2 log.jsonl beside a v3 journal
   assert.equals(store.gc_snapshots(), 1, 'one collected')
   assert.truthy(uv.fs_stat(dir .. '/snapshots/' .. stray), 'named by the stray log: kept')
   assert.falsy(uv.fs_stat(dir .. '/snapshots/' .. orphan), 'the unreferenced one deleted')
+  vim.fn.delete(dir, 'rf')
+end)
+
+-- A born-v3 review's log.jsonl: the tombstone, so a pre-v3 Neovim refuses
+-- it as it refuses a migrated review. Pre-v3 code cannot run in-tree, so
+-- this asserts the shape old code refuses: the Unknown #1 test above
+-- (a lone tombstone is refused), and pre-v3 is_header / too_new (`git show
+-- 1bdc598^:lua/quickfix-review/log.lua`), which take a line for a header
+-- only when log_id is a non-empty string and refuse one whose v > 2.
+local function assert_tombstone(path, what)
+  local lines = vim.fn.readfile(path)
+  assert.length(lines, 1, what .. ': one line')
+  local t = vim.json.decode(lines[1])
+  local keys = vim.tbl_keys(t)
+  table.sort(keys)
+  assert.equals(table.concat(keys, ','), 'log_id,moved_to,op,v', what .. ': a migrated tombstone\'s keys')
+  assert.equals(t.op, 'header', what .. ': a header')
+  assert.equals(t.v, 3, what .. ': v3')
+  assert.equals(t.moved_to, 'events/', what .. ': moved to events/')
+  assert.truthy(type(t.log_id) == 'string' and t.log_id ~= '', what .. ': a non-empty log_id')
+  return t
+end
+
+local function mentioning(calls, text)
+  local out = {}
+  for _, c in ipairs(calls) do
+    if tostring(c.msg):find(text, 1, true) then table.insert(out, c) end
+  end
+  return out
+end
+
+assert.run_test('a born-v3 review writes the tombstone log.jsonl, with the shape of a migrated one', function()
+  local dir = vim.fn.tempname() .. '-born'
+  vim.fn.mkdir(dir, 'p')
+  local store
+  _, store = restart({ storage_dir = dir })
+  assert.falsy(uv.fs_stat(dir .. '/log.jsonl'), 'no log.jsonl before the review starts')
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'one' }), 'added')
+  local t = assert_tombstone(dir .. '/log.jsonl', 'born-v3')
+  local h1 = vim.json.decode(vim.fn.readfile(dir .. '/events/000001.jsonl')[1])
+  assert.equals(t.log_id, h1.journal_id, 'log_id is the journal\'s id')
+  local bytes = read_bytes(dir .. '/log.jsonl')
+  local calls = capture_notify(function()
+    _, store = restart({ storage_dir = dir })
+    assert.truthy(store.add({ filename = abs, lnum = 2, kind = 'note', body = 'two' }), 'added after a restart')
+  end)
+  assert.length(store.all(), 2, 'both comments')
+  assert.length(mentioning(calls, 'which is missing'), 0, 'not refused')
+  assert.length(mentioning(calls, 'is a v2 log beside'), 0, 'no stray-v2 notice')
+  assert.equals(read_bytes(dir .. '/log.jsonl'), bytes, 'the tombstone is unchanged')
+  vim.fn.delete(dir, 'rf')
+end)
+
+assert.run_test('two storage_files in one dir each get their own tombstone', function()
+  local dir = vim.fn.tempname() .. '-two-born'
+  vim.fn.mkdir(dir, 'p')
+  local a, b = dir .. '/a.json', dir .. '/b.json'
+  local store
+  _, store = restart({ storage_file = a })
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'a' }), 'added to a')
+  _, store = restart({ storage_file = b })
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'b' }), 'added to b')
+  local ta = assert_tombstone(a .. '.log.jsonl', 'a')
+  local tb = assert_tombstone(b .. '.log.jsonl', 'b')
+  assert.truthy(ta.log_id ~= tb.log_id, 'each its own id')
+  assert.falsy(uv.fs_stat(dir .. '/log.jsonl'), 'no <dir>/log.jsonl')
+  vim.fn.delete(dir, 'rf')
+end)
+
+assert.run_test('a born-v3 review with no log.jsonl gets its tombstone on the next load', function()
+  local dir = vim.fn.tempname() .. '-backfill'
+  vim.fn.mkdir(dir, 'p')
+  local store
+  _, store = restart({ storage_dir = dir })
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'one' }), 'added')
+  vim.fn.setfperm(dir .. '/events/000001.jsonl', 'rw-------')
+  local jid = vim.json.decode(vim.fn.readfile(dir .. '/events/000001.jsonl')[1]).journal_id
+  os.remove(dir .. '/log.jsonl')
+  _, store = restart({ storage_dir = dir })
+  assert.length(store.all(), 1, 'loaded')
+  local t = assert_tombstone(dir .. '/log.jsonl', 'backfilled')
+  assert.equals(t.log_id, jid, 'with the journal\'s id')
+  assert.equals(vim.fn.getfperm(dir .. '/log.jsonl'), 'rw-------', 'with segment 1\'s mode')
+  vim.fn.delete(dir, 'rf')
+end)
+
+assert.run_test('a v2 log.jsonl beside a born-v3 journal is never replaced by the tombstone', function()
+  local dir = vim.fn.tempname() .. '-noclobber'
+  vim.fn.mkdir(dir, 'p')
+  local store
+  _, store = restart({ storage_dir = dir })
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'v3' }), 'added')
+  -- An old Neovim's v2 log, written while this review had no tombstone
+  os.remove(dir .. '/log.jsonl')
+  vim.fn.writefile({ vim.json.encode(log.v2_header()), '' }, dir .. '/log.jsonl', 'b')
+  local bytes = read_bytes(dir .. '/log.jsonl')
+  local calls = capture_notify(function()
+    _, store = restart({ storage_dir = dir })
+    assert.truthy(store.add({ filename = abs, lnum = 2, kind = 'note', body = 'v3 again' }), 'added')
+  end)
+  assert.length(store.all(), 2, 'the journal is the review')
+  assert.equals(read_bytes(dir .. '/log.jsonl'), bytes, 'the v2 log is unchanged')
+  assert.length(mentioning(calls, 'is a v2 log beside'), 1, 'the stray-v2 warning')
+  -- And the exclusive create itself leaves an existing file alone
+  local journal = require('quickfix-review.store.journal')
+  local loc = { log = dir .. '/log.jsonl', events = dir .. '/events' }
+  assert.equals(journal.write_tombstone(loc, 'ffffffffffffffff', 420), 'exists', 'exists')
+  assert.equals(read_bytes(dir .. '/log.jsonl'), bytes, 'still unchanged')
+  vim.fn.delete(dir, 'rf')
+end)
+
+assert.run_test('no tombstone is written when segment 1 is not created', function()
+  local dir = vim.fn.tempname() .. '-noseg'
+  vim.fn.mkdir(dir, 'p')
+  local store
+  _, store = restart({ storage_dir = dir })
+  local segment = require('quickfix-review.store.segment')
+  local original = segment.create
+  segment.create = function() return nil, 'ENOSPC (test)' end
+  local ok, err = pcall(function()
+    capture_notify(function()
+      assert.falsy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'x' }), 'the add refused')
+    end)
+  end)
+  segment.create = original
+  if not ok then error(err, 0) end
+  assert.falsy(uv.fs_stat(dir .. '/events/000001.jsonl'), 'no segment 1')
+  assert.falsy(uv.fs_stat(dir .. '/log.jsonl'), 'no tombstone')
+  vim.fn.delete(dir, 'rf')
+end)
+
+-- The step-7 cleanup deletes rotated logs because a migration hard-linked
+-- them into events/. Beside a born-v3 tombstone they were never imported:
+-- they are kept
+assert.run_test('opening a born-v3 review keeps a rotated log beside its tombstone', function()
+  local dir = vim.fn.tempname() .. '-born-rotated'
+  vim.fn.mkdir(dir, 'p')
+  local store
+  _, store = restart({ storage_dir = dir })
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'one' }), 'added')
+  assert_tombstone(dir .. '/log.jsonl', 'born-v3')
+  local rotated = dir .. '/log.1700000000000.jsonl'
+  vim.fn.writefile({ vim.json.encode(log.v2_header()), '' }, rotated, 'b')
+  local maintenance = require('quickfix-review.store.maintenance')
+  local listed = maintenance.list_rotated({ log = dir .. '/log.jsonl' })
+  assert.length(listed, 1, 'named as a rotated log')
+  local bytes = read_bytes(rotated)
+  _, store = restart({ storage_dir = dir })
+  assert.length(store.all(), 1, 'loaded')
+  assert.equals(read_bytes(rotated), bytes, 'the rotated log is kept')
   vim.fn.delete(dir, 'rf')
 end)
 

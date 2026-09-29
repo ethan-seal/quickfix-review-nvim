@@ -56,6 +56,7 @@ checkpoints/
   000002-000000048213.json    state as of segment 2, byte 48213 (derived)
 snapshots/                    unchanged, content-addressed
 journal.lock                  empty file, locked with flock
+                              (<storage_file>.journal.lock when storage_file is set)
 log.jsonl                     v2 tombstone after migration (see Migration)
 ```
 
@@ -149,7 +150,7 @@ checkpoint write, never on a timer):
 ## Locking
 
 **flock through LuaJIT FFI**: `ffi.cdef'int flock(int, int);'` and
-`ffi.C.flock(fd, LOCK_EX + LOCK_NB)` on `journal.lock`. This works in the
+`ffi.C.flock(fd, LOCK_EX + LOCK_NB)` on `journal.lock` (landed in 5ajb, store/lock.lua). This works in the
 Neovim on this machine (it returned 0 on 2026-09-29) and needs no library
 beyond libc.
 
@@ -157,8 +158,9 @@ beyond libc.
   the current 1 s budget. Hold it only for appends, sealing, checkpoint write
   and GC, never while rendering. x5ft already moved rendering out.
 - **Release is automatic.** The kernel releases the lock when the process
-  exits or crashes. The pid file, `stale()`, `STALE_SECONDS`, `pid_alive` and
-  break_lock are deleted.
+  exits or crashes. The pid file, `stale()`, `STALE_SECONDS` and break_lock
+  are gone from the flock path. `log.pid_alive` survives only for
+  maintenance's `.rotating-<pid>` stray cleanup, which v3 deletes.
 - **Not reentrant across fds.** flock is per open file description. Keep one
   fd per lock file per process, plus the existing `lock_held` guard, and key
   that guard by lock path. That also fixes the Opus finding that a single
@@ -166,6 +168,11 @@ beyond libc.
 - **Fallback.** Without FFI (PUC Lua build) or on Windows, keep today's
   mkdir lock behind the same `with_lock` interface. Windows could use
   `LockFileEx` later.
+- **Mixed versions do not exclude each other.** A Neovim still running
+  pre-flock code takes the mkdir lock; the new code takes the flock. Until
+  the v3 migration (which takes both), restart every Neovim after updating.
+- **flock errors are not contention.** ENOLCK/EOPNOTSUPP (some NFS/FUSE
+  mounts) must surface as a lock error, not a 1 s spin then "Timed out".
 
 ## Indexes
 

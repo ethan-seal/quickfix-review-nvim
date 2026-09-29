@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-5ajb
 title: 'Storage lock: flock via LuaJIT FFI, mkdir lock only as fallback'
-status: todo
+status: completed
 type: task
+priority: normal
 created_at: 2026-09-29T21:06:50Z
-updated_at: 2026-09-29T21:06:50Z
+updated_at: 2026-09-29T21:26:32Z
 ---
 
 **Background.** The storage lock is an mkdir lock dir plus a pid file (log.lua `lock`/`stale`/`pid_alive`). x5ft made it never break a live holder, which leaves a crashed holder with a reused pid holding the lock forever. `lock_held` is one global flag, so holding one review's lock skips locking for another.

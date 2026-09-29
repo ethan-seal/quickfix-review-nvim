@@ -143,7 +143,7 @@ project root, e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/`.
 The log holds one JSON object per line. The first line is a header; every
 later line is an event (`add`, `delete`, `clear`, `restore`, `import`, ...)
 and the review is those events replayed in order. Lines are only ever
-appended, each change in a single write under a lock (a `lock` directory
+appended, each change in a single write under a lock (on a `journal.lock` file
 next to the log), so several Neovims can share a review and no change can
 overwrite another. Deleted and cleared comments stay in the log. A line
 that can't be read is skipped with a warning naming its line number.
@@ -273,7 +273,7 @@ is imported again.
 project, as before: no storage directory, no switching on |:cd|, and no
 import from the global file. Its log and cache sit next to the path given:
 `<storage_file>.log.jsonl` and `<storage_file>.state.json` (and a
-`<storage_file>.lock` directory while writing). An existing file at that
+`<storage_file>.journal.lock` lock file). An existing file at that
 path is migrated to the log and renamed to `<storage_file>.pre-log.bak`,
 except the global file `stdpath('data')/quickfix-review.json` itself: it is
 left in place, so per-project reviews can still import from it once

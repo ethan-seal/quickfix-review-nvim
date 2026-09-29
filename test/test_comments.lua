@@ -583,19 +583,20 @@ assert.run_test('restoring a clear is one append under one lock', function()
   qf.add_comment('PRAISE', { 5, 5 })
   qf.clear_review()
   local log = require('quickfix-review.log')
-  local append, with_lock = log.append, log.with_lock
+  local lock = require('quickfix-review.store.lock')
+  local append, with_lock = log.append, lock.with_lock
   local appends, locks, sizes = 0, 0, {}
   log.append = function(path, events, mode)
     appends = appends + 1
     table.insert(sizes, #events)
     return append(path, events, mode)
   end
-  log.with_lock = function(...)
+  lock.with_lock = function(...)
     locks = locks + 1
     return with_lock(...)
   end
   local ok, err = pcall(review_clear, 'ReviewRestore', 1)
-  log.append, log.with_lock = append, with_lock
+  log.append, lock.with_lock = append, with_lock
   if not ok then error(err, 0) end
   assert.equals(appends, 1, 'one append')
   assert.equals(sizes[1], 3, 'holding three events')
@@ -609,7 +610,7 @@ assert.run_test('a change renders after the lock is released', function()
   local store = require('quickfix-review.store')
   local held = {}
   store.set_on_change(function()
-    table.insert(held, vim.fn.isdirectory(test_helper.lock_path()))
+    table.insert(held, require('quickfix-review.store.lock').held(test_helper.flock_path()) and 1 or 0)
   end)
   local ok, err = pcall(qf.add_comment, 'ISSUE', { 2, 2 })
   -- Restores the real on_change handler

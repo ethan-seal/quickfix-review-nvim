@@ -100,7 +100,7 @@ assert.run_test('a change that rotates renders once, after the lock is released'
   qf, store = restart({ log_max_bytes = 1 })
   local held = {}
   store.set_on_change(function()
-    table.insert(held, vim.fn.isdirectory(test_helper.lock_path()))
+    table.insert(held, require('quickfix-review.store.lock').held(test_helper.flock_path()) and 1 or 0)
   end)
   local ok, err = pcall(add_at, 2)
   local files = rotated()
@@ -389,7 +389,7 @@ assert.run_test('two Neovims appending while rotating lose and duplicate nothing
     local current = test_helper.log_records(test_helper.log_path(file))
     assert.equals(current[2].op, 'checkpoint', 'the log starts from a checkpoint')
     assert.length(test_helper.saved(test_helper.log_path(file)), 100, '100 live comments')
-    assert.equals(vim.fn.isdirectory(test_helper.lock_path(file)), 0, 'no lock left behind')
+    assert.falsy(require('quickfix-review.store.lock').held(test_helper.flock_path(file)), 'no lock left behind')
     assert.length(vim.fn.glob(test_helper.log_path(file) .. '.rotating-*', true, true), 0, 'no temp file')
   end)
   test_helper.remove_storage(file)
@@ -648,11 +648,11 @@ assert.run_test('gc reads rotated logs outside the lock, so a concurrent change 
   local old = snapshots.put({ 'old' })
   for _, sha in ipairs({ named, old }) do uv.fs_utime(path(sha), day_ago, day_ago) end
 
-  local log = require('quickfix-review.log')
-  local original_lock, original_open = log.with_lock, io.open
+  local lock = require('quickfix-review.store.lock')
+  local original_lock, original_open = lock.with_lock, io.open
   local in_lock, opened = false, {}
-  log.with_lock = function(lock, fn)
-    return original_lock(lock, function(...)
+  lock.with_lock = function(loc, fn)
+    return original_lock(loc, function(...)
       in_lock = true
       local res = vim.F.pack_len(pcall(fn, ...))
       in_lock = false
@@ -665,7 +665,7 @@ assert.run_test('gc reads rotated logs outside the lock, so a concurrent change 
     return original_open(file, ...)
   end
   local ok, removed = pcall(store.gc_snapshots)
-  log.with_lock, io.open = original_lock, original_open
+  lock.with_lock, io.open = original_lock, original_open
   assert.truthy(ok, 'gc ran: ' .. tostring(removed))
 
   assert.equals(removed, 1, 'one snapshot collected')

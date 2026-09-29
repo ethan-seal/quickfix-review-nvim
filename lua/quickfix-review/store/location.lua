@@ -16,7 +16,8 @@ local uv = vim.uv or vim.loop
 --
 -- With the explicit (deprecated, global) storage_file, the log, cache and
 -- lock sit next to that file, named after it (<file>.log.jsonl,
--- <file>.state.json, <file>.lock, <file>.snapshots), so two storage_file
+-- <file>.state.json, <file>.journal.lock, <file>.snapshots; <file>.lock is
+-- the mkdir lock where flock is unavailable, see store/lock.lua), so two storage_file
 -- values never share a log. The path is used as given, not resolved: migrating renames the file,
 -- which would change a resolved path.
 --
@@ -68,6 +69,7 @@ function M.resolve()
     return {
       path = explicit, dir = vim.fn.fnamemodify(explicit, ':h'), explicit = true,
       log = explicit .. '.log.jsonl', state = explicit .. '.state.json', lock = explicit .. '.lock',
+      flock = explicit .. '.journal.lock',
       snapshots = explicit .. '.snapshots',
     }
   end
@@ -97,6 +99,7 @@ function M.resolve()
   resolved = {
     cwd = cwd, opt = opt, root = root, dir = dir, shared = shared, path = dir .. '/comments.json',
     log = dir .. '/log.jsonl', state = dir .. '/state.json', lock = dir .. '/lock',
+    flock = dir .. '/journal.lock',
     snapshots = dir .. '/snapshots',
     retry_at = retry and uv.hrtime() + RETRY_NS or nil,
   }

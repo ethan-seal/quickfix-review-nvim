@@ -34,6 +34,8 @@ M.storage_file = vim.fn.tempname() .. '-quickfix-review.json'
 function M.log_path(file) return (file or M.storage_file) .. '.log.jsonl' end
 function M.state_path(file) return (file or M.storage_file) .. '.state.json' end
 function M.lock_path(file) return (file or M.storage_file) .. '.lock' end
+-- The flock'ed lock file (the lock path above is the mkdir fallback's)
+function M.flock_path(file) return (file or M.storage_file) .. '.journal.lock' end
 
 -- Every file a review in `file` (default: the test storage file) may leave:
 -- comments.json and its backups, the log, the cache, the lock
@@ -51,6 +53,7 @@ function M.remove_storage(file)
   for _, p in ipairs(vim.fn.glob(M.log_path(file) .. '.rotating-*', true, true)) do os.remove(p) end
   for _, p in ipairs(vim.fn.glob(M.lock_path(file) .. '.stale-*', true, true)) do vim.fn.delete(p, 'rf') end
   vim.fn.delete(M.lock_path(file), 'rf')
+  os.remove(M.flock_path(file))
   vim.fn.delete(file .. '.snapshots', 'rf')
 end
 

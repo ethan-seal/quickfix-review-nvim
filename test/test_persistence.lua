@@ -89,7 +89,7 @@ assert.run_test('every change is written through to disk', function()
   assert.length(test_helper.log_ops(log_file, 'delete'), 1, 'as a delete event')
   assert.equals(vim.fn.filereadable(storage_file), 0, 'no comments.json written')
   assert.equals(vim.fn.glob(storage_file .. '*.tmp.*'), '', 'no temp files left behind')
-  assert.equals(vim.fn.isdirectory(test_helper.lock_path()), 0, 'no lock left behind')
+  assert.falsy(require('quickfix-review.store.lock').held(test_helper.flock_path()), 'no lock left behind')
 end)
 
 assert.run_test('comments survive a restart', function()
@@ -234,6 +234,9 @@ assert.run_test('a failed save leaves the file intact', function()
     assert.equals(read_bytes(path .. '.pre-log.bak'), seed, 'migrated, original kept')
     local logged = read_bytes(log_path)
     vim.fn.setfperm(dir, 'r-xr-xr-x')
+    -- The lock file is kept open, not created, so a read-only dir alone no
+    -- longer fails the change: the log is made read-only too
+    vim.fn.setfperm(log_path, 'r--r--r--')
 
     local calls = capture_notify(function()
       vim.fn.cursor(1, 1)
@@ -248,6 +251,7 @@ assert.run_test('a failed save leaves the file intact', function()
     assert.equals(list[1].body, 'seeded', 'memory matches disk')
 
     vim.fn.setfperm(dir, 'rwxr-xr-x')
+    vim.fn.setfperm(log_path, 'rw-r--r--')
     vim.fn.cursor(3, 1)
     qf.add_comment('ISSUE')
     local on_disk = saved(path)
@@ -300,6 +304,9 @@ assert.run_test('an add into a read-only storage dir is not reported as added', 
     qf.add_comment('NOTE')
     assert.length(qf.comments(), 1, 'seeded while writable')
     vim.fn.setfperm(dir, 'r-xr-xr-x')
+    -- The lock file is kept open, not created, so a read-only dir alone no
+    -- longer fails the change: the log is made read-only too
+    vim.fn.setfperm(test_helper.log_path(path), 'r--r--r--')
 
     local store = require('quickfix-review.store')
     local added, printed
@@ -741,7 +748,7 @@ assert.run_test('two Neovims appending at once lose nothing and tear nothing', f
     assert.equals(per_writer.one, 50, 'all of writer one')
     assert.equals(per_writer.two, 50, 'all of writer two')
     assert.length(saved(file), 100, '100 live comments')
-    assert.equals(vim.fn.isdirectory(test_helper.lock_path(file)), 0, 'no lock left behind')
+    assert.falsy(require('quickfix-review.store.lock').held(test_helper.flock_path(file)), 'no lock left behind')
   end)
   test_helper.remove_storage(file)
   os.remove(script)

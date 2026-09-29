@@ -7,6 +7,7 @@
 local M = {}
 
 local location = require('quickfix-review.store.location')
+local lock = require('quickfix-review.store.lock')
 local log = require('quickfix-review.log')
 local notify = require('quickfix-review.notify')
 local reduce = require('quickfix-review.reduce')
@@ -75,18 +76,15 @@ function M.refuse(e)
   return false, e
 end
 
--- Run fn with the review's lock held (log.with_lock), creating the storage
--- dir first. Nested calls (a sync inside a change) run under the outer lock.
+-- Run fn with the review's lock held (store/lock.lua), creating the storage
+-- dir first. Nested calls on the same review (a sync inside a change) run
+-- under the outer lock; another review's lock is taken as usual.
 -- Returns: true and fn's two results, or false and the lock error
-local lock_held = false
-
 function M.locked(loc, fn)
-  if lock_held then return true, fn() end
   local mk_ok, mk_err = location.mkdir_for(loc.log)
   if not mk_ok then return false, 'Could not create ' .. vim.fn.fnamemodify(loc.log, ':h') .. ': ' .. mk_err end
-  lock_held = true
-  local ok, got, a, b = pcall(log.with_lock, loc.lock, fn)
-  lock_held = false
+  -- Through the module table, so tests can wrap lock.with_lock
+  local ok, got, a, b = pcall(lock.with_lock, loc, fn)
   if not ok then error(got, 0) end
   return got, a, b
 end

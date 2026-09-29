@@ -47,6 +47,7 @@ run_file('test/test_signs.lua')
 -- Run event reducer and event log tests
 run_file('test/test_reduce.lua')
 run_file('test/test_log.lua')
+run_file('test/test_lock.lua')
 
 -- Run persistence tests
 run_file('test/test_persistence.lua')

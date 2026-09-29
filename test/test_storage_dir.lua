@@ -650,14 +650,14 @@ local function with_window_expiring_mid_change(a, seed, change, check)
     assert.truthy(fallback ~= default_dir(a), 'in the fallback dir while git fails')
     if seed then seed(store) end
     store._set_retry_ns(0)
-    local log = require('quickfix-review.log')
-    local original_lock = log.with_lock
-    log.with_lock = function(...)
+    local lock = require('quickfix-review.store.lock')
+    local original_lock = lock.with_lock
+    lock.with_lock = function(...)
       git.fail = false
       return original_lock(...)
     end
     local ok, err = pcall(change, store)
-    log.with_lock = original_lock
+    lock.with_lock = original_lock
     -- Failing again: the review stays in the fallback dir, to be looked at
     git.fail = true
     if not ok then error(err, 0) end

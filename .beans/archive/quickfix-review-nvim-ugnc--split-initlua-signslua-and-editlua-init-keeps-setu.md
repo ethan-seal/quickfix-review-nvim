@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-ugnc
 title: 'Split init.lua: signs.lua and edit.lua; init keeps setup and wiring'
-status: todo
+status: completed
 type: task
+priority: normal
 created_at: 2026-09-29T20:45:42Z
-updated_at: 2026-09-29T20:45:42Z
+updated_at: 2026-09-29T21:37:51Z
 blocked_by:
     - quickfix-review-nvim-f7n4
 ---

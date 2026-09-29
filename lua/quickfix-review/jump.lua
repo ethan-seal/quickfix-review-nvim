@@ -83,6 +83,15 @@ local state = 'idle'
 local resume = 'idle'
 local last_seen
 local float
+-- Shows the comment float for the cursor line (edit.view_comment, which
+-- registers itself when it loads: edit requires this module)
+local view_comment_fn = nil
+
+-- Set the function the cursor check opens the float with (called by
+-- edit.lua when it loads)
+function M.set_view_comment(fn)
+  view_comment_fn = fn
+end
 
 function M.state()
   return state
@@ -149,8 +158,7 @@ local function cursor_check()
     or item.lnum ~= vim.fn.line('.') then
     return
   end
-  -- Required here: init.lua requires this module
-  require('quickfix-review').view_comment()
+  if view_comment_fn then view_comment_fn() end
 end
 
 -- Finish a quickfix jump whose file relocated its comments on read, once the

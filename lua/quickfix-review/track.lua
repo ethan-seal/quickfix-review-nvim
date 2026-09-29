@@ -27,6 +27,7 @@
 -- relocated from.
 local M = {}
 
+local snapshots = require('quickfix-review.snapshots')
 local utils = require('quickfix-review.utils')
 
 local uv = vim.uv or vim.loop
@@ -82,7 +83,6 @@ end
 -- snapshots' canonical form, so CR line endings and a missing final newline
 -- never make a difference. vim.text.diff on 0.11+, vim.diff on 0.10.
 function M.diff(old, new)
-  local snapshots = require('quickfix-review.snapshots')
   local diff = (vim.text and vim.text.diff) or vim.diff
   return diff(snapshots.canonical(old), snapshots.canonical(new), {
     result_type = 'indices',
@@ -208,7 +208,6 @@ local hunks_count = 0
 -- snapshot couldn't be saved) stays at its anchor lines, as current. When
 -- its snapshot is missing or corrupt, its lines are searched for (M.search).
 function M.relocate(c, lines, sha)
-  local snapshots = require('quickfix-review.snapshots')
   local a = c.anchor or c
   sha = sha or snapshots.hash(lines)
   if not a.sha then return make_pos(sha, a.lnum, a.end_lnum or a.lnum, 'current') end
@@ -265,6 +264,16 @@ local cache = {}
 -- Inside M.batch: its depth and the buffer map ({ exact = name -> buf,
 -- bykey = path_key -> buf }, built on first use)
 local batch_depth, batch_bufs = 0, nil
+
+-- The comments on a file, by its utils.path_key (store.view.in_file, which
+-- registers itself when it loads: the store sits above track, see set_in_file)
+local in_file_fn = nil
+
+-- Set the function positions gets a file's comments from (called by
+-- store/view.lua when it loads)
+function M.set_in_file(fn)
+  in_file_fn = fn
+end
 
 -- Forget everything (for tests); tracking extmarks are removed
 function M._reset()
@@ -371,7 +380,7 @@ local function content_of(buf)
   local cached = contents[buf]
   if cached and cached.tick == tick then return cached.lines, cached.sha end
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-  local sha = require('quickfix-review.snapshots').hash(lines)
+  local sha = snapshots.hash(lines)
   contents[buf] = { tick = tick, lines = lines, sha = sha }
   return lines, sha
 end
@@ -497,7 +506,7 @@ local function from_disk(c, st)
     if not ok then lines = {} end
     f = {
       size = st.size, sec = st.mtime.sec, nsec = st.mtime.nsec, ino = st.ino,
-      lines = lines, sha = require('quickfix-review.snapshots').hash(lines),
+      lines = lines, sha = snapshots.hash(lines),
     }
     store_file(path, f)
   end
@@ -572,8 +581,7 @@ end
 function M.positions(target)
   local name = type(target) == 'number' and utils.get_real_filepath(target) or target
   if type(name) ~= 'string' or name == '' then return {} end
-  -- Required here: the store requires track (through snapshots)
-  local in_file = require('quickfix-review.store.view').in_file(utils.path_key(name))
+  local in_file = in_file_fn(utils.path_key(name))
   local out = {}
   M.batch(function()
     for _, c in ipairs(in_file) do out[c.id] = M.pos(c) end

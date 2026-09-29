@@ -2,6 +2,17 @@
 local M = {}
 local config = require('quickfix-review.config')
 
+-- What utils needs from the layers above it (it is a leaf, so it cannot
+-- require them): { range, is_outdated, hash }, set by store.lua when it loads
+-- (see bind_store)
+local hooks = {}
+
+-- Set the store functions refresh_buffer_signs and range_in use: range and
+-- is_outdated (store.range, store.is_outdated) and hash (snapshots.hash)
+function M.bind_store(h)
+  hooks = h
+end
+
 -- Namespace for extmarks (lazy initialized)
 local ns_id = nil
 
@@ -137,8 +148,6 @@ function M.refresh_buffer_signs(bufnr, file, comments)
   -- Track: line -> { count = N, types = {type1, type2, ...}, is_continuation = bool }
   local line_info = {}
 
-  -- Required here: store requires utils
-  local store = require('quickfix-review.store')
   local special = M.is_special_buffer(bufnr)
   for _, item in ipairs(comments) do
     local start_line, end_line
@@ -149,7 +158,7 @@ function M.refresh_buffer_signs(bufnr, file, comments)
       local comment_type = item.kind
       -- A diff buffer shows a comment only where it holds the comment's
       -- snapshot, so it is never outdated there
-      local outdated = not special and store.is_outdated(item)
+      local outdated = not special and hooks.is_outdated(item)
 
       -- Track start line
       if not line_info[start_line] then
@@ -464,9 +473,7 @@ end
 -- exactly the anchor's snapshot, else nil (the comment is not shown there).
 -- Returns: lnum, end_lnum, or nil
 function M.range_in(item, bufnr)
-  -- Required here: store requires utils
-  local store = require('quickfix-review.store')
-  if not M.is_special_buffer(bufnr) then return store.range(item) end
+  if not M.is_special_buffer(bufnr) then return hooks.range(item) end
   local a = item.anchor or item
   if not a.sha or not vim.api.nvim_buf_is_loaded(bufnr) then return nil end
   local tick = vim.api.nvim_buf_get_changedtick(bufnr)
@@ -474,7 +481,7 @@ function M.range_in(item, bufnr)
   local cached = special_sha[bufnr]
   if not cached or cached.tick ~= tick or cached.name ~= name then
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-    cached = { name = name, tick = tick, sha = require('quickfix-review.snapshots').hash(lines) }
+    cached = { name = name, tick = tick, sha = hooks.hash(lines) }
     special_sha[bufnr] = cached
   end
   if cached.sha ~= a.sha then return nil end

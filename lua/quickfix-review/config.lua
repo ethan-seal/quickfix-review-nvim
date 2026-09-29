@@ -1,6 +1,8 @@
 -- Configuration and defaults for quickfix-review.nvim
 local M = {}
 
+local notify = require('quickfix-review.notify')
+
 -- Default comment types
 M.default_comment_types = {
   issue = { sign = '⚠', highlight = 'DiagnosticError', description = 'Problems to fix' },
@@ -295,13 +297,13 @@ local function derive(user_opts)
   -- is the deprecated name of segment_max_bytes; log_retention_days is gone
   -- (segments are never deleted), and ignored.
   if user_opts.log_max_bytes ~= nil then
-    require('quickfix-review.notify').once('deprecated-log_max_bytes',
+    notify.once('deprecated-log_max_bytes',
       'log_max_bytes is deprecated: use segment_max_bytes', vim.log.levels.WARN)
     if user_opts.segment_max_bytes == nil then M.options.segment_max_bytes = user_opts.log_max_bytes end
     M.options.log_max_bytes = nil
   end
   if user_opts.log_retention_days ~= nil then
-    require('quickfix-review.notify').once('deprecated-log_retention_days',
+    notify.once('deprecated-log_retention_days',
       'log_retention_days is ignored: journal segments are the review and are never deleted',
       vim.log.levels.WARN)
     M.options.log_retention_days = nil

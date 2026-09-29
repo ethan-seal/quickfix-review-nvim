@@ -301,6 +301,9 @@ function M.view_comment()
   jump.on_event('float_opened', { win = win })
 end
 
+-- The quickfix cursor check (jump.lua) opens the float through this
+jump.set_view_comment(function() return M.view_comment() end)
+
 -- Delete comment(s) at current line or selected range
 function M.delete_comment(range)
   local file = utils.get_real_filepath()

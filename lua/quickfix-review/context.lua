@@ -2,6 +2,7 @@
 -- meaningful even if the commit is later rebased away or garbage-collected.
 local M = {}
 
+local snapshots = require('quickfix-review.snapshots')
 local utils = require('quickfix-review.utils')
 
 local GIT_TIMEOUT_MS = 2000
@@ -158,9 +159,8 @@ function M.anchor(start_line, end_line, bufnr, pre)
     bufnr = (bufnr == nil or bufnr == 0) and vim.api.nvim_get_current_buf() or bufnr
     all = vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_lines(bufnr, 0, -1, false) or {}
 
-    -- Required here: snapshots requires the store
     local err
-    sha, err = require('quickfix-review.snapshots').put(all)
+    sha, err = snapshots.put(all)
     if not sha then
       vim.notify('quickfix-review: snapshot not saved, the comment is anchored by its lines only: '
         .. tostring(err), vim.log.levels.WARN)

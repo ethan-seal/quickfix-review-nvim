@@ -3,6 +3,8 @@
 -- store at startup; the callbacks require the plugin lazily.
 local M = {}
 
+local utils = require('quickfix-review.utils')
+
 -- The command range as add_comment/delete_comment take it: {line1, line2}
 -- when one was given, nil for the current line
 function M.range_of(o)
@@ -29,14 +31,14 @@ local MARKER = ' [quickfix-review]'
 M.MARKER = MARKER
 
 local function add(type_name, o)
+  -- Required here, not at load time: plugin/ loads this module at startup,
+  -- and requiring init at the top would load the whole plugin then
   require('quickfix-review').add_comment(type_name:upper(), M.range_of(o))
 end
 
 -- (Re)create :ReviewAdd {type} and :ReviewAdd<Type> for every configured
 -- comment type. Safe to call repeatedly: nvim_create_user_command replaces.
 function M.create()
-  -- Required here, not at load time, so a reloaded config module is seen
-  local utils = require('quickfix-review.utils')
   local types = utils.get_comment_types()
 
   local wanted = {}
@@ -68,7 +70,7 @@ function M.create()
     complete = function(lead)
       lead = lead:lower()
       return vim.tbl_filter(function(t) return vim.startswith(t, lead) end,
-        require('quickfix-review.utils').get_comment_types())
+        utils.get_comment_types())
     end,
     desc = 'Add a comment of {type} (range or current line)',
   })

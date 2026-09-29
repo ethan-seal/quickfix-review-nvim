@@ -24,7 +24,7 @@
 local M = {}
 
 local storage = require('quickfix-review.storage')
-local store = require('quickfix-review.store')
+local location = require('quickfix-review.store.location')
 
 local uv = vim.uv or vim.loop
 
@@ -99,7 +99,7 @@ end
 function M.put(lines)
   local content = canonical(lines)
   local sha = vim.fn.sha256(content)
-  local dir = store.snapshots_dir()
+  local dir = location.resolve().snapshots
   local path = dir .. '/' .. sha
 
   local stat = uv.fs_stat(path)
@@ -128,7 +128,7 @@ end
 -- fresh list the caller may change.
 function M.get(sha)
   if not is_sha(sha) then return nil end
-  local path = store.snapshots_dir() .. '/' .. sha:lower()
+  local path = location.resolve().snapshots .. '/' .. sha:lower()
 
   local hit = cache_get(path)
   if hit then return vim.list_extend({}, hit) end

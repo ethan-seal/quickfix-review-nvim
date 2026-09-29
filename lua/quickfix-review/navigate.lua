@@ -4,6 +4,7 @@ local M = {}
 
 local utils = require('quickfix-review.utils')
 local store = require('quickfix-review.store')
+local snapshots = require('quickfix-review.snapshots')
 local context = require('quickfix-review.context')
 local track = require('quickfix-review.track')
 local jump = require('quickfix-review.jump')
@@ -130,7 +131,7 @@ function M.reanchor()
         if store.is_outdated(c) and pre ~= false then
           if pre == nil then
             local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-            local sha, err = require('quickfix-review.snapshots').put(lines)
+            local sha, err = snapshots.put(lines)
             if sha then
               pre = { lines = lines, sha = sha }
             else

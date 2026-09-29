@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-6m4v
 title: Break the store/track/snapshots/utils require cycles
-status: todo
+status: completed
 type: task
+priority: normal
 created_at: 2026-09-29T20:45:42Z
-updated_at: 2026-09-29T20:45:42Z
+updated_at: 2026-09-29T23:27:37Z
 blocked_by:
     - quickfix-review-nvim-b8r8
     - quickfix-review-nvim-ugnc

@@ -5,6 +5,7 @@
 local M = {}
 
 local record = require('quickfix-review.store.record')
+local track = require('quickfix-review.track')
 local utils = require('quickfix-review.utils')
 
 local QF_TITLE = 'Code Review Comments'
@@ -54,8 +55,7 @@ end
 -- In a track batch, so each comment's three record.range/is_outdated lookups
 -- compute its pos once and buffers are looked up in one map
 local function view_items()
-  -- Required here: track requires snapshots, which requires the store
-  return require('quickfix-review.track').batch(function()
+  return track.batch(function()
     local items = {}
     for i, c in ipairs(comments) do
       items[i] = view_item(c)
@@ -208,5 +208,9 @@ end
 function M.is_current_view()
   return view_exists() and vim.fn.getqflist({ id = 0 }).id == qf_id
 end
+
+-- track.positions reads a file's comments through this (track sits below
+-- the store, so it cannot require it)
+track.set_in_file(function(key) return M.in_file(key) end)
 
 return M

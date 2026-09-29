@@ -24,8 +24,10 @@ local location = require('quickfix-review.store.location')
 local log = require('quickfix-review.log')
 local maintenance = require('quickfix-review.store.maintenance')
 local record = require('quickfix-review.store.record')
+local snapshots = require('quickfix-review.snapshots')
 local storage = require('quickfix-review.storage')
 local sync = require('quickfix-review.store.sync')
+local utils = require('quickfix-review.utils')
 local view = require('quickfix-review.store.view')
 
 -- Where a comment is now, { sha, lnum, end_lnum, state } (see track.lua), or
@@ -373,5 +375,12 @@ end
 function M.is_current_view()
   return view.is_current_view()
 end
+
+-- utils (a leaf) reaches the store and snapshots through these
+utils.bind_store({
+  range = function(c) return M.range(c) end,
+  is_outdated = function(c) return M.is_outdated(c) end,
+  hash = function(lines) return snapshots.hash(lines) end,
+})
 
 return M

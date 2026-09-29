@@ -14,6 +14,7 @@ local history_view = require('quickfix-review.history_view')
 local buffer_sync = require('quickfix-review.buffer_sync')
 local navigate = require('quickfix-review.navigate')
 local notify = require('quickfix-review.notify')
+local commands = require('quickfix-review.commands')
 
 -- The comment flows (edit.lua), the history view (history_view.lua) and
 -- navigation (navigate.lua).
@@ -262,7 +263,7 @@ end
 -- reloaded between setup() calls.
 local function setup_keymaps()
   local keymaps = config.options.keymaps
-  local marker = require('quickfix-review.commands').MARKER
+  local marker = commands.MARKER
 
   for _, mode in ipairs({ 'n', 'v' }) do
     for _, map in ipairs(vim.api.nvim_get_keymap(mode)) do
@@ -404,7 +405,7 @@ function M.setup(opts)
   edit.sync_cycle_state()
   utils.init_signs(config.options)
   setup_keymaps()
-  require('quickfix-review.commands').create()
+  commands.create()
 
   -- Load the saved review now, so it's in place before any change is made
   store.set_on_change(signs.refresh_all)

@@ -5,6 +5,7 @@ local M = {}
 
 local utils = require('quickfix-review.utils')
 local store = require('quickfix-review.store')
+local snapshots = require('quickfix-review.snapshots')
 local context = require('quickfix-review.context')
 local track = require('quickfix-review.track')
 local jump = require('quickfix-review.jump')
@@ -117,7 +118,7 @@ local function write_back(bufnr, file)
       if p and p.state ~= 'outdated' and moved(c, p) then
         if not pre then
           local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-          local sha, err = require('quickfix-review.snapshots').put(lines)
+          local sha, err = snapshots.put(lines)
           if not sha then
             vim.notify('quickfix-review: snapshot not saved, comment anchors not updated: '
               .. tostring(err), vim.log.levels.WARN)

@@ -3,6 +3,9 @@
 -- whose v2 log could not be migrated, from that log).
 local M = {}
 
+local history = require('quickfix-review.history')
+local log = require('quickfix-review.log')
+local segment = require('quickfix-review.store.segment')
 local store = require('quickfix-review.store')
 
 -- The unreadable lines of each file (by path) already warned about, so
@@ -15,9 +18,6 @@ local history_seen = {}
 -- with a checkpoint (a migrated v2 log) that doesn't know it (it didn't
 -- exist before that log).
 function M.history_rows(id)
-  local log = require('quickfix-review.log')
-  local history = require('quickfix-review.history')
-  local segment = require('quickfix-review.store.segment')
   id = id ~= '' and id or nil
   local function read(path)
     history_seen[path] = history_seen[path] or {}

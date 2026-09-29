@@ -6,6 +6,8 @@ local uv = vim.uv or vim.loop
 
 local M = {}
 
+local log = require('quickfix-review.log')
+
 local WAIT_MS = 1000
 
 -- The lock paths this process holds, each to its fd (true for the mkdir
@@ -80,7 +82,7 @@ local function stale(lockdir)
   local pid = read_pid(lockdir)
   if not pid then return os.time() - stat.mtime.sec > STALE_SECONDS, nil end
   if pid == uv.os_getpid() then return true, pid end
-  return not require('quickfix-review.log').pid_alive(pid), pid
+  return not log.pid_alive(pid), pid
 end
 
 local function unlock(lockdir)

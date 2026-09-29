@@ -5,6 +5,7 @@ local M = {}
 
 local notify = require('quickfix-review.notify')
 local storage = require('quickfix-review.storage')
+local track = require('quickfix-review.track')
 
 -- A stable identity for a comment: 16 hex chars from the OS RNG. Not
 -- math.random, which LuaJIT leaves unseeded, so every Neovim would produce
@@ -171,8 +172,7 @@ function M.pos(c)
   if type(c.id) ~= 'string' or type(c.filename) ~= 'string' or type(c.anchor) ~= 'table' then
     return nil
   end
-  -- Required here: track requires snapshots, which requires the store
-  return require('quickfix-review.track').pos(c)
+  return track.pos(c)
 end
 
 -- Whether a comment's code changed since it was made (see track.lua)

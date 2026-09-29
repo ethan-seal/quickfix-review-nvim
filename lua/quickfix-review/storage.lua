@@ -50,7 +50,7 @@ end
 -- The schema version this code reads and writes. The file is
 -- { "version": 2, "comments": [ comment... ] }, where a comment is
 -- { id, filename, kind, body, response?, lnum, end_lnum, context?, anchor?, created_at }
--- (anchor: { sha?, lnum, end_lnum, lines?, before?, after? }, see store.lua).
+-- (anchor: { sha?, lnum, end_lnum, lines?, before?, after? }, see store/record.lua).
 -- Other fields a record carries in the file (written by external tools) are
 -- kept in memory as `extra` and written back at the top level of the record.
 -- Version 1 was a bare list of quickfix-shaped items.

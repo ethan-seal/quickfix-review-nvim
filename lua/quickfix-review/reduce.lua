@@ -130,7 +130,7 @@ end
 -- Apply one event to `state` (updated in place and returned)
 -- Returns: state, and why the event was ignored ('duplicate', 'unknown',
 -- 'live', 'invalid', 'unknown op'), or nil if it was applied
--- The state of the log up to a rotation (see store.lua), which the new log
+-- The state of the log up to a rotation (see store/maintenance.lua), which the new log
 -- starts with: replaces the whole state. Records are kept as logged.
 function handlers.checkpoint(state, ev)
   local s = ev.state

@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-b8r8
 title: Split store.lua into location/journal/migrate/maintenance/view modules
-status: todo
+status: completed
 type: task
+priority: normal
 created_at: 2026-09-29T20:45:42Z
-updated_at: 2026-09-29T20:45:42Z
+updated_at: 2026-09-29T21:06:29Z
 blocked_by:
     - quickfix-review-nvim-x5ft
 ---

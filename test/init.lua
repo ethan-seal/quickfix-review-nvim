@@ -4,19 +4,11 @@
 -- Add current directory to runtime path
 vim.opt.runtimepath:prepend(vim.fn.getcwd())
 
--- Clear any cached modules
-package.loaded['quickfix-review'] = nil
-package.loaded['quickfix-review.config'] = nil
-package.loaded['quickfix-review.utils'] = nil
-package.loaded['quickfix-review.storage'] = nil
-package.loaded['quickfix-review.store'] = nil
-package.loaded['quickfix-review.log'] = nil
-package.loaded['quickfix-review.reduce'] = nil
-package.loaded['quickfix-review.export'] = nil
-package.loaded['quickfix-review.snapshots'] = nil
-package.loaded['quickfix-review.context'] = nil
-package.loaded['quickfix-review.track'] = nil
-package.loaded['quickfix-review.history'] = nil
+-- Clear every cached module of the plugin (store/* included), so each test
+-- file starts from fresh module state
+for name in pairs(package.loaded) do
+  if name:match('^quickfix%-review') then package.loaded[name] = nil end
+end
 
 -- The 5s startup snapshot GC must never fire mid-suite (tests backdate
 -- snapshots); store.gc_snapshots is called directly instead
@@ -38,7 +30,7 @@ local M = {}
 M.storage_file = vim.fn.tempname() .. '-quickfix-review.json'
 
 -- The event log, cache and lock of a review kept in the explicit storage
--- file `file` (see store.lua)
+-- file `file` (see store/location.lua)
 function M.log_path(file) return (file or M.storage_file) .. '.log.jsonl' end
 function M.state_path(file) return (file or M.storage_file) .. '.state.json' end
 function M.lock_path(file) return (file or M.storage_file) .. '.lock' end

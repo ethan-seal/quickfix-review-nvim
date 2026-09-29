@@ -329,7 +329,7 @@ assert.run_test('two Neovims appending while sealing lose and duplicate nothing'
   if not ok then error(err, 0) end
 end)
 
-assert.run_test('snapshot GC reads sealed segments outside the lock and keeps what any segment names', function()
+assert.run_test('snapshot GC reads sealed segments\' .refs, not the segments, under the lock and keeps what any segment names', function()
   reset()
   local store = require('quickfix-review.store')
   local snapshots = require('quickfix-review.snapshots')
@@ -377,6 +377,42 @@ assert.run_test('snapshot GC reads sealed segments outside the lock and keeps wh
   for i = 1, #list - 1 do
     assert.falsy(under_lock[vim.fn.fnamemodify(list[i].path, ':p')], 'not read under the lock: ' .. list[i].path)
   end
+end)
+
+assert.run_test('snapshot GC rebuilds missing .refs from their segments and keeps what they name', function()
+  reset()
+  local store = require('quickfix-review.store')
+  local snapshots = require('quickfix-review.snapshots')
+  local day_ago = os.time() - 25 * 3600
+  local snap_dir = storage_file .. '.snapshots'
+  local function path(sha) return snap_dir .. '/' .. sha end
+
+  local named = snapshots.put({ 'named in segment 1' })
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'n',
+    anchor = { sha = named, lnum = 1, end_lnum = 1 } }), 'added')
+  assert.equals(store.remove(store.all()[1].id), 1, 'deleted: only segment 1 names it')
+  qf, store = restart({ segment_max_bytes = 1 }, true)
+  add_at(2)
+  add_at(3)
+  local list = segs()
+  assert.truthy(#list >= 3, 'sealed')
+  for _, f in ipairs(vim.fn.glob(events .. '/*.refs', true, true)) do os.remove(f) end
+  assert.length(vim.fn.glob(events .. '/*.refs', true, true), 0, 'every .refs deleted')
+  local old = snapshots.put({ 'old' })
+  for _, sha in ipairs({ named, old }) do uv.fs_utime(path(sha), day_ago, day_ago) end
+
+  assert.equals(store.gc_snapshots({ force = true }), 1, 'only the unreferenced one collected')
+  assert.falsy(uv.fs_stat(path(old)), 'unreferenced old deleted')
+  assert.truthy(uv.fs_stat(path(named)), 'named by sealed segment 1: kept')
+  for i = 1, #list - 1 do
+    local raw = read_bytes(require('quickfix-review.store.segment').refs_path(events, list[i].n))
+    assert.truthy(raw, 'rebuilt: .refs of segment ' .. list[i].n)
+    local refs = vim.json.decode(raw)
+    assert.truthy(type(refs) == 'table', 'a list')
+    if list[i].n == 1 then assert.truthy(vim.tbl_contains(refs, named), 'segment 1\'s names the snapshot') end
+  end
+  assert.falsy(uv.fs_stat(require('quickfix-review.store.segment').refs_path(events, list[#list].n)),
+    'the active segment has no .refs')
 end)
 
 assert.run_test('a segment from a newer version is refused, not shown empty', function()

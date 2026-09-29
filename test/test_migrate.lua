@@ -228,6 +228,22 @@ assert.run_test('a migration that does not verify leaves v2 authoritative, with 
   assert.length(calls, 0, 'no further warning this session: ' .. vim.inspect(calls))
   assert.truthy(read_bytes(dir .. '/log.jsonl'):find('v2 still', 1, true), 'appended to log.jsonl')
   assert.falsy(uv.fs_stat(dir .. '/events'), 'still no journal')
+  -- Snapshot GC in v2 mode: log.jsonl's hashes are live
+  local snapshots = require('quickfix-review.snapshots')
+  local named = snapshots.put({ 'named by log.jsonl only' })
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'anchored',
+    anchor = { sha = named, lnum = 1, end_lnum = 1 } }), 'anchored, as v2')
+  local anchored_id
+  for _, c in ipairs(store.all()) do
+    if c.body == 'anchored' then anchored_id = c.id end
+  end
+  assert.equals(store.remove(anchored_id), 1, 'removed: only log.jsonl names it')
+  local orphan = snapshots.put({ 'orphan' })
+  local day_ago = os.time() - 25 * 3600
+  for _, sha in ipairs({ named, orphan }) do uv.fs_utime(dir .. '/snapshots/' .. sha, day_ago, day_ago) end
+  assert.equals(store.gc_snapshots(), 1, 'one collected')
+  assert.truthy(uv.fs_stat(dir .. '/snapshots/' .. named), 'named by the v2 log: kept')
+  assert.falsy(uv.fs_stat(dir .. '/snapshots/' .. orphan), 'the unreferenced one deleted')
   -- The next session migrates it
   _, store = restart({ storage_dir = dir })
   assert.length(store.all(), 5, 'migrated with the new comment')
@@ -259,6 +275,52 @@ assert.run_test('two storage_files in one dir migrate and run independently', fu
   assert.truthy(ja ~= jb, 'two journals')
   _, store = restart({ storage_file = a })
   assert.length(store.all(), 5, 'a keeps its own comment')
+  -- Snapshot GC from a leaves b's snapshots alone; each has its own stamp
+  local snapshots = require('quickfix-review.snapshots')
+  local day_ago = os.time() - 25 * 3600
+  local orphan_a = snapshots.put({ 'orphan of a' })
+  uv.fs_utime(a .. '.snapshots/' .. orphan_a, day_ago, day_ago)
+  _, store = restart({ storage_file = b })
+  snapshots = require('quickfix-review.snapshots')
+  local only_b = snapshots.put({ 'only b names it' })
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'b anchored',
+    anchor = { sha = only_b, lnum = 1, end_lnum = 1 } }), 'anchored in b')
+  uv.fs_utime(b .. '.snapshots/' .. only_b, day_ago, day_ago)
+  _, store = restart({ storage_file = a })
+  assert.equals(store.gc_snapshots(), 1, 'a\'s orphan collected')
+  assert.falsy(uv.fs_stat(a .. '.snapshots/' .. orphan_a), 'a\'s orphan deleted')
+  assert.truthy(uv.fs_stat(b .. '.snapshots/' .. only_b), 'b\'s snapshot kept')
+  assert.truthy(uv.fs_stat(a .. '.snapshots/gc.stamp'), 'a has its stamp')
+  assert.falsy(uv.fs_stat(b .. '.snapshots/gc.stamp'), 'b has none yet')
+  _, store = restart({ storage_file = b })
+  assert.equals(store.gc_snapshots(), 0, 'b: nothing to collect')
+  assert.truthy(uv.fs_stat(b .. '.snapshots/' .. only_b), 'b\'s snapshot kept by b\'s GC')
+  assert.truthy(uv.fs_stat(b .. '.snapshots/gc.stamp'), 'b has its stamp')
+  vim.fn.delete(dir, 'rf')
+end)
+
+assert.run_test('snapshot GC keeps what a stray v2 log.jsonl beside a v3 journal names', function()
+  local dir = vim.fn.tempname() .. '-stray'
+  vim.fn.mkdir(dir, 'p')
+  local store
+  _, store = restart({ storage_dir = dir })
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'v3' }), 'a born-v3 review')
+  assert.truthy(uv.fs_stat(dir .. '/events/000001.jsonl'), 'with a journal')
+  local snapshots = require('quickfix-review.snapshots')
+  local stray = snapshots.put({ 'named by the stray log' })
+  local orphan = snapshots.put({ 'orphan' })
+  local day_ago = os.time() - 25 * 3600
+  for _, sha in ipairs({ stray, orphan }) do uv.fs_utime(dir .. '/snapshots/' .. sha, day_ago, day_ago) end
+  -- An old Neovim's v2 log.jsonl, naming a snapshot
+  vim.fn.writefile({
+    vim.json.encode(log.v2_header()),
+    vim.json.encode(log.event('add', { comment = { id = 'x', filename = abs, lnum = 1, kind = 'note', body = 's',
+      anchor = { sha = stray, lnum = 1, end_lnum = 1 } } })),
+    '',
+  }, dir .. '/log.jsonl', 'b')
+  assert.equals(store.gc_snapshots(), 1, 'one collected')
+  assert.truthy(uv.fs_stat(dir .. '/snapshots/' .. stray), 'named by the stray log: kept')
+  assert.falsy(uv.fs_stat(dir .. '/snapshots/' .. orphan), 'the unreferenced one deleted')
   vim.fn.delete(dir, 'rf')
 end)
 

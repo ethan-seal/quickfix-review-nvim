@@ -199,15 +199,23 @@ snapshots that were written but whose event never landed (a crash between
 
 - **Live set.** The union of every sealed segment's `.refs` and the newest
   checkpoint's `refs`, plus the hashes in the tail after that checkpoint. A
-  sealed segment with no `.refs` (crash, or migrated from v2) has its refs
-  computed by parsing it, and the `.refs` file is written then.
+  sealed segment with no `.refs` (crash, or migrated from v2) is rebuilt
+  under the lock from a 64-hex scan of its bytes (`segment.refs_of`, the same
+  scan as at seal time), and the `.refs` file is written then. A checkpoint
+  whose `refs` are empty past the header line is not trusted (its writer may
+  have failed to read the segment): the whole active segment is scanned.
 - **Removal rule.** Delete a snapshot only if it is not in the live set and
   older than 24 h. The 24 h grace covers a put whose event is still being
   written.
 - **When GC runs.** At most once a day per review, gated by the mtime of a
   `gc.stamp` file, under the lock. It no longer runs at every Neovim start.
-- **No log scanning.** The regex scan of log bytes and the special handling
-  of `.torn-*` logs are deleted.
+- **What is still scanned.** The regex scan over all segments is gone. The
+  active segment's tail after the checkpoint is still scanned, and so are
+  `log.jsonl` and its rotated logs while `log.jsonl` is not a tombstone (v2
+  fallback mode, or a stray v2 log). `.torn-*` logs are ignored.
+- **When GC stops.** GC deletes nothing when it finds no events and no v2
+  log (events/ missing, or its listing failed), or when a file it needs
+  can't be read or has a header this version doesn't read.
 
 ## Migration
 

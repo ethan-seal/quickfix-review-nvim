@@ -56,7 +56,8 @@ end
 -- ({ events = dir, journal_id }): the rules of docs/journal.md#checkpoints
 -- (v, state_v, journal_id, a position on a line start within its segment),
 -- and a state the reducer accepts.
--- Returns: { state (reindexed), imports (set), seg, offset, lines }, or nil
+-- Returns: { state (reindexed), imports (set), seg, offset, lines, refs
+-- (list of hashes, or nil when it has none) }, or nil
 -- and why it is invalid
 function M.load(path, j)
   local fh = io.open(path, 'rb')
@@ -81,9 +82,16 @@ function M.load(path, j)
   for _, sha in ipairs(is_list(doc.imports) and doc.imports or {}) do
     if type(sha) == 'string' then imports[sha] = true end
   end
+  local refs
+  if is_list(doc.refs) then
+    refs = {}
+    for _, sha in ipairs(doc.refs) do
+      if type(sha) == 'string' and #sha == 64 and sha:match('^%x+$') then table.insert(refs, sha:lower()) end
+    end
+  end
   return {
     state = state, imports = imports, seg = doc.seg, offset = doc.offset,
-    lines = type(doc.lines) == 'number' and doc.lines or 0,
+    lines = type(doc.lines) == 'number' and doc.lines or 0, refs = refs,
   }
 end
 

@@ -501,8 +501,9 @@ local function migrate_v2(loc)
     if hooks.crash_after == 4 then return nil, 'crashed (test)' end
     -- 5.
     for i = 1, n do segment.write_refs(loc.events, i, mode) end
+    local v3_data = location.read_bytes(v3.path)
     local encoded = checkpoint.encode(jid, v3.seg, v3.offset, v3.lines, v3.state, v3.imports,
-      segment.refs_of(location.read_bytes(v3.path) or '', v3.offset))
+      v3_data and segment.refs_of(v3_data, v3.offset) or nil)
     if encoded then
       checkpoint.write(loc.checkpoints, { events = loc.events, journal_id = jid }, v3.seg, v3.offset, encoded,
         mode, math.max(1, tonumber(config.options.checkpoint_keep) or 2))

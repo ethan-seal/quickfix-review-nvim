@@ -339,9 +339,10 @@ local function option(name)
 end
 
 -- The newest `refs` of a checkpoint at the current position: the hashes the
--- active segment names up to it
+-- active segment names up to it, or nil (left out) if it can't be read
 local function current_refs()
-  local data = location.read_bytes(synced.path) or ''
+  local data = location.read_bytes(synced.path)
+  if not data then return nil end
   return segment.refs_of(data, synced.offset)
 end
 

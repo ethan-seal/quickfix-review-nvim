@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-144w
 title: 'Snapshot GC: orphan-only from segment .refs, 24h grace, daily'
-status: todo
+status: completed
 type: task
+priority: normal
 created_at: 2026-09-29T21:06:50Z
-updated_at: 2026-09-29T21:06:50Z
+updated_at: 2026-09-29T23:19:34Z
 blocked_by:
     - quickfix-review-nvim-un0y
 ---

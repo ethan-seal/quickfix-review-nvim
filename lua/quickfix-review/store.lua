@@ -94,11 +94,11 @@ function M.root()
   return location.resolve().root
 end
 
--- Delete the review's unreferenced snapshots older than a day (see
--- maintenance.gc).
+-- Delete the review's unreferenced snapshots older than a day, at most once
+-- a day unless `opts.force` (see maintenance.gc).
 -- Returns: how many were deleted
-function M.gc_snapshots()
-  return maintenance.gc_snapshots()
+function M.gc_snapshots(opts)
+  return maintenance.gc_snapshots(opts)
 end
 
 -- Collect the snapshots of the review once this session, 5s after startup

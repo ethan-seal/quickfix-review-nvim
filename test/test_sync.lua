@@ -382,19 +382,19 @@ assert.run_test('a snapshot another Neovim wrote, before its event is appended, 
   other(string.format('assert(require("quickfix-review.snapshots").put(%s))', vim.inspect(lines)))
   local path = store.snapshots_dir() .. '/' .. snapshots.hash(lines)
   assert.truthy(vim.uv.fs_stat(path), 'written')
-  store.gc_snapshots()
+  store.gc_snapshots({ force = true })
   assert.truthy(vim.uv.fs_stat(path), 'fresh: kept')
 
   -- An old one the other Neovim puts again (about to reference it) is touched
   local day_ago = os.time() - 25 * 3600
   vim.uv.fs_utime(path, day_ago, day_ago)
   other(string.format('assert(require("quickfix-review.snapshots").put(%s))', vim.inspect(lines)))
-  store.gc_snapshots()
+  store.gc_snapshots({ force = true })
   assert.truthy(vim.uv.fs_stat(path), 'touched by the put: kept')
 
   -- Untouched, it goes
   vim.uv.fs_utime(path, day_ago, day_ago)
-  assert.equals(store.gc_snapshots(), 1, 'collected once old')
+  assert.equals(store.gc_snapshots({ force = true }), 1, 'collected once old')
   assert.falsy(vim.uv.fs_stat(path), 'deleted')
 end)
 

@@ -484,8 +484,10 @@ local function from_mark(c)
   local state = base.state
   if state ~= 'outdated' then
     local a = c.anchor or c
-    if end_lnum - lnum ~= (base.end_lnum or base.lnum) - base.lnum then
-      -- A valid mark whose span changed had lines deleted or inserted inside the range
+    if a.sha and end_lnum - lnum ~= (base.end_lnum or base.lnum) - base.lnum then
+      -- A valid mark whose span changed had lines deleted or inserted
+      -- inside the range. A comment with no sha has nothing to be outdated
+      -- against, so it follows its mark and a save re-anchors it there.
       state = 'outdated'
     else
       state = (lnum == a.lnum and end_lnum == (a.end_lnum or a.lnum)) and 'current' or 'shifted'

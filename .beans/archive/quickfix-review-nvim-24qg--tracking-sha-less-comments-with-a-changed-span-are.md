@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-24qg
 title: 'Tracking: sha-less comments with a changed span are no longer re-anchored on save'
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-09-29T23:37:18Z
-updated_at: 2026-09-29T23:37:18Z
+updated_at: 2026-09-29T23:39:16Z
 ---
 
 **Symptom**: since 7dv8, a comment with no anchor sha (legacy, or its snapshot could not be saved) whose extmark span changes in-session (a line inserted or deleted inside the range) reads 'outdated'. buffer_sync (lua/quickfix-review/buffer_sync.lua:118) skips 'outdated' comments on save, so the comment is not re-anchored. After a reload, relocate puts it back at its stale stored lines as 'current' (track.lua:213). Before 7dv8 it read 'shifted' and was re-anchored.
@@ -17,7 +18,7 @@ In `from_mark`, apply the span-change → 'outdated' rule only when the comment 
 
 ## Checklist
 
-- [ ] Test: sha-less comment on 4-5 of a 10-line file, `5GoX`… or `4GddP`-style edit that changes the span, save → stored range follows the mark; reload → same range.
+- [ ] Test: sha-less comment on 4-5 of a 10-line file, `5GOX` (insert a line inside the range, span 4-6), save → stored range follows the mark; reload → same range.
 - [ ] Existing 7dv8 tests (`4Gdd`, `3Gcjxx`, `3G2dd`+`u` on 3-4 at EOF) still pass.
 - [ ] `scripts/test.sh` passes; restore `test_file.txt` afterwards.
 

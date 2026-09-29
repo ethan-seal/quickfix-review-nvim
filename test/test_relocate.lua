@@ -678,6 +678,32 @@ local function sha_on_disk()
   return require('quickfix-review.snapshots').hash(vim.fn.readfile(abs))
 end
 
+-- Before 7dv8 a sha-less comment whose span changed read shifted and was
+-- re-anchored on save; the span check must not make it outdated
+assert.run_test('a sha-less comment follows its mark when its span changes, saved', function()
+  fresh()
+  store.add({ filename = abs, lnum = 4, end_lnum = 5, kind = 'note', body = 'legacy' })
+  vim.cmd('silent edit!')
+  local c = qf.comments()[1]
+  assert.equals(c.anchor.sha, nil, 'no sha')
+
+  vim.cmd('normal! 5GOX')
+  local pos = store.pos(c)
+  assert.truthy(pos.state ~= 'outdated', 'not outdated after 5GOX: ' .. tostring(pos.state))
+  assert.equals(pos.lnum, 4, 'mark starts on line 4')
+  assert.equals(pos.end_lnum, 6, 'mark ends on line 6')
+  save()
+
+  local a = qf.comments()[1].anchor
+  assert.equals(a.lnum, 4, 'stored start follows the mark')
+  assert.equals(a.end_lnum, 6, 'stored end follows the mark')
+
+  restart()
+  local lnum, end_lnum = store.range(qf.comments()[1])
+  assert.equals(lnum, 4, 'on line 4 after reload')
+  assert.equals(end_lnum, 6, 'ends on line 6 after reload')
+end)
+
 assert.run_test('an edit above a comment, saved: the anchor is written back, no double shift', function()
   fresh()
   vim.fn.cursor(5, 1)

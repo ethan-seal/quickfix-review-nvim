@@ -651,7 +651,7 @@ require('quickfix-review').load_review()             *quickfix-review.load_revie
     Replay the review's log from disk and show it in the quickfix list.
 
 require('quickfix-review').comments()                 *quickfix-review.comments()*
-    All review comments, in creation order. Treat as read-only. Each is a
+    All review comments, in creation order, as copies. Each is a
     record `{ id, filename, kind, body, response, lnum, end_lnum, context,
     anchor, pos, created_at }`: `kind` is the lowercase comment type, `body`
     the text without any `[KIND]` prefix, and `response` and `context` (the
@@ -663,8 +663,8 @@ require('quickfix-review').comments()                 *quickfix-review.comments(
     to, `lines` the commented lines (at most 50) and `before`/`after` up to
     2 lines either side. Comments from older versions, or whose snapshot
     could not be saved, have no `sha` (older ones also no `lines`). `pos`
-    is `{ sha, lnum, end_lnum, state }`, where the comment is displayed;
-    it is derived, never saved. A record may also carry `extra`: a
+    is `{ sha, lnum, end_lnum, state }`, where the comment is displayed at
+    the call; it is derived, never saved. A record may also carry `extra`: a
     table of fields from stored records that the plugin does not know
     (written by other tools), preserved and logged at the top level of the
     record.

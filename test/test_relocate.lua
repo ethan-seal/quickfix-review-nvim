@@ -74,7 +74,7 @@ assert.run_test('lines inserted above on disk: the comment follows, shifted', fu
   local lnum, end_lnum = store.range(c)
   assert.equals(lnum, 7, 'lnum')
   assert.equals(end_lnum, 7, 'end_lnum')
-  assert.equals(c.pos.state, 'shifted', 'state')
+  assert.equals(store.pos(c).state, 'shifted', 'state')
   assert.length(signs_on(file_buf, 7), 1, 'sign on line 7')
   assert.length(signs_on(file_buf, 5), 0, 'no sign left on line 5')
   assert.equals(c.anchor.lnum, 5, 'the anchor is unchanged')
@@ -152,6 +152,37 @@ assert.run_test('deleting a commented line then undoing makes it current again',
   assert.equals(end_lnum, 5, 'ends on line 5 after undo')
 end)
 
+-- Reproduces only after the buffer was reloaded from a shorter file (as
+-- after an external change): with no such reload, undo restores the mark
+assert.pending('deleting a range that ends at EOF then undoing restores it',
+  'known bug, left for a follow-up bean: the tracking extmark ends at (end_lnum, col 0), '
+    .. 'past the last line (track.lua place/from_mark), and after a reload from a shorter '
+    .. 'file undo does not restore that end, so 9-10 comes back as 9-9 shifted; '
+    .. 'single-sourcing positions does not fix it',
+  function()
+    qf.clear_review()
+    rewrite({ 'line 1', 'line 2' })
+    rewrite(TEN)
+    qf.add_comment('ISSUE', { 9, 10 })
+    local c = qf.comments()[1]
+
+    vim.cmd('normal! 9G2dd')
+    local deleted = store.pos(c).state
+
+    vim.cmd('silent undo')
+    local pos = store.pos(c)
+    local lnum, end_lnum = store.range(c)
+    local p = track.positions(file_buf)[c.id]
+    vim.cmd('silent edit!')
+
+    assert.equals(deleted, 'outdated', 'outdated after deleting lines 9-10')
+    assert.equals(lnum, 9, 'on line 9 after undo')
+    assert.equals(end_lnum, 10, 'ends on line 10 after undo')
+    assert.equals(pos.state, 'current', 'current after undo')
+    assert.truthy(p and p.lnum == 9 and p.end_lnum == 10 and p.state == 'current',
+      'positions() agrees after undo')
+  end)
+
 assert.run_test('dd on a commented line: sign and view agree without a save', function()
   fresh()
   vim.fn.cursor(5, 1)
@@ -184,6 +215,82 @@ assert.run_test('dd on a commented line: sign and view agree without a save', fu
     assert.equals(m[2] + 1, l, 'every sign on the line store.range reports')
   end
   assert.truthy(#lines > 0, 'the float shows the comment on its line')
+end)
+
+assert.run_test('an in-session edit: sign, quickfix row and float all equal track.positions()', function()
+  fresh()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  qf.add_comment('NOTE', { 7, 8 })
+  local drained = false
+  vim.schedule(function() drained = true end)
+  vim.wait(1000, function() return drained end)
+  local ids = {}
+  for i, c in ipairs(qf.comments()) do ids[i] = c.id end
+
+  vim.api.nvim_buf_set_lines(file_buf, 0, 0, false, { 'new 1', 'new 2' })
+  vim.api.nvim_exec_autocmds('TextChanged', { buffer = file_buf })
+  local redrawn = vim.wait(2000, function() return #signs_on(file_buf, 7) > 0 end, 20)
+  local tick = vim.api.nvim_buf_get_changedtick(file_buf)
+  local p = track.positions(file_buf)
+
+  -- Signs: on every line of each comment's range, and nowhere else
+  local sign_lines = {}
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(file_buf, utils.get_ns_id(), 0, -1, {})) do
+    sign_lines[m[2] + 1] = true
+  end
+  local want_lines = {}
+  for _, id in ipairs(ids) do
+    for l = p[id].lnum, p[id].end_lnum do want_lines[l] = true end
+  end
+
+  -- The float opens on each comment's line, and not on its old line
+  local float_first = float_lines(p[ids[1]].lnum)
+  local float_range = float_lines(p[ids[2]].end_lnum)
+  local float_old = float_lines(5)
+
+  -- The quickfix rows
+  qf.show_list()
+  local rows = {}
+  for _, row in ipairs(vim.fn.getqflist()) do
+    if type(row.user_data) == 'table' then rows[row.user_data.id] = row end
+  end
+
+  -- Fresh tables: mutating one changes nothing shared
+  local mine = store.pos(qf.comments()[1])
+  mine.lnum = 999
+  p[ids[1]].lnum = 999
+  local copy = qf.comments()[1]
+  copy.anchor.lnum = 1
+  copy.anchor.end_lnum = 1
+  local live_anchor = store.get(ids[1]).anchor.lnum
+  local again = track.positions(file_buf)
+  local reread = store.pos(qf.comments()[1]).lnum
+  local after_tick = vim.api.nvim_buf_get_changedtick(file_buf)
+  vim.cmd('silent edit!')
+
+  assert.truthy(redrawn, 'signs redrawn after the edit')
+  assert.equals(after_tick, tick, 'everything read in one tick')
+  assert.equals(again[ids[1]].lnum, 7, 'first comment shifted to line 7')
+  assert.equals(again[ids[1]].state, 'shifted', 'first comment shifted')
+  assert.equals(again[ids[2]].lnum, 9, 'range comment starts on line 9')
+  assert.equals(again[ids[2]].end_lnum, 10, 'range comment ends on line 10')
+  assert.equals(reread, 7, 'store.pos is a fresh table')
+  assert.equals(live_anchor, 5, "a copy's anchor is not the live anchor")
+  for l in pairs(want_lines) do
+    assert.truthy(sign_lines[l], 'a sign on line ' .. l)
+  end
+  for l in pairs(sign_lines) do
+    assert.truthy(want_lines[l], 'no sign off a comment, on line ' .. l)
+  end
+  for _, id in ipairs(ids) do
+    assert.truthy(rows[id], 'a quickfix row for ' .. id)
+    assert.equals(rows[id].lnum, again[id].lnum, 'qf row lnum is positions() lnum')
+    assert.equals(rows[id].end_lnum, again[id].end_lnum, 'qf row end_lnum is positions() end_lnum')
+  end
+  assert.truthy(#float_first > 0, 'float on the first comment at its position')
+  assert.truthy(#float_range > 0, 'float on the range comment at its end line')
+  assert.length(float_old, 0, 'no float on the old line')
 end)
 
 assert.run_test(':colorscheme keeps QuickfixReviewOutdated linked', function()
@@ -283,7 +390,7 @@ assert.run_test('relocation from disk for a file that is not loaded, cached by s
     vim.list_extend(lines, TEN)
     vim.fn.writefile(lines, path)
     assert.equals((store.range(c)), 5, 'shifted on disk')
-    assert.equals(c.pos.state, 'shifted', 'state')
+    assert.equals(store.pos(c).state, 'shifted', 'state')
 
     -- Same size, new content: a later mtime is seen
     lines[5] = 'line 9'
@@ -1019,8 +1126,9 @@ assert.run_test('comments sharing one anchor sha are relocated through one diff'
   local states = {}
   for _, c in ipairs(qf.comments()) do
     local lnum = store.range(c)
-    if c.pos.state ~= 'shifted' or lnum ~= c.anchor.lnum + 1 then
-      table.insert(states, c.anchor.lnum .. '->' .. lnum .. ' ' .. c.pos.state)
+    local state = store.pos(c).state
+    if state ~= 'shifted' or lnum ~= c.anchor.lnum + 1 then
+      table.insert(states, c.anchor.lnum .. '->' .. lnum .. ' ' .. state)
     end
   end
 

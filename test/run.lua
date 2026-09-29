@@ -9,6 +9,7 @@ print(string.rep('=', 50))
 -- Track totals across all test files
 local total_passed = 0
 local total_failed = 0
+local total_pending = 0
 
 -- Run one test file. A file that errors outside assert.run_test (at load time
 -- or top level) counts as a failure, so the suite still exits non-zero.
@@ -26,6 +27,7 @@ local function run_file(path)
   end
   total_passed = total_passed + result.passed
   total_failed = total_failed + result.failed
+  total_pending = total_pending + (result.pending_count or 0)
   result.reset()
 end
 
@@ -87,6 +89,9 @@ if total_failed == 0 then
   print(string.format('All tests passed: %d/%d', total_passed, total_passed + total_failed))
 else
   print(string.format('Tests: %d passed, %d FAILED', total_passed, total_failed))
+end
+if total_pending > 0 then
+  print(string.format('Pending (known failures, see [PENDING] above): %d', total_pending))
 end
 
 -- Exit with appropriate code for CI

@@ -606,6 +606,48 @@ assert.run_test('comment added through a symlink shows on the real path', functi
   assert.truthy(has_sign, 'sign on line 3 of the real-path buffer')
 end)
 
+assert.run_test('a comment on a file not yet created, through a symlinked dir, shows once it exists', function()
+  qf.clear_review()
+  local store = require('quickfix-review.store')
+  local orig_buf = vim.fn.bufnr()
+
+  local root = vim.fn.tempname()
+  local real_dir = root .. '/real'
+  local link_dir = root .. '/link'
+  vim.fn.mkdir(real_dir, 'p')
+  assert.truthy(vim.uv.fs_symlink(real_dir, link_dir), 'symlink created')
+  local link_file = link_dir .. '/later.txt'
+
+  -- A comment (as the log could carry one) on the file through the
+  -- symlinked dir, before the file exists on disk
+  assert.truthy(store.add({ filename = link_file, lnum = 3, kind = 'issue', body = 'x' }), 'added')
+  local id = store.all()[1] and store.all()[1].id
+  assert.truthy(id, 'comment added')
+  assert.falsy(vim.uv.fs_realpath(vim.fn.fnamemodify(store.get(id).filename, ':p')),
+    'the comment path does not resolve yet')
+
+  -- Build the index while the path is unresolved
+  store.in_file(utils.path_key(link_file))
+
+  -- The file appears; open it by its real path
+  vim.fn.writefile({ 'a', 'b', 'c', 'd' }, real_dir .. '/later.txt')
+  vim.cmd('edit ' .. vim.fn.fnameescape(real_dir .. '/later.txt'))
+  local real_buf = vim.fn.bufnr()
+  local listed = store.in_file(utils.path_key(vim.api.nvim_buf_get_name(real_buf)))
+  local found = false
+  for _, c in ipairs(listed) do
+    if c.id == id then found = true end
+  end
+  local has_sign = has_sign_on_line(real_buf, 3)
+  vim.cmd('buffer ' .. orig_buf)
+  vim.cmd('bwipeout! ' .. real_buf)
+  qf.clear_review()
+  vim.fn.delete(root, 'rf')
+
+  assert.truthy(found, 'in_file lists the comment under the resolved path')
+  assert.truthy(has_sign, 'sign on line 3 of the now-existing file')
+end)
+
 assert.run_test('refresh_buffer_signs skips lines past the end of the buffer', function()
   qf.clear_review()
   local bufnr = vim.fn.bufnr()

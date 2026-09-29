@@ -206,9 +206,11 @@ local function comments_on_line()
   local comments = {}
   local start_of = {}
   local bufnr = vim.api.nvim_get_current_buf()
-  for _, item in ipairs(store.all()) do
+  store.all()
+  if file == '' then return comments end
+  for _, item in ipairs(store.in_file(utils.path_key(file))) do
     local lnum, end_lnum = utils.range_in(item, bufnr)
-    if lnum and lnum <= line and end_lnum >= line and utils.files_match(item.filename, file) then
+    if lnum and lnum <= line and end_lnum >= line then
       table.insert(comments, item)
       start_of[item] = lnum
     end

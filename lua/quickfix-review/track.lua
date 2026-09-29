@@ -16,9 +16,13 @@
 -- FileChangedShellPost; each comment then gets a tracking extmark (namespace
 -- quickfix-review-track, never cleared wholesale) that follows in-session
 -- edits and becomes invalid when its whole range is deleted. Files not
--- loaded are relocated from disk, cached by (path, size, mtime). Both
--- caches are keyed by the comment's anchor too, so a changed anchor (a
--- re-anchor, or another instance's synced update) is relocated afresh. Diff
+-- loaded are relocated from disk, read once per (path, size, mtime).
+-- This module is the single source of truth for positions: one cache
+-- (`cache`, keyed by file and by the buffer's changedtick or the file's
+-- stat, and per comment by its anchor, so a changed anchor from a
+-- re-anchor or another instance's synced update is relocated afresh)
+-- serves M.pos and M.positions, which signs, the quickfix view, the float
+-- and export all read. Every caller gets a fresh table. Diff
 -- buffers (fugitive, diffview, codediff) hold an old revision and are never
 -- relocated from.
 local M = {}
@@ -242,43 +246,57 @@ end
 local marks = {}
 -- Per buffer: { tick, lines, sha } of its content at changedtick `tick`
 local contents = {}
--- Per file path: { size, sec, nsec, ino, used, lines, sha,
--- pos = { id -> { key, pos } } } of an unloaded file, as last read, each
--- comment's pos with the anchor_key it was relocated from. At most FILES_MAX are kept; the least
--- recently used (lowest `used`) is dropped to make room.
+-- Per file path: { size, sec, nsec, ino, used, lines, sha } of an unloaded
+-- file, as last read. At most FILES_MAX are kept; the least recently used
+-- (lowest `used`) is dropped to make room.
 local files = {}
 local FILES_MAX = 32
 local files_count, files_clock = 0, 0
--- Inside M.batch: its depth, the buffer map ({ exact = name -> buf,
--- bykey = path_key -> buf }, built on first use) and the pos memo
--- (id -> { key, pos })
-local batch_depth, batch_bufs, batch_pos = 0, nil, nil
+-- The one cache of comment positions, the single source of truth for where
+-- a comment is now. Per utils.path_key of a file: { stamp, ids = { id ->
+-- { key, pos } } }. `stamp` names the content the positions were computed
+-- on: 'b<buf>:<changedtick>' for a loaded buffer holding the file, else
+-- 's<size>:<sec>:<nsec>:<ino>' for the file on disk, or 'missing'. An entry
+-- whose stamp no longer matches is dropped whole. Each pos is kept with the
+-- anchor_key it was computed from, so a changed anchor (which changes no
+-- stamp) is relocated afresh. Nothing outside this module holds a pos: every
+-- reader is handed a fresh copy.
+local cache = {}
+-- Inside M.batch: its depth and the buffer map ({ exact = name -> buf,
+-- bykey = path_key -> buf }, built on first use)
+local batch_depth, batch_bufs = 0, nil
 
 -- Forget everything (for tests); tracking extmarks are removed
 function M._reset()
   for id in pairs(marks) do M.forget(id) end
-  marks, contents, files = {}, {}, {}
+  marks, contents, files, cache = {}, {}, {}, {}
   files_count, files_clock = 0, 0
   hunks, hunks_count = {}, 0
-  batch_depth, batch_bufs, batch_pos = 0, nil, nil
+  batch_depth, batch_bufs = 0, nil
 end
 
--- Forget the cached content of `buf` (when it is wiped out)
-function M.forget_buffer(buf) contents[buf] = nil end
+-- Forget the cached content of `buf` (when it is wiped out), and the
+-- positions computed on it
+function M.forget_buffer(buf)
+  contents[buf] = nil
+  local prefix = 'b' .. buf .. ':'
+  for key, e in pairs(cache) do
+    if e.stamp:sub(1, #prefix) == prefix then cache[key] = nil end
+  end
+end
 
 -- Whether the content of `buf` is cached (for tests)
 function M._has_contents(buf) return contents[buf] ~= nil end
 
 -- Run fn(...) as a batch: until it returns, buffers are looked up in a map
--- built once, and each comment's pos is computed once. Only for loops that
--- read positions and never change a buffer. Reentrant.
+-- built once. Only for loops that read positions and never add, remove or
+-- rename a buffer. Reentrant.
 -- Returns: fn's results (an error is raised again)
 function M.batch(fn, ...)
   batch_depth = batch_depth + 1
-  if batch_depth == 1 then batch_pos = {} end
   local res = vim.F.pack_len(pcall(fn, ...))
   batch_depth = batch_depth - 1
-  if batch_depth == 0 then batch_bufs, batch_pos = nil, nil end
+  if batch_depth == 0 then batch_bufs = nil end
   if not res[1] then error(res[2], 0) end
   return unpack(res, 2, res.n)
 end
@@ -368,12 +386,19 @@ function M.forget(id)
 end
 
 -- Forget every comment not in `comments` (after a delete, a clear, or a
--- switch to another project's review)
+-- switch to another project's review): its tracking extmark and its cached
+-- position
 function M.prune(comments)
   local live = {}
   for _, c in ipairs(comments) do live[c.id] = true end
   for id in pairs(marks) do
     if not live[id] then M.forget(id) end
+  end
+  for key, e in pairs(cache) do
+    for id in pairs(e.ids) do
+      if not live[id] then e.ids[id] = nil end
+    end
+    if next(e.ids) == nil then cache[key] = nil end
   end
 end
 
@@ -455,12 +480,11 @@ local function from_mark(c)
   return make_pos(base.sha, lnum, end_lnum, state)
 end
 
--- The pos of `c` in its file on disk, cached by (path, size, mtime, inode)
--- and the comment's anchor.
+-- The pos of `c` in its file on disk (`st`, its fs_stat, or nil when it
+-- is missing), whose content is cached by (path, size, mtime, inode).
 -- A missing file makes a comment with a snapshot outdated.
-local function from_disk(c)
+local function from_disk(c, st)
   local path = c.filename
-  local st = uv.fs_stat(path)
   if not st or st.type ~= 'file' then
     drop_file(path)
     local a = c.anchor or c
@@ -473,65 +497,124 @@ local function from_disk(c)
     if not ok then lines = {} end
     f = {
       size = st.size, sec = st.mtime.sec, nsec = st.mtime.nsec, ino = st.ino,
-      lines = lines, sha = require('quickfix-review.snapshots').hash(lines), pos = {},
+      lines = lines, sha = require('quickfix-review.snapshots').hash(lines),
     }
     store_file(path, f)
   end
   files_clock = files_clock + 1
   f.used = files_clock
-  local key = anchor_key(c)
-  local cached = f.pos[c.id]
-  if cached and cached.key == key then return cached.pos end
-  local pos = M.relocate(c, f.lines, f.sha)
-  f.pos[c.id] = { key = key, pos = pos }
-  return pos
+  return M.relocate(c, f.lines, f.sha)
 end
 
--- The pos of comment `c` now (also stored as c.pos). From its tracking
--- extmark in a loaded buffer of its file (relocating and placing one if it
--- has none there yet), else from the file on disk.
-function M.pos(c)
-  local key = batch_depth > 0 and anchor_key(c)
-  if key then
-    local memo = batch_pos[c.id]
-    if memo and memo.key == key then
-      local p = memo.pos
-      c.pos = make_pos(p.sha, p.lnum, p.end_lnum, p.state)
-      return c.pos
-    end
+-- The loaded buffer holding `c`'s tracking extmark, when it still holds
+-- the file the extmark was placed in
+local function mark_buf(c)
+  local m = marks[c.id]
+  if m and vim.api.nvim_buf_is_loaded(m.buf) and vim.api.nvim_buf_get_name(m.buf) == m.name then
+    return m.buf
   end
+  return nil
+end
+
+-- What `c`'s position is computed on now: the loaded buffer holding its
+-- file (the one its tracking extmark is in, if any), else the file on disk.
+-- Returns: stamp (see `cache`), buf or nil, fs_stat or nil
+local function source_of(c)
+  local buf = mark_buf(c) or buf_for(c.filename)
+  if buf then
+    return 'b' .. buf .. ':' .. vim.api.nvim_buf_get_changedtick(buf), buf, nil
+  end
+  local st = uv.fs_stat(c.filename)
+  if not st or st.type ~= 'file' then return 'missing', nil, nil end
+  return string.format('s%d:%d:%d:%d', st.size, st.mtime.sec, st.mtime.nsec, st.ino), nil, st
+end
+
+-- The cache entry of `path_key` for `stamp`, emptied when its stamp is
+-- another's
+local function entry(path_key, stamp)
+  local e = cache[path_key]
+  if not e or e.stamp ~= stamp then
+    e = { stamp = stamp, ids = {} }
+    cache[path_key] = e
+  end
+  return e
+end
+
+local function copy(p) return make_pos(p.sha, p.lnum, p.end_lnum, p.state) end
+
+-- The pos of comment `c` now, a fresh table. Read from the position cache
+-- while the content it was computed on and the comment's anchor are
+-- unchanged; else from its tracking extmark in a loaded buffer of its file
+-- (relocating and placing one if it has none there yet), else from the
+-- file on disk.
+function M.pos(c)
+  local path_key = utils.path_key(c.filename)
+  local stamp, buf, st = source_of(c)
+  local e = entry(path_key, stamp)
+  local key = anchor_key(c)
+  local hit = e.ids[c.id]
+  if hit and hit.key == key then return copy(hit.pos) end
   local pos = from_mark(c)
   if not pos then
-    local buf = buf_for(c.filename)
     if buf then
       pos = place(c, buf)
     else
-      pos = from_disk(c)
+      pos = from_disk(c, st)
     end
   end
-  c.pos = make_pos(pos.sha, pos.lnum, pos.end_lnum, pos.state)
-  if key then batch_pos[c.id] = { key = key, pos = make_pos(pos.sha, pos.lnum, pos.end_lnum, pos.state) } end
-  return c.pos
+  e.ids[c.id] = { key = key, pos = copy(pos) }
+  return copy(pos)
+end
+
+-- Where every live comment on a file is now: `target` is a buffer number
+-- (its file, see utils.get_real_filepath) or a file path.
+-- Returns: a fresh { [comment id] = { sha, lnum, end_lnum, state } }
+function M.positions(target)
+  local name = type(target) == 'number' and utils.get_real_filepath(target) or target
+  if type(name) ~= 'string' or name == '' then return {} end
+  -- Required here: the store requires track (through snapshots)
+  local in_file = require('quickfix-review.store.view').in_file(utils.path_key(name))
+  local out = {}
+  M.batch(function()
+    for _, c in ipairs(in_file) do out[c.id] = M.pos(c) end
+  end)
+  return out
 end
 
 -- Relocate every comment in `comments` on the file `buf` holds, from the
--- buffer's content (after it is read or reloaded from disk). Diff buffers
--- and buffers that are not files are left alone.
--- Returns: whether any comment's pos changed
+-- buffer's content (after it is read, reloaded from disk, or saved). Diff
+-- buffers and buffers that are not files are left alone.
+-- Returns: whether any comment's pos changed from the last one computed
+-- (from its anchor, when none was)
 function M.relocate_buffer(buf, comments)
   if not is_real(buf) then return false end
   local file = vim.api.nvim_buf_get_name(buf)
-  local changed = false
+  local path_key = utils.path_key(file)
+  local stamp = 'b' .. buf .. ':' .. vim.api.nvim_buf_get_changedtick(buf)
+  -- Every comment's last pos, read before the entry is replaced below
+  local mine, before = {}, {}
+  local old = cache[path_key]
   for _, c in ipairs(comments) do
     if utils.files_match(c.filename, file) then
-      local before = c.pos
-      local pos = place(c, buf)
-      if not before or before.lnum ~= pos.lnum or before.end_lnum ~= pos.end_lnum
-          or before.state ~= pos.state then
-        changed = true
+      table.insert(mine, c)
+      local hit = old and old.ids[c.id]
+      if hit and hit.key == anchor_key(c) then
+        before[c.id] = hit.pos
+      else
+        local a = c.anchor or c
+        before[c.id] = make_pos(a.sha, a.lnum, a.end_lnum or a.lnum, 'current')
       end
-      c.pos = make_pos(pos.sha, pos.lnum, pos.end_lnum, pos.state)
     end
+  end
+  local e = entry(path_key, stamp)
+  local changed = false
+  for _, c in ipairs(mine) do
+    local b = before[c.id]
+    local pos = place(c, buf)
+    if b.lnum ~= pos.lnum or b.end_lnum ~= pos.end_lnum or b.state ~= pos.state then
+      changed = true
+    end
+    e.ids[c.id] = { key = anchor_key(c), pos = copy(pos) }
   end
   return changed
 end

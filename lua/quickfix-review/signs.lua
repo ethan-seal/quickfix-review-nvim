@@ -24,37 +24,37 @@ end
 
 -- Redraw signs in every loaded buffer from the current comments, and drop
 -- the tracking extmarks of comments that are gone
+-- (`comments` is the live list, store.all())
 function M.refresh_all(comments)
   track.prune(comments)
-  -- Each buffer is given only the comments on its file (by path_key, as
-  -- files_match compares), so the pass is not comments x buffers
-  local groups, keys = {}, {}
-  for _, c in ipairs(comments) do
-    local key = keys[c.filename]
-    if not key then
-      key = utils.path_key(c.filename)
-      keys[c.filename] = key
-    end
-    groups[key] = groups[key] or {}
-    table.insert(groups[key], c)
-  end
+  -- Each buffer is given only the comments on its file (the store's path
+  -- index, by path_key as files_match compares), so the pass is not
+  -- comments x buffers
   track.batch(function()
     for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
       if vim.api.nvim_buf_is_loaded(bufnr) then
         local name = utils.get_real_filepath(bufnr)
         if name ~= '' then
-          M.draw(bufnr, name, groups[utils.path_key(name)] or {})
+          M.draw(bufnr, name, store.in_file(utils.path_key(name)))
         end
       end
     end
   end)
 end
 
--- Buffer `buf` (showing `file`) was entered: redraw its signs only if it
--- changed since they were last drawn
-function M.on_buf_enter(buf, file, comments)
+-- Draw the signs of the live comments on `name` in `bufnr`. Syncs first.
+-- opts: as for store.all
+function M.draw_file(bufnr, name, opts)
+  store.all(opts)
+  M.draw(bufnr, name, store.in_file(utils.path_key(name)))
+end
+
+-- Buffer `buf` (showing `file`) was entered: sync, then redraw its signs
+-- only if it changed since they were last drawn (opts: as for store.all)
+function M.on_buf_enter(buf, file, opts)
+  store.all(opts)
   if drawn_at[buf] ~= vim.api.nvim_buf_get_changedtick(buf) then
-    M.draw(buf, file, comments)
+    M.draw(buf, file, store.in_file(utils.path_key(file)))
   end
 end
 
@@ -67,7 +67,7 @@ function M.schedule_redraw(buf)
     redraw_gen[buf] = nil
     if drawn_at[buf] == vim.api.nvim_buf_get_changedtick(buf) then return end
     local file = utils.get_real_filepath(buf)
-    if file ~= '' then M.draw(buf, file, store.all()) end
+    if file ~= '' then M.draw_file(buf, file) end
   end, REDRAW_DELAY)
 end
 

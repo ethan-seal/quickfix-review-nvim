@@ -645,7 +645,7 @@ assert.run_test('adding a comment gives it a 16 hex char id', function()
   local id = saved()[1].id
   assert.truthy(is_id(id), 'saved id is 16 hex chars: ' .. tostring(id))
   assert.equals(qf.comments()[1].id, id, 'memory has the same id')
-  assert.equals(require('quickfix-review.store').get(id), qf.comments()[1], 'store.get finds it')
+  assert.equals(require('quickfix-review.store').get(id).id, id, 'store.get finds it')
 end)
 
 assert.run_test('comments without ids get them on migration, logged once', function()

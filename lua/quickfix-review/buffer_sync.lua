@@ -39,7 +39,7 @@ local function relocate_buffer(bufnr, event)
   local relocated = moved_here
   -- Relocation moves only this buffer's comments: redraw its signs now
   local name = utils.get_real_filepath(bufnr)
-  if name ~= '' then signs.draw(bufnr, name, comments) end
+  if name ~= '' then signs.draw(bufnr, name, store.in_file(utils.path_key(name))) end
   -- The selected entry a quickfix jump reading this file is heading for
   -- (never jump_comment's own :edit)
   local item = jump.pending(bufnr, fresh)
@@ -68,10 +68,10 @@ local function relocate_buffer(bufnr, event)
   end
 end
 
--- Whether a comment's pos names other lines, or another version of its
--- file, than its anchor
-local function moved(c)
-  local a, p = c.anchor or {}, c.pos
+-- Whether `p`, comment `c`'s pos, names other lines, or another version
+-- of its file, than its anchor
+local function moved(c, p)
+  local a = c.anchor or {}
   return p.sha ~= a.sha or p.lnum ~= a.lnum or p.end_lnum ~= a.end_lnum
 end
 
@@ -114,7 +114,7 @@ local function write_back(bufnr, file)
     local pre
     for _, c in ipairs(mine) do
       local p = store.pos(c)
-      if p and p.state ~= 'outdated' and moved(c) then
+      if p and p.state ~= 'outdated' and moved(c, p) then
         if not pre then
           local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
           local sha, err = require('quickfix-review.snapshots').put(lines)
@@ -134,8 +134,8 @@ local function write_back(bufnr, file)
   end)
 
   if updated then
-    -- Place the marks from the new anchors (a changed record has a new view,
-    -- whose pos starts at its anchor), then redraw
+    -- Place the marks from the new anchors (a changed anchor is relocated
+    -- afresh, see track.relocate_buffer), then redraw
     track.relocate_buffer(bufnr, store.all(defer))
     store.refresh(defer)
   elseif relocated then

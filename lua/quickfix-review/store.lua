@@ -146,6 +146,13 @@ function M.all(opts)
   return view.comments()
 end
 
+-- The comments on the file whose utils.path_key is `key`, as of the last
+-- sync (none is run: call all() first to sync), in creation order. Treat
+-- as read-only.
+function M.in_file(key)
+  return view.in_file(key)
+end
+
 -- Add a comment
 -- Returns: true if it was added, false if it has no file or the change was refused
 function M.add(item)

@@ -170,9 +170,19 @@ function M.complete_ids(lead)
   return out
 end
 
--- All review comments, in creation order. Treat as read-only.
+-- All review comments, in creation order: copies, each with its current
+-- `pos` (see track.pos), so no caller holds shared position state
 function M.comments()
-  return store.all()
+  local out = {}
+  for i, c in ipairs(store.all()) do
+    local copy = {}
+    for k, v in pairs(c) do copy[k] = v end
+    -- Its own anchor: the live one is what track.pos relocates from
+    copy.anchor = c.anchor and vim.deepcopy(c.anchor)
+    copy.pos = store.pos(c)
+    out[i] = copy
+  end
+  return out
 end
 
 -- Save the review. Every change is already appended to the review's log as
@@ -456,10 +466,13 @@ function M.setup(opts)
   vim.api.nvim_create_autocmd('BufEnter', {
     group = augroup,
     callback = function(args)
-      local comments = store.all({ defer_view = true })
       local file = utils.get_real_filepath(args.buf)
-      if file == '' then return end
-      signs.on_buf_enter(args.buf, file, comments)
+      if file == '' then
+        -- Still sync: another Neovim's change is picked up on any BufEnter
+        store.all({ defer_view = true })
+        return
+      end
+      signs.on_buf_enter(args.buf, file, { defer_view = true })
     end
   })
 
@@ -485,7 +498,7 @@ function M.setup(opts)
     callback = function()
       local buf = vim.api.nvim_get_current_buf()
       local file = utils.get_real_filepath(buf)
-      if file ~= '' then signs.draw(buf, file, store.all()) end
+      if file ~= '' then signs.draw_file(buf, file) end
     end,
   })
   buffer_sync.mark_loaded()

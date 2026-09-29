@@ -178,8 +178,11 @@ beyond libc.
 
 The reducer keeps `state.index.by_id` (id → live comment record; the
 trash is already keyed by id) in memory, updated by every reducer function
-that changes `comments`. z2v4 adds a `by_path` index for positions.
-Indexes are never serialised: the state.json cache and the rotation
+that changes `comments`. The `by_path` index that z2v4 added for
+positions is not a reducer index: it is a view-side index in
+store/view.lua (`view.in_file` / `store.in_file`), built lazily from the
+live comments and cleared by `set_comments`, and it is never serialised
+either. Reducer indexes are never serialised: the state.json cache and the rotation
 checkpoint write only `comments`, `trash` and `removed`
 (`reduce.persisted`), and the index is rebuilt (`reduce.reindex`, O(n))
 when a checkpoint is applied or a cache is loaded. Duplicate checks and

@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-z2v4
 title: 'Single source of truth for comment positions: track.positions()'
-status: todo
+status: completed
 type: task
+priority: normal
 created_at: 2026-09-29T20:45:42Z
-updated_at: 2026-09-29T20:45:42Z
+updated_at: 2026-09-29T22:10:44Z
 blocked_by:
     - quickfix-review-nvim-b8r8
     - quickfix-review-nvim-ugnc

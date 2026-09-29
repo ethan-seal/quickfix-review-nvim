@@ -730,7 +730,8 @@ assert.run_test('a new comment is anchored to a snapshot of its buffer', functio
   same(a.after, { 'line 5', 'line 6' }, 'after')
   assert.equals(c.lnum, a.lnum, 'top-level lnum equals the anchor')
   assert.equals(c.end_lnum, a.end_lnum, 'top-level end_lnum equals the anchor')
-  same(c.pos, { sha = a.sha, lnum = 3, end_lnum = 4, state = 'current' }, 'pos starts at the anchor')
+  same(store.pos(c), { sha = a.sha, lnum = 3, end_lnum = 4, state = 'current' }, 'pos starts at the anchor')
+  same(c.pos, store.pos(c), 'comments() carries the same pos')
   local saved = test_helper.saved()[1]
   assert.equals(saved.anchor.sha, a.sha, 'anchor is logged')
   assert.equals(saved.pos, nil, 'pos is not logged')

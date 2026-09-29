@@ -3,6 +3,7 @@ local M = {}
 
 M.passed = 0
 M.failed = 0
+M.pending_count = 0
 M.current_test = nil
 
 -- Run a test with error handling
@@ -15,6 +16,23 @@ function M.run_test(name, fn)
   else
     M.failed = M.failed + 1
     print(string.format('  [FAIL] %s: %s', name, err))
+  end
+  M.current_test = nil
+end
+
+-- Run a test known to fail, for a bug left to a later change: its failure
+-- is reported as [PENDING] with `reason` and counted as neither passed
+-- nor failed. A pass is reported as [UNEXPECTED PASS] and counted as
+-- failed, so the test is turned into a run_test once the bug is fixed.
+function M.pending(name, reason, fn)
+  M.current_test = name
+  local ok, err = pcall(fn)
+  if ok then
+    M.failed = M.failed + 1
+    print(string.format('  [UNEXPECTED PASS] %s: now passes, make it a run_test (%s)', name, reason))
+  else
+    M.pending_count = M.pending_count + 1
+    print(string.format('  [PENDING] %s: %s (%s)', name, reason, err))
   end
   M.current_test = nil
 end
@@ -73,6 +91,7 @@ end
 function M.reset()
   M.passed = 0
   M.failed = 0
+  M.pending_count = 0
 end
 
 -- Print summary and return exit code
@@ -84,6 +103,7 @@ function M.summary()
   else
     print(string.format('Tests: %d passed, %d failed (total: %d)', M.passed, M.failed, total))
   end
+  if M.pending_count > 0 then print(string.format('Pending: %d', M.pending_count)) end
   return M.failed
 end
 

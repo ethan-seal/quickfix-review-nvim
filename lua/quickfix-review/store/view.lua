@@ -5,11 +5,20 @@
 local M = {}
 
 local record = require('quickfix-review.store.record')
+local utils = require('quickfix-review.utils')
 
 local QF_TITLE = 'Code Review Comments'
 
 -- The live comments, normalized: the view of the replayed log's comments
 local comments = {}
+-- The live comments by the utils.path_key of their file (see in_file); nil
+-- until first used after set_comments
+local by_path = nil
+-- The key in by_path of each filename whose path did not resolve when the
+-- index was built (its file or a directory on its path was missing), so
+-- in_file can notice when one now resolves to another key
+local unresolved = {}
+local EMPTY = setmetatable({}, { __newindex = function() error('read-only', 2) end })
 -- Id of the quickfix list showing the review, if one has been published
 local qf_id = nil
 local on_change = function(_) end
@@ -100,10 +109,9 @@ function M.view_of(r)
     c = record.normalize(r) or false
     if c then
       -- Derived, never logged: a comment from before anchors is anchored at
-      -- its line with no snapshot (the fallback search handles it), and
-      -- its display position starts at its anchor.
+      -- its line with no snapshot (the fallback search handles it). Its
+      -- position is never stored here: track.pos computes it.
       c.anchor = c.anchor or { lnum = c.lnum, end_lnum = c.end_lnum }
-      c.pos = { sha = c.anchor.sha, lnum = c.anchor.lnum, end_lnum = c.anchor.end_lnum, state = 'current' }
     end
     views[r] = c
   end
@@ -122,7 +130,50 @@ end
 function M.comments() return comments end
 
 -- Replace the comments (a sync read the log)
-function M.set_comments(list) comments = list end
+function M.set_comments(list)
+  comments = list
+  by_path = nil
+  unresolved = {}
+end
+
+-- The live comments on the file whose utils.path_key is `key`, in creation
+-- order (an empty list when none). Treat as read-only. The index is built
+-- on first use after the comments change. A path that did not resolve when
+-- it was built (a file not yet created) is checked again on each use, and
+-- the index is rebuilt once it resolves to another key, so it is never
+-- stale; when every path resolved, that check costs nothing.
+function M.in_file(key)
+  if by_path and next(unresolved) then
+    for filename, k in pairs(unresolved) do
+      if utils.path_key(filename) ~= k then
+        by_path = nil
+        break
+      end
+    end
+  end
+  if not by_path then
+    by_path = {}
+    unresolved = {}
+    local keys = {}
+    for _, c in ipairs(comments) do
+      local k = keys[c.filename]
+      if not k then
+        k = utils.path_key(c.filename)
+        keys[c.filename] = k
+        if not vim.uv.fs_realpath(vim.fn.fnamemodify(c.filename, ':p')) then
+          unresolved[c.filename] = k
+        end
+      end
+      local list = by_path[k]
+      if not list then
+        list = {}
+        by_path[k] = list
+      end
+      table.insert(list, c)
+    end
+  end
+  return by_path[key] or EMPTY
+end
 
 -- Called after any change to the comments, including ones read from disk
 function M.set_on_change(fn)

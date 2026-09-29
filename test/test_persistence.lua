@@ -1171,6 +1171,81 @@ assert.run_test('a state.json without `removed` (older cache) is replayed from t
   assert.equals(table.concat(store.last_removal().ids, ','), target, 'same after a cached restart')
 end)
 
+assert.run_test('state.json holds no index, and a cache is indexed on load', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('ISSUE')
+  vim.fn.cursor(3, 1)
+  qf.add_comment('NOTE')
+  local target = qf.comments()[2].id
+  qf = restart() -- writes the cache
+  local doc = vim.json.decode(read_bytes(test_helper.state_path()))
+  assert.truthy(type(doc.state) == 'table', 'the cache holds a state')
+  assert.equals(doc.state.index, nil, 'the cache holds no index')
+
+  -- An edited body proves the cache (not the log) is loaded; a stray index is ignored
+  local edited
+  for _, r in ipairs(doc.state.comments) do
+    if r.id == target then
+      r.body = 'from the cache'
+      edited = true
+    end
+  end
+  assert.truthy(edited, 'the comment is in the cache')
+  doc.state.index = { by_id = { bogus = { id = 'bogus', body = 'x' } } }
+  local fh = io.open(test_helper.state_path(), 'wb')
+  fh:write(vim.json.encode(doc))
+  fh:close()
+  qf = restart(nil, { no_flush = true })
+  local store = require('quickfix-review.store')
+  local c = store.get(target)
+  assert.truthy(c ~= nil, 'the comment is live')
+  assert.equals(c.body, 'from the cache', 'loaded from the cache')
+  local reduced = require('quickfix-review.store.journal').reduced()
+  assert.equals(require('quickfix-review.reduce').get(reduced, target).body, 'from the cache', 'reduce.get finds it')
+  assert.equals(require('quickfix-review.reduce').get(reduced, 'bogus'), nil, 'the stray index is ignored')
+  assert.equals(store.edit(target, 'edited again'), 'edited', 'an update finds it')
+  assert.equals(store.get(target).body, 'edited again', 'the update applied')
+  assert.equals(store.remove(target), 1, 'a delete finds it')
+  for _, x in ipairs(store.all()) do
+    assert.not_equals(x.id, target, 'deleted')
+  end
+end)
+
+assert.run_test('a state.json holding a record that is not a comment is rejected and the log replayed', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('ISSUE')
+  vim.fn.cursor(3, 1)
+  qf.add_comment('NOTE')
+  qf = restart() -- writes the cache
+  local doc = vim.json.decode(read_bytes(test_helper.state_path()))
+  local size = vim.uv.fs_stat(log_file).size
+  assert.equals(doc.offset, size, 'the cache covers the whole log')
+  -- Otherwise a valid cache of this log: one record with no id, one a number
+  table.insert(doc.state.comments, vim.empty_dict())
+  table.insert(doc.state.comments, 42)
+  local fh = io.open(test_helper.state_path(), 'wb')
+  fh:write(vim.json.encode(doc))
+  fh:close()
+  local ok, err = pcall(function()
+    qf = restart(nil, { no_flush = true })
+    require('quickfix-review.store').all()
+  end)
+  assert.truthy(ok, 'the sync does not raise: ' .. tostring(err))
+  local list = require('quickfix-review.store').all()
+  assert.length(list, 2, 'both comments, from a full replay')
+  local want = vim.tbl_map(function(c) return c.id end, saved())
+  local got = vim.tbl_map(function(c) return c.id end, list)
+  assert.equals(table.concat(got, ','), table.concat(want, ','), 'the log\'s comments')
+  local reduced = require('quickfix-review.store.journal').reduced()
+  assert.length(reduced.comments, 2, 'no bad record in the reduced state')
+  local reduce = require('quickfix-review.reduce')
+  for _, id in ipairs(want) do
+    assert.equals(reduce.get(reduced, id).id, id, 'reduce.get finds ' .. id)
+  end
+end)
+
 assert.run_test('a state.json whose offset lands mid-line is rejected and the log replayed', function()
   reset()
   vim.fn.cursor(1, 1)

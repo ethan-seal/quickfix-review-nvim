@@ -10,6 +10,11 @@
 -- the comments of one clear share its eid. Records are comment records in
 -- the storage format (storage.serialise), as they appear in the log.
 --
+-- `index` = { by_id = { [id] = record } } maps each live comment's id to its
+-- record in `comments`. It lives in memory only: every function here that
+-- changes `comments` keeps it current, M.reindex rebuilds it, and it is never
+-- serialised (encode M.persisted(state), not the state itself).
+--
 -- Rules:
 -- - add (and each comment of an import) of an id that is live or in the
 --   trash is ignored, so appending the same event twice changes nothing.
@@ -19,29 +24,49 @@
 --   unknown) comment live again with the logged content, and is ignored for a
 --   live one.
 -- - checkpoint (the first event of a rotated log) replaces the whole state
---   with its `state` ({ comments, trash, removed }); a malformed one is
---   ignored.
+--   with its `state` ({ comments, trash, removed }; any `index` there is
+--   ignored and rebuilt); a malformed one is ignored.
 local M = {}
 
 function M.new()
-  return { comments = {}, trash = {}, removed = {} }
+  return { comments = {}, trash = {}, removed = {}, index = { by_id = {} } }
 end
 
+-- Rebuild state.index from state.comments (O(n)); returns state. The first
+-- record of an id wins, as a lookup by scanning `comments` would give.
+function M.reindex(state)
+  local by_id = {}
+  for _, c in ipairs(state.comments) do
+    if by_id[c.id] == nil then by_id[c.id] = c end
+  end
+  state.index = { by_id = by_id }
+  return state
+end
+
+-- The serialisable part of state: everything but the in-memory index
+function M.persisted(state)
+  return { comments = state.comments, trash = state.trash, removed = state.removed }
+end
+
+-- A comment record: a table with a non-empty string id
 local function valid(record)
   return type(record) == 'table' and type(record.id) == 'string' and record.id ~= ''
 end
+M.valid = valid
 
-local function find(state, id)
-  for i, c in ipairs(state.comments) do
-    if c.id == id then return i, c end
+-- The position of record c in state.comments (O(n), by identity)
+local function position(state, c)
+  for i, x in ipairs(state.comments) do
+    if x == c then return i end
   end
   return nil
 end
 
 local function add(state, record)
   if not valid(record) then return 'invalid' end
-  if state.trash[record.id] or find(state, record.id) then return 'duplicate' end
+  if state.trash[record.id] or state.index.by_id[record.id] then return 'duplicate' end
   table.insert(state.comments, record)
+  state.index.by_id[record.id] = record
   return nil
 end
 
@@ -54,9 +79,19 @@ end
 
 -- Move a live comment to the trash, recording the removing event `ev`
 local function trash(state, id, ev)
-  local i, c = find(state, id)
-  if not i then return 'unknown' end
-  table.remove(state.comments, i)
+  local c = state.index.by_id[id]
+  if not c then return 'unknown' end
+  table.remove(state.comments, position(state, c))
+  -- A malformed checkpoint or cache may hold another record of this id: it
+  -- becomes the one found, as the first-wins reindex would give (O(n); rare)
+  local next_c
+  for _, x in ipairs(state.comments) do
+    if x.id == id then
+      next_c = x
+      break
+    end
+  end
+  state.index.by_id[id] = next_c
   state.trash[id] = c
   -- ts is informational: a hand-edited or foreign log may hold anything there
   table.insert(state.removed, { id = id, op = ev.op, eid = ev.eid, ts = type(ev.ts) == 'number' and ev.ts or nil })
@@ -84,8 +119,8 @@ end
 -- so a record held by an earlier state (or the caller) is never modified
 function handlers.update(state, ev)
   if type(ev.id) ~= 'string' then return 'invalid' end
-  local i, c = find(state, ev.id)
-  if not i then return 'unknown' end
+  local c = state.index.by_id[ev.id]
+  if not c then return 'unknown' end
   local new = {}
   for k, v in pairs(c) do new[k] = v end
   if type(ev.set) == 'table' then
@@ -98,7 +133,9 @@ function handlers.update(state, ev)
       if k ~= 'id' then new[k] = nil end
     end
   end
-  state.comments[i] = new
+  -- The position scan is O(n): records are replaced, so it cannot be cached
+  state.comments[position(state, c)] = new
+  state.index.by_id[ev.id] = new
   return nil
 end
 
@@ -120,10 +157,11 @@ end
 function handlers.restore(state, ev)
   if not valid(ev.comment) or (ev.id ~= nil and ev.id ~= ev.comment.id) then return 'invalid' end
   local id = ev.comment.id
-  if find(state, id) then return 'live' end
+  if state.index.by_id[id] then return 'live' end
   state.trash[id] = nil
   unremove(state, id)
   table.insert(state.comments, ev.comment)
+  state.index.by_id[id] = ev.comment
   return nil
 end
 
@@ -154,6 +192,7 @@ function handlers.checkpoint(state, ev)
     removed[i] = { id = e.id, op = e.op, eid = e.eid, ts = type(e.ts) == 'number' and e.ts or nil }
   end
   state.comments, state.trash, state.removed = comments, trashed, removed
+  M.reindex(state)
   return nil
 end
 
@@ -165,8 +204,7 @@ end
 
 -- The live record with this id, or nil
 function M.get(state, id)
-  local _, c = find(state, id)
-  return c
+  return state.index.by_id[id]
 end
 
 return M

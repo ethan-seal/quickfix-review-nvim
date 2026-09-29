@@ -146,6 +146,10 @@ assert.run_test('rotation keeps the state and the trash, and the new log is a ch
   assert.equals(records[2].op, 'checkpoint', 'checkpoint')
   local doc = vim.json.decode(table.concat(vim.fn.readfile(test_helper.state_path()), '\n'))
   assert.equals(doc.log_id, records[1].log_id, 'state.json is keyed to the new log')
+  assert.truthy(type(records[2].state) == 'table', 'the checkpoint holds a state')
+  assert.equals(records[2].state.index, nil, 'the checkpoint holds no index')
+  assert.truthy(type(doc.state) == 'table', 'state.json holds a state')
+  assert.equals(doc.state.index, nil, 'state.json holds no index')
   assert.length(vim.fn.glob(log_file .. '.rotating-*', true, true), 0, 'no temp file left')
 
   local after_add = ids_of(store.all())

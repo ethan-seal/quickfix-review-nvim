@@ -22,6 +22,15 @@ local function replay(events)
   return state, reasons
 end
 
+-- state.index.by_id matches one rebuilt from scratch, record for record
+local function check_index(state, what)
+  local fresh = reduce.reindex({ comments = state.comments, trash = state.trash, removed = state.removed })
+  assert.truthy(vim.deep_equal(state.index.by_id, fresh.index.by_id), 'by_id equal to a rebuild: ' .. what)
+  for id, c in pairs(fresh.index.by_id) do
+    assert.truthy(state.index.by_id[id] == c, 'by_id[' .. id .. '] is the live record: ' .. what)
+  end
+end
+
 local function ids(state)
   local out = {}
   for i, c in ipairs(state.comments) do out[i] = c.id end
@@ -209,11 +218,12 @@ assert.run_test('unknown ops and malformed events change nothing', function()
   assert.equals(why[2], 'unknown op', 'unknown op reported')
   assert.equals(why[3], 'invalid', 'record without an id')
   assert.equals(why[4], 'invalid', 'delete without an id')
+  check_index(state, 'after ignored events')
 end)
 
 -- The state of `events`, round-tripped through JSON as a checkpoint is
 local function as_checkpoint(state)
-  local decoded = vim.json.decode(vim.json.encode({ op = 'checkpoint', eid = 'cp', ts = 9, state = state }),
+  local decoded = vim.json.decode(vim.json.encode({ op = 'checkpoint', eid = 'cp', ts = 9, state = reduce.persisted(state) }),
     { luanil = { object = true, array = true } })
   return decoded
 end
@@ -275,7 +285,77 @@ assert.run_test('a malformed checkpoint is ignored and changes nothing', functio
     local state, why = replay(vim.list_extend(vim.deepcopy(base), { bad }))
     assert.equals(why[2], 'invalid', 'case ' .. i .. ' invalid')
     assert.equals(ids(state), 'a', 'case ' .. i .. ' unchanged')
+    check_index(state, 'malformed checkpoint ' .. i)
   end
+end)
+
+assert.run_test('by_id stays equal to a rebuild after every op', function()
+  local state = reduce.new()
+  local events = {
+    { op = 'header', log_id = 'x', v = 1 },
+    { op = 'add', comment = rec('a') },
+    { op = 'add', comment = rec('a', 'dup') },
+    { op = 'import', comments = { rec('b'), rec('c'), rec('b', 'dup in import'), rec('d') } },
+    { op = 'update', id = 'b', set = { body = 'B' } },
+    { op = 'update', id = 'zz', set = { body = 'nope' } },
+    { op = 'delete', id = 'a', eid = 'e1', ts = 1 },
+    { op = 'delete', id = 'a', eid = 'e2', ts = 2 },
+    { op = 'clear', comments = { rec('c'), rec('d') }, eid = 'e3', ts = 3 },
+    { op = 'restore', id = 'c', comment = rec('c') },
+    { op = 'restore', id = 'c', comment = rec('c', 'live') },
+    { op = 'add', comment = rec('e') },
+  }
+  for i, ev in ipairs(events) do
+    reduce.apply(state, ev)
+    check_index(state, 'event ' .. i .. ' (' .. ev.op .. ')')
+  end
+  assert.equals(ids(state), 'b,c,e', 'ops applied')
+  assert.equals(reduce.get(state, 'b').body, 'B', 'get sees the updated record')
+  assert.equals(reduce.get(state, 'a'), nil, 'deleted id not live')
+
+  reduce.apply(state, as_checkpoint(state))
+  check_index(state, 'checkpoint')
+  reduce.apply(state, { op = 'update', id = 'e', set = { body = 'E' } })
+  check_index(state, 'update after checkpoint')
+  assert.equals(reduce.get(state, 'e').body, 'E', 'get after checkpoint')
+end)
+
+assert.run_test('a checkpoint carrying an index has it rebuilt', function()
+  local state = replay({
+    { op = 'checkpoint', state = { comments = { rec('a'), rec('b') }, trash = {}, removed = {},
+      index = { by_id = { zz = rec('zz') } } } },
+  })
+  check_index(state, 'checkpoint with bogus index')
+  assert.equals(reduce.get(state, 'zz'), nil, 'bogus entry dropped')
+  assert.equals(reduce.get(state, 'b').id, 'b', 'real entry indexed')
+end)
+
+assert.run_test('deleting one of duplicate ids indexes the next copy', function()
+  local state = replay({
+    { op = 'checkpoint', state = { comments = { rec('a', 'first'), rec('b'), rec('a', 'second') }, trash = {},
+      removed = {} } },
+  })
+  assert.equals(reduce.get(state, 'a').body, 'first', 'the first copy wins')
+  reduce.apply(state, { op = 'delete', id = 'a', eid = 'd1' })
+  check_index(state, 'after deleting the first copy')
+  assert.equals(reduce.get(state, 'a').body, 'second', 'the second copy is found')
+end)
+
+assert.run_test('persisted state has no index', function()
+  local state = replay({ { op = 'add', comment = rec('a') } })
+  local decoded = vim.json.decode(vim.json.encode(reduce.persisted(state)))
+  assert.equals(decoded.index, nil, 'no index key')
+  assert.equals(decoded.comments[1].id, 'a', 'comments kept')
+end)
+
+assert.run_test('replaying 5000 adds is fast', function()
+  local events = {}
+  for i = 1, 5000 do events[i] = { op = 'add', comment = rec('c' .. i) } end
+  local t0 = vim.uv.hrtime()
+  local state = replay(events)
+  local ms = (vim.uv.hrtime() - t0) / 1e6
+  assert.equals(#state.comments, 5000, 'all added')
+  assert.truthy(ms < 1000, 'replay took ' .. ms .. ' ms')
 end)
 
 test_helper.cleanup_test_environment()

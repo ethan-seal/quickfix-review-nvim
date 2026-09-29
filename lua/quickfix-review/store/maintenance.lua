@@ -133,7 +133,7 @@ function M.rotate(loc)
     end
     reduce.apply(state, ev)
   end
-  local checkpoint = log.event('checkpoint', { state = state, imports = vim.tbl_keys(imports) })
+  local checkpoint = log.event('checkpoint', { state = reduce.persisted(state), imports = vim.tbl_keys(imports) })
 
   local mode = bit.band(old.mode, 511)
   local tmp = loc.log .. '.rotating-' .. uv.os_getpid()

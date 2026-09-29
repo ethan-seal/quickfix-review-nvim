@@ -117,7 +117,7 @@ function M.flush(force)
   if not synced.log_id or (unsaved == 0 and not force) then return true, nil end
   local doc = {
     log_id = synced.log_id, offset = synced.offset, lines = synced.lines,
-    imports = vim.tbl_keys(synced.imports), state = reduced,
+    imports = vim.tbl_keys(synced.imports), state = reduce.persisted(reduced),
   }
   local ok, encoded = pcall(vim.json.encode, doc)
   if not ok then return false, 'could not encode the review cache' end
@@ -156,9 +156,14 @@ local function load_cache(loc, stat, base)
   if log.read_id(loc.log) ~= doc.log_id then return nil end
   -- A log rewritten in place may keep its log_id: an offset mid-line is stale
   if not log.at_line_start(loc.log, doc.offset) then return nil end
+  -- A record that is not a comment (hand-edited, foreign) cannot be indexed:
+  -- replay the log instead
+  for _, c in ipairs(st.comments) do
+    if not reduce.valid(c) then return nil end
+  end
   base.log_id, base.offset, base.lines = doc.log_id, doc.offset, doc.lines
   for _, sha in ipairs(is_list(doc.imports) and doc.imports or {}) do base.imports[sha] = true end
-  return { comments = st.comments, trash = st.trash, removed = st.removed }
+  return reduce.reindex({ comments = st.comments, trash = st.trash, removed = st.removed })
 end
 
 -- Bring `reduced` up to date with the log: read its tail, or replay it (from

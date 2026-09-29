@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-co2g
 title: 'Reducer: in-memory by_id index replacing linear find'
-status: todo
+status: completed
 type: task
 priority: normal
 created_at: 2026-09-29T21:06:50Z
-updated_at: 2026-09-29T21:06:50Z
+updated_at: 2026-09-29T21:49:10Z
 blocking:
     - quickfix-review-nvim-un0y
 ---

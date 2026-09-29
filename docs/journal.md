@@ -176,11 +176,16 @@ beyond libc.
 
 ## Indexes
 
-The reducer keeps `by_id` (id → comment or trash record) in memory, updated
-as each event is applied. z2v4 adds a `by_path` index for positions.
-Indexes are never serialised: they are rebuilt from the state when a
-checkpoint loads (O(n)). This removes the linear `find` in reduce.lua and
-the O(n²) cost of adding many comments.
+The reducer keeps `state.index.by_id` (id → live comment record; the
+trash is already keyed by id) in memory, updated by every reducer function
+that changes `comments`. z2v4 adds a `by_path` index for positions.
+Indexes are never serialised: the state.json cache and the rotation
+checkpoint write only `comments`, `trash` and `removed`
+(`reduce.persisted`), and the index is rebuilt (`reduce.reindex`, O(n))
+when a checkpoint is applied or a cache is loaded. Duplicate checks and
+lookups are O(1), which removes the O(n²) cost of adding many comments;
+update and delete still scan `comments` for the record's position, since
+records are replaced rather than changed in place.
 
 ## Snapshots
 

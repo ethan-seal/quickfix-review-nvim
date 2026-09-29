@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-7dv8
 title: 'Tracking: range end lost at EOF (delete+undo after reload; last-line delete reads ''shifted'')'
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-09-29T22:11:02Z
-updated_at: 2026-09-29T22:11:02Z
+updated_at: 2026-09-29T23:37:18Z
 ---
 
 **Symptom**: comment ranges touching the last line of a file lose their end.

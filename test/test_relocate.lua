@@ -23,6 +23,9 @@ local function rewrite(lines)
   vim.fn.writefile(lines, abs)
   vim.api.nvim_set_current_buf(file_buf)
   vim.cmd('silent edit!')
+  -- Start a new undo block, as typing after a reload does: otherwise the
+  -- next edit joins the reload's block and an undo reverts both
+  vim.cmd('let &undolevels = &undolevels')
 end
 
 -- A fresh review with the test file as TEN, loaded
@@ -152,36 +155,87 @@ assert.run_test('deleting a commented line then undoing makes it current again',
   assert.equals(end_lnum, 5, 'ends on line 5 after undo')
 end)
 
--- Reproduces only after the buffer was reloaded from a shorter file (as
--- after an external change): with no such reload, undo restores the mark
-assert.pending('deleting a range that ends at EOF then undoing restores it',
-  'known bug, left for a follow-up bean: the tracking extmark ends at (end_lnum, col 0), '
-    .. 'past the last line (track.lua place/from_mark), and after a reload from a shorter '
-    .. 'file undo does not restore that end, so 9-10 comes back as 9-9 shifted; '
-    .. 'single-sourcing positions does not fix it',
-  function()
-    qf.clear_review()
-    rewrite({ 'line 1', 'line 2' })
-    rewrite(TEN)
-    qf.add_comment('ISSUE', { 9, 10 })
-    local c = qf.comments()[1]
+-- After a reload from a shorter file (as after an external change); the
+-- undo break in rewrite() stands in for the user typing after the reload
+assert.run_test('deleting a range that ends at EOF then undoing restores it', function()
+  qf.clear_review()
+  rewrite({ 'line 1', 'line 2' })
+  rewrite(TEN)
+  qf.add_comment('ISSUE', { 9, 10 })
+  local c = qf.comments()[1]
 
-    vim.cmd('normal! 9G2dd')
-    local deleted = store.pos(c).state
+  vim.cmd('normal! 9G2dd')
+  local deleted = store.pos(c).state
 
-    vim.cmd('silent undo')
-    local pos = store.pos(c)
-    local lnum, end_lnum = store.range(c)
-    local p = track.positions(file_buf)[c.id]
-    vim.cmd('silent edit!')
+  vim.cmd('silent undo')
+  local pos = store.pos(c)
+  local lnum, end_lnum = store.range(c)
+  local p = track.positions(file_buf)[c.id]
+  vim.cmd('silent edit!')
 
-    assert.equals(deleted, 'outdated', 'outdated after deleting lines 9-10')
-    assert.equals(lnum, 9, 'on line 9 after undo')
-    assert.equals(end_lnum, 10, 'ends on line 10 after undo')
-    assert.equals(pos.state, 'current', 'current after undo')
-    assert.truthy(p and p.lnum == 9 and p.end_lnum == 10 and p.state == 'current',
-      'positions() agrees after undo')
-  end)
+  assert.equals(deleted, 'outdated', 'outdated after deleting lines 9-10')
+  assert.equals(lnum, 9, 'on line 9 after undo')
+  assert.equals(end_lnum, 10, 'ends on line 10 after undo')
+  assert.equals(pos.state, 'current', 'current after undo')
+  assert.truthy(p and p.lnum == 9 and p.end_lnum == 10 and p.state == 'current',
+    'positions() agrees after undo')
+end)
+
+local FOUR = { 'line 1', 'line 2', 'line 3', 'line 4' }
+
+-- A fresh review with the test file as FOUR and a comment on 3-4
+local function four_with_eof_range()
+  qf.clear_review()
+  rewrite(FOUR)
+  qf.add_comment('ISSUE', { 3, 4 })
+  return qf.comments()[1]
+end
+
+assert.run_test('deleting a whole range at EOF then undoing makes it current again', function()
+  local c = four_with_eof_range()
+
+  vim.cmd('normal! 3G2dd')
+  local deleted = store.pos(c).state
+
+  vim.cmd('silent undo')
+  local pos = store.pos(c)
+  local lnum, end_lnum = store.range(c)
+  local p = track.positions(file_buf)[c.id]
+  vim.cmd('silent edit!')
+
+  assert.equals(deleted, 'outdated', 'outdated after deleting lines 3-4')
+  assert.equals(lnum, 3, 'on line 3 after undo')
+  assert.equals(end_lnum, 4, 'ends on line 4 after undo')
+  assert.equals(pos.state, 'current', 'current after undo')
+  assert.truthy(p and p.lnum == 3 and p.end_lnum == 4 and p.state == 'current',
+    'positions() agrees after undo')
+end)
+
+assert.run_test("deleting only a range's last line at EOF makes it outdated", function()
+  local c = four_with_eof_range()
+  vim.cmd('normal! 4Gdd')
+  local state = store.pos(c).state
+  vim.cmd('silent edit!')
+  assert.equals(state, 'outdated', 'outdated after 4Gdd')
+end)
+
+assert.run_test('changing both lines of a range at EOF into one makes it outdated', function()
+  local c = four_with_eof_range()
+  vim.cmd('normal! 3Gcjxx')
+  local state = store.pos(c).state
+  vim.cmd('silent edit!')
+  assert.equals(state, 'outdated', 'outdated after 3Gcjxx')
+end)
+
+assert.run_test("deleting a mid-file range's last line makes it outdated", function()
+  fresh()
+  qf.add_comment('ISSUE', { 4, 5 })
+  local c = qf.comments()[1]
+  vim.cmd('normal! 5Gdd')
+  local state = store.pos(c).state
+  vim.cmd('silent edit!')
+  assert.equals(state, 'outdated', 'outdated after 5Gdd')
+end)
 
 assert.run_test('dd on a commented line: sign and view agree without a save', function()
   fresh()

@@ -484,7 +484,12 @@ local function from_mark(c)
   local state = base.state
   if state ~= 'outdated' then
     local a = c.anchor or c
-    state = (lnum == a.lnum and end_lnum == (a.end_lnum or a.lnum)) and 'current' or 'shifted'
+    if end_lnum - lnum ~= (base.end_lnum or base.lnum) - base.lnum then
+      -- A valid mark whose span changed had lines deleted or inserted inside the range
+      state = 'outdated'
+    else
+      state = (lnum == a.lnum and end_lnum == (a.end_lnum or a.lnum)) and 'current' or 'shifted'
+    end
   end
   return make_pos(base.sha, lnum, end_lnum, state)
 end

@@ -219,7 +219,7 @@ Neovim still running the old code cannot keep writing to the old log.
 Under both the v2 mkdir lock (old instances respect it) and the new flock:
 
 1. List the v2 files oldest first: `log.<ms>.jsonl` by ms, then `log.jsonl`.
-   Include any `.torn-*` files in their time position.
+   `.torn-*` files are skipped (see "As implemented", 2b).
 2. Hard-link each into `events/` as `000001.jsonl`, `000002.jsonl`, and so
    on. The bytes are unchanged, so they keep their v2 headers.
 3. Start a fresh v3 active segment `N+1` with a new `journal_id`. The first
@@ -253,8 +253,8 @@ redone. A crash after step 6 leaves a complete v3 journal, and step 7
 cleanup is idempotent.
 
 **Downgrade.** Not supported automatically. The v2 bytes are all in
-`events/`, so a manual rollback is `ln events/<last>.jsonl log.jsonl` (the
-last v2 segment). Document this in the README.
+`events/`, so a manual rollback is `ln -f events/<last>.jsonl log.jsonl`
+(the last v2 segment). Documented in the README and the help.
 
 ### Later format changes
 
@@ -272,6 +272,92 @@ last v2 segment). Document this in the README.
   a deprecation note.
 - `log_retention_days` is removed, because events are permanent. When it is
   set, warn once and ignore it.
+
+## As implemented (bean un0y)
+
+Corrections to the plan above, and where the code differs from it.
+
+**Corrections**
+
+- **2a. `log.pid_alive` stays.** The mkdir lock (the fallback backend, and
+  the lock v2 instances take) still uses it to judge a stale lock.
+- **2b. `.torn-*` files are not migrated.** They hold no finished event (a
+  torn v2 log is one whose only content is a partial first record), so
+  linking them in would only add undecodable lines. They are left in place.
+- **2c. Rotated logs are deduplicated by inode.** A v2 rotation that
+  crashed after its `link` leaves `log.<ms>.jsonl` and `log.jsonl` as one
+  inode; it is linked in once, at its latest position.
+- **2d. Both locks: the mkdir lock inside the flock** (`lock.with_both`).
+  Where the mkdir lock is itself the backend, it is taken once. Every write
+  to a review that is not yet a v3 journal takes both, so v2 instances are
+  excluded from the migration and from v2-mode writes.
+- **2e. Crash recovery keys on the tombstone,** not on the state of
+  `events/`. While `log.jsonl` is a v2 log, any `events/` that is only a
+  half-built migration (segments 1..N as linked, at most a `migrated_from`
+  segment N+1 holding just its header) is removed and the migration redone.
+  A journal holding anything else beside a v2 `log.jsonl` is a native one:
+  it is loaded and the v2 log ignored with one warning.
+- **2f. The abort path deletes `events/` and `checkpoints/`.** This is the
+  one place besides checkpoint GC that deletes checkpoints; it only runs
+  while the v2 log is still the review, under both locks.
+- **2g. `journal_id` checks exempt the migrated segments.** Segments
+  1..`migrated_from.segments` keep their v2 headers (a `log_id`, no
+  `journal_id`); every later segment must carry the journal's id.
+- **2h. Segments are created with a temp file and `link(2)`**
+  (`segment.create`): the header (and, for a new review, its import) is
+  written to `events.tmp.<pid>`, fsynced, and linked to its segment name.
+  `link` fails with EEXIST when another Neovim created that segment first,
+  so a segment is never created twice, never seen without its header, and
+  never renamed over.
+
+**Other decisions**
+
+- The journal interface is narrowed: `store/migrate.lua` and
+  `store/sync.lua` no longer call `journal.reset/reduced/synced/set_readonly/
+  unsaved`; they use `switch`, `load`, `load_v2`, `load_readonly`,
+  `read_tail`, `create`, `append` and the state views.
+- **New reviews are born v3.** The first change (or the `comments.json` /
+  legacy import) creates `events/000001.jsonl`; no `log.jsonl` is written.
+- **The legacy import follows the legacy review's journal**: with
+  `storage_file` once set to the legacy global file, its review is read from
+  `<legacy>.events/` when that exists, else from `<legacy>.log.jsonl`
+  (unless that is a tombstone).
+- **Step 7 leaves the mkdir lock dir alone**: the migration holds it, and
+  its holder removes it on release, as with every v2 write.
+- **A stray `state.json`** beside a v3 journal is ignored and deleted at
+  load.
+- **`:ReviewSave` writes a checkpoint** (always, for a v3 journal).
+  `VimLeavePre` still calls `store.flush()`, which writes a checkpoint only
+  when events were read since the last one. For a review still in v2 (its
+  migration failed this session) both are no-ops.
+- **Code layout.** Segment files (listing, paths, `.refs`, `create`, durable
+  writes) are in `store/segment.lua`; checkpoint encoding, validation,
+  choosing, writing and GC in `store/checkpoint.lua`.
+- **Checkpoints carry `lines`** (the line count at their offset) besides
+  `seg` and `offset`, so warnings about unreadable lines keep their line
+  numbers after a load from a checkpoint.
+- **The tail read checks the inode** of the active segment: a segment
+  replaced by another file (e.g. the journal deleted and started again by
+  another Neovim) makes the journal reload from the start.
+- **A no-op sync makes 2 stats**: the active segment, and segment N+1 (to
+  notice a seal by another Neovim).
+- **No checkpoint on switching projects**; the one on exit is only for the
+  review open then.
+- **A review that could not be migrated is read in v2 mode**: `log.jsonl`
+  replayed (no `state.json` cache any more), written under both locks, and
+  the migration retried next session.
+- **Tests.** The v2 tests of in-place log rewrites (truncation, a
+  replacement log with the same size) are replaced by "a journal replaced by
+  another one is loaded from the start": segments are never rewritten in
+  place. `test_rotation.lua` is replaced by `test_sealing.lua`.
+- **`:ReviewHistory`** reads segments newest first and stops once it has
+  50 events (all events), or, for one comment, at a segment that starts with
+  a v2 checkpoint that does not know the comment.
+
+**Unknown #1** is settled: a v2 instance refuses the tombstone (it is too
+new), does not move it aside and does not start a fresh log
+(test/test_migrate.lua; the test passed against the v2 code before this
+change).
 
 ## Documented unknowns (settle empirically in the beans)
 

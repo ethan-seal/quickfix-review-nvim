@@ -1,21 +1,31 @@
--- The append-only event log that holds a review: log.jsonl, one JSON object
--- per line, each line ending in \n. The first line is a header,
--- {"op":"header","log_id":"<16 hex>","v":2}; every other line is an event
--- (see reduce.lua for what each op means). Events carry `eid` (a per-process
--- nonce, "-", a counter) and `ts` (unix ms, informational only): the order of
--- events is the order of the lines.
+-- The append-only event segments that hold a review (docs/journal.md): one
+-- JSON object per line, each line ending in \n. A segment's first line is a
+-- header; every other line is an event (see reduce.lua for what each op
+-- means). Events carry `eid` (a per-process nonce, "-", a counter) and `ts`
+-- (unix ms, informational only): the order of events is the order of the
+-- lines, segment after segment.
 --
--- Nothing in the log is ever rewritten, so no change can lose data. Readers
--- are tolerant: a line that fails to decode is skipped (with a warning), and
--- bytes after the last \n (another process's write in flight) are left for a
--- later read.
+-- Headers:
+-- - v3 segment: {"op":"header","v":3,"journal_id":"<16 hex>","seg":N}, the
+--   first v3 segment of a migrated journal also with
+--   "migrated_from":{"segments":M}
+-- - v2 log (a migrated v2 segment, or an unmigrated log.jsonl):
+--   {"op":"header","log_id":"<16 hex>","v":2}
+-- - the v2 tombstone left in log.jsonl by the migration:
+--   {"op":"header","v":3,"log_id":"<old id>","moved_to":"events/"}
+--
+-- Nothing in a segment is ever rewritten, so no change can lose data.
+-- Readers are tolerant: a line that fails to decode is skipped (with a
+-- warning), and bytes after the last \n (another process's write in flight)
+-- are left for a later read.
 local M = {}
 
 local uv = vim.uv or vim.loop
 
--- The log format. 2: logs may hold a checkpoint event (rotation). A log
--- whose header has a higher v is refused (never shown empty, nor appended to).
-M.VERSION = 2
+-- The log format. 2: logs may hold a checkpoint event (rotation). 3:
+-- numbered segments with a journal_id (docs/journal.md). A log whose header
+-- has a higher v is refused (never shown empty, nor appended to).
+M.VERSION = 3
 
 local function hex(bytes)
   return (bytes:gsub('.', function(b) return string.format('%02x', b:byte()) end))
@@ -40,12 +50,33 @@ function M.event(op, fields)
   return ev
 end
 
-function M.new_header()
-  return { op = 'header', log_id = hex(assert(uv.random(8))), v = M.VERSION }
+-- A new journal's id
+function M.new_journal_id()
+  return hex(assert(uv.random(8)))
 end
 
+-- The header of v3 segment `seg` of the journal `journal_id`; `extra`
+-- fields (migrated_from) are added
+function M.segment_header(journal_id, seg, extra)
+  local h = { op = 'header', v = M.VERSION, journal_id = journal_id, seg = seg }
+  for k, v in pairs(extra or {}) do h[k] = v end
+  return h
+end
+
+-- A v2 log header, as log.jsonl started with before v3 (test fixtures)
+function M.v2_header()
+  return { op = 'header', log_id = hex(assert(uv.random(8))), v = 2 }
+end
+
+local function nonempty(s) return type(s) == 'string' and s ~= '' end
+
 local function is_header(ev)
-  return type(ev) == 'table' and ev.op == 'header' and type(ev.log_id) == 'string' and ev.log_id ~= ''
+  return type(ev) == 'table' and ev.op == 'header' and (nonempty(ev.log_id) or nonempty(ev.journal_id))
+end
+
+-- Whether header `h` is the tombstone a v2 -> v3 migration leaves in log.jsonl
+function M.is_tombstone(h)
+  return type(h) == 'table' and h.moved_to ~= nil
 end
 
 -- A header written by a newer version of the plugin, in a format this one
@@ -53,6 +84,7 @@ end
 local function too_new(ev)
   return type(ev.v) == 'number' and ev.v > M.VERSION
 end
+M.too_new = too_new
 
 -- Append `events` to the log at `path` (created with `mode` if missing) in a
 -- single write(2), so a record is never split and records of two processes
@@ -123,8 +155,8 @@ end
 -- number. Bytes after the last \n are not consumed. Reading from 0, the
 -- first line must be a header. `seen`, a table the caller keeps, makes the
 -- warning once per line number: lines warned about are recorded in it.
--- Returns: { events, offset, lines, log_id (from 0 only), ino (of the file
--- read) }, or nil and an error when the file can't be read, is shorter than
+-- Returns: { events, offset, lines, log_id (its header's log_id or
+-- journal_id, from 0 only), header (from 0 only), ino (of the file read) }, or nil and an error when the file can't be read, is shorter than
 -- `from`, or has no header
 function M.read(path, from, lines, seen)
   from, lines = from or 0, lines or 0
@@ -162,7 +194,8 @@ function M.read(path, from, lines, seen)
         return nil, string.format('%s was written by a newer version of quickfix-review (log format v%s, this'
           .. ' version reads up to v%d); upgrade the plugin to read or change it', path, tostring(ev.v), M.VERSION)
       end
-      result.log_id = ev.log_id
+      result.log_id = ev.log_id or ev.journal_id
+      result.header = ev
     elseif ev then
       table.insert(result.events, ev)
     elseif line ~= '' and not (seen and seen[result.lines]) then
@@ -175,16 +208,23 @@ function M.read(path, from, lines, seen)
   return result
 end
 
--- The log_id in the header of the log at `path`, or nil
-function M.read_id(path)
+-- The header of the log or segment at `path` (a complete first line that
+-- is a header, of any version), or nil
+function M.read_header(path)
   local fd = uv.fs_open(path, 'r', 0)
   if not fd then return nil end
   local head = uv.fs_read(fd, 4096, 0)
   uv.fs_close(fd)
   local line = head and head:match('^([^\n]*)\n')
   if not line then return nil end
-  local ok, ev = pcall(vim.json.decode, line)
-  return ok and is_header(ev) and not too_new(ev) and ev.log_id or nil
+  local ok, ev = pcall(vim.json.decode, line, { luanil = { object = true, array = true } })
+  return ok and is_header(ev) and ev or nil
+end
+
+-- The log_id (or journal_id) in the header of the log at `path`, or nil
+function M.read_id(path)
+  local ev = M.read_header(path)
+  return ev and not too_new(ev) and (ev.log_id or ev.journal_id) or nil
 end
 
 -- Whether `data` (a log's bytes) starts with a header this version reads
@@ -196,6 +236,7 @@ function M.readable_header(data)
 end
 
 -- Whether process `pid` may be alive: only a definite ESRCH says it is not
+-- (the mkdir lock's staleness check, store/lock.lua)
 function M.pid_alive(pid)
   local alive, _, name = uv.kill(pid, 0)
   return alive or name ~= 'ESRCH'

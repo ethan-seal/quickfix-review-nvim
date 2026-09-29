@@ -23,10 +23,16 @@
 -- - delete and clear move comments to the trash; restore makes a trashed (or
 --   unknown) comment live again with the logged content, and is ignored for a
 --   live one.
--- - checkpoint (the first event of a rotated log) replaces the whole state
---   with its `state` ({ comments, trash, removed }; any `index` there is
---   ignored and rebuilt); a malformed one is ignored.
+-- - checkpoint (the first event of a rotated v2 log) replaces the whole
+--   state with its `state` ({ comments, trash, removed }; any `index` there
+--   is ignored and rebuilt); a malformed one is ignored. Replaying a journal,
+--   it applies only in segment 1 (see apply_in_segment).
 local M = {}
+
+-- The shape of the state a checkpoint (store/checkpoint.lua) holds. Bump it
+-- when that shape changes: checkpoints of another STATE_VERSION are ignored
+-- and rebuilt by replaying the events (docs/journal.md#checkpoints).
+M.STATE_VERSION = 1
 
 function M.new()
   return { comments = {}, trash = {}, removed = {}, index = { by_id = {} } }
@@ -165,11 +171,8 @@ function handlers.restore(state, ev)
   return nil
 end
 
--- Apply one event to `state` (updated in place and returned)
--- Returns: state, and why the event was ignored ('duplicate', 'unknown',
--- 'live', 'invalid', 'unknown op'), or nil if it was applied
--- The state of the log up to a rotation (see store/maintenance.lua), which the new log
--- starts with: replaces the whole state. Records are kept as logged.
+-- The state of a v2 log up to a rotation, which the rotated-to log started
+-- with: replaces the whole state. Records are kept as logged.
 function handlers.checkpoint(state, ev)
   local s = ev.state
   if type(s) ~= 'table' or type(s.comments) ~= 'table' or type(s.trash) ~= 'table'
@@ -196,10 +199,24 @@ function handlers.checkpoint(state, ev)
   return nil
 end
 
+-- Apply one event to `state` (updated in place and returned)
+-- Returns: state, and why the event was ignored ('duplicate', 'unknown',
+-- 'live', 'invalid', 'unknown op'), or nil if it was applied
 function M.apply(state, ev)
   local handler = type(ev) == 'table' and handlers[ev.op]
   if not handler then return state, 'unknown op' end
   return state, handler(state, ev)
+end
+
+-- Apply event `ev` read from journal segment `seg` (1 = the first). A
+-- checkpoint event (only migrated v2 segments hold them) replaces the state
+-- only in segment 1, where it is the base the events after it build on (the
+-- logs before it were deleted by v2 retention). In a later segment it is
+-- skipped: the segments before it hold every event it summarises.
+-- Returns: as apply
+function M.apply_in_segment(state, seg, ev)
+  if type(ev) == 'table' and ev.op == 'checkpoint' and seg ~= 1 then return state, 'superseded' end
+  return M.apply(state, ev)
 end
 
 -- The live record with this id, or nil

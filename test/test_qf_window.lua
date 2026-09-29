@@ -230,7 +230,7 @@ assert.run_test('dd deletes by id after another Neovim reorders the review', fun
 
   -- Another Neovim deletes the line 1 comment and restores it, which moves
   -- it to the end of the review
-  local log_path = test_helper.log_path()
+  local log_path = test_helper.segment_path(1)
   local first = test_helper.saved(log_path)[1]
   local log = require('quickfix-review.log')
   assert.truthy(log.append(log_path, {
@@ -308,7 +308,7 @@ assert.run_test('dd with an unreadable storage file says so and deletes nothing'
   add_two_comments()
   qf.open_list()
   vim.fn.cursor(1, 1)
-  local log_path = test_helper.log_path()
+  local log_path = test_helper.segment_path(1)
   vim.fn.writefile({ 'not json' }, log_path)
 
   local calls = {}
@@ -369,7 +369,7 @@ end)
 assert.run_test(':ReviewTrash shows ? for a removal whose ts is not a number', function()
   add_two_comments()
   local id = qf.comments()[1].id
-  local fh = io.open(test_helper.log_path(), 'ab')
+  local fh = io.open(test_helper.segment_path(1), 'ab')
   fh:write(vim.json.encode({ op = 'delete', id = id, eid = 'foreign-1', ts = 'x' }) .. '\n')
   fh:close()
   local ok, err = pcall(qf.show_trash)
@@ -526,7 +526,7 @@ end)
 
 -- Another Neovim adds a comment on line 5 of `path` (listed after the rest)
 local function append_external(path)
-  local log_path = test_helper.log_path()
+  local log_path = test_helper.segment_path(1)
   local c = vim.deepcopy(test_helper.saved(log_path)[2])
   c.id = c.id .. '-external'
   c.text = 'External comment'

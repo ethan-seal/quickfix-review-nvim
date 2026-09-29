@@ -33,15 +33,19 @@ M.defaults = {
   -- storage_dir is ignored and nothing is imported.
   storage_file = nil,
 
-  -- The review log (log.jsonl) is rotated once it grows past this many
-  -- bytes: its state is carried into a new log as a checkpoint, and the old
-  -- one kept as log.<unix ms>.jsonl (for :ReviewHistory)
-  log_max_bytes = 5 * 1024 * 1024,
+  -- The review journal's active segment (events/NNNNNN.jsonl) is sealed
+  -- once it grows past this many bytes, and the next one started. Segments
+  -- are kept forever (they are the review, and its :ReviewHistory).
+  -- log_max_bytes is its deprecated name.
+  segment_max_bytes = 4 * 1024 * 1024,
 
-  -- Delete rotated logs older than this many days (checked once per review
-  -- per session). nil = keep them forever. The trash survives: it is in the
-  -- checkpoint of the current log.
-  log_retention_days = nil,
+  -- A checkpoint (a disposable cache of the replayed journal, so a load
+  -- reads only the tail past it) is written once this many events were
+  -- read past the newest one (or 256 KiB of them)
+  checkpoint_every = 500,
+
+  -- How many valid checkpoints are kept; older ones are deleted
+  checkpoint_keep = 2,
 
   -- Default export filename (nil = clipboard only, set to 'quickfix-review.md' to also save to file)
   export_file = nil,
@@ -287,18 +291,29 @@ local function derive(user_opts)
     for type_name, _ in pairs(base_types) do M.options.keymaps['add_' .. type_name] = false end
   end
 
-  -- Log rotation options: a bad value falls back to the default
-  local max = user_opts.log_max_bytes
-  if max ~= nil and not (type(max) == 'number' and max > 0) then
-    vim.notify('quickfix-review: log_max_bytes must be a positive number; using the default',
-      vim.log.levels.WARN)
-    M.options.log_max_bytes = M.defaults.log_max_bytes
+  -- Journal options (docs/journal.md). log_max_bytes (v2's rotation size)
+  -- is the deprecated name of segment_max_bytes; log_retention_days is gone
+  -- (segments are never deleted), and ignored.
+  if user_opts.log_max_bytes ~= nil then
+    require('quickfix-review.notify').once('deprecated-log_max_bytes',
+      'log_max_bytes is deprecated: use segment_max_bytes', vim.log.levels.WARN)
+    if user_opts.segment_max_bytes == nil then M.options.segment_max_bytes = user_opts.log_max_bytes end
+    M.options.log_max_bytes = nil
   end
-  local days = user_opts.log_retention_days
-  if days ~= nil and not (type(days) == 'number' and days > 0) then
-    vim.notify('quickfix-review: log_retention_days must be a positive number (or nil); keeping rotated logs',
+  if user_opts.log_retention_days ~= nil then
+    require('quickfix-review.notify').once('deprecated-log_retention_days',
+      'log_retention_days is ignored: journal segments are the review and are never deleted',
       vim.log.levels.WARN)
     M.options.log_retention_days = nil
+  end
+  -- A bad value falls back to the default
+  for _, name in ipairs({ 'segment_max_bytes', 'checkpoint_every', 'checkpoint_keep' }) do
+    local v = M.options[name]
+    if not (type(v) == 'number' and v > 0) then
+      vim.notify('quickfix-review: ' .. name .. ' must be a positive number; using the default',
+        vim.log.levels.WARN)
+      M.options[name] = M.defaults[name]
+    end
   end
 
   -- Generate keymaps for available comment types

@@ -179,4 +179,24 @@ function M.with_lock(loc, fn)
   return with_mkdir(path, fn)
 end
 
+-- Run fn with both locks of the review at `loc` held: the flock, and inside
+-- it the mkdir lock (loc.lock) that Neovims running the v2 code take, so a
+-- v2 -> v3 migration (and every write to a review still in v2) excludes
+-- them too (docs/journal.md#migration). Where the mkdir lock is the backend,
+-- it is the one lock, taken once.
+-- Returns: as with_lock
+function M.with_both(loc, fn)
+  if M.backend ~= 'flock' or held[loc.lock] then return M.with_lock(loc, fn) end
+  local inner
+  local ok, err = M.with_lock(loc, function()
+    if held[loc.lock] then
+      inner = vim.F.pack_len(true, fn())
+    else
+      inner = vim.F.pack_len(with_mkdir(loc.lock, fn))
+    end
+  end)
+  if not ok then return false, err end
+  return unpack(inner, 1, inner.n)
+end
+
 return M

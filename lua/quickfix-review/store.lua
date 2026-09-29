@@ -1,17 +1,20 @@
 -- The review's comments. The plugin owns them here rather than in the quickfix
 -- list, so other tools that replace the quickfix list (LSP references, grep)
--- can't clobber the review. The source of truth is an append-only event log
--- (log.jsonl, see log.lua): every change is appended as an event, and the
--- comments are the log replayed through reduce.lua, so no change can lose
--- data. state.json is a cache of that replay, never needed for correctness.
--- Events another Neovim appends are picked up by reading the log's tail.
+-- can't clobber the review. The source of truth is an append-only event
+-- journal (events/, numbered segments, see docs/journal.md and log.lua):
+-- every change is appended as an event, and the comments are the journal
+-- replayed through reduce.lua, so no change can lose data. Checkpoints
+-- (checkpoints/) are disposable caches of that replay, never needed for
+-- correctness. Events another Neovim appends are picked up by reading the
+-- journal's tail.
 -- Comments are the storage schema's records (see storage.lua); the quickfix
 -- list is only a view derived from them, which M.show() publishes.
 --
 -- This module is the store's public API; the work is done in store/:
 -- record (a comment record), location (where the review is stored),
--- journal (the log read into memory, and its lock), migrate (getting a
--- review into a new log), maintenance (rotation, retention, snapshot GC),
+-- journal (the journal read into memory, sealed and checkpointed),
+-- segment and checkpoint (its files), lock, migrate (getting a review into
+-- a journal, from comments.json or a v2 log), maintenance (snapshot GC),
 -- view (the comments as shown, and the quickfix list) and sync (the order
 -- those run in for a sync or a change).
 local M = {}
@@ -21,7 +24,6 @@ local location = require('quickfix-review.store.location')
 local log = require('quickfix-review.log')
 local maintenance = require('quickfix-review.store.maintenance')
 local record = require('quickfix-review.store.record')
-local reduce = require('quickfix-review.reduce')
 local storage = require('quickfix-review.storage')
 local sync = require('quickfix-review.store.sync')
 local view = require('quickfix-review.store.view')
@@ -55,19 +57,25 @@ function M._set_retry_ns(ns)
 end
 
 -- The comments.json of the review: the pre-log storage file, which is
--- migrated into the log (and renamed to comments.json.pre-log.bak) on first use
+-- migrated into the journal (and renamed to comments.json.pre-log.bak) on first use
 function M.path()
   return location.resolve().path
 end
 
--- The review's event log, its source of truth
+-- The review's v2 log.jsonl: once migrated, the tombstone pointing at
+-- events/ (docs/journal.md#migration)
 function M.log_path()
   return location.resolve().log
 end
 
--- The cache of the replayed log
-function M.state_path()
-  return location.resolve().state
+-- The review's journal: its directory of event segments, the source of truth
+function M.events_dir()
+  return location.resolve().events
+end
+
+-- The review's checkpoints (disposable caches of the replayed journal)
+function M.checkpoints_dir()
+  return location.resolve().checkpoints
 end
 
 -- The directory of the review's file snapshots (see snapshots.lua):
@@ -84,11 +92,6 @@ end
 -- The project root the storage dir belongs to, or nil for an explicit storage_file
 function M.root()
   return location.resolve().root
-end
-
--- The rotated logs of the review, oldest first
-function M.rotated_logs()
-  return maintenance.rotated_logs()
 end
 
 -- Delete the review's unreferenced snapshots older than a day (see
@@ -176,9 +179,8 @@ end
 -- Treat as read-only.
 function M.trash()
   sync.sync()
-  local reduced = journal.reduced()
   local out = {}
-  for id, r in pairs(reduced.trash) do
+  for id, r in pairs(journal.trash()) do
     out[id] = view.view_of(r) or r
   end
   return out
@@ -188,11 +190,11 @@ end
 -- 'clear'), ts (unix ms, or nil), comment (its view, or the raw record) }
 function M.trash_list()
   sync.sync()
-  local reduced = journal.reduced()
+  local removed = journal.removed()
   local out = {}
-  for i = #reduced.removed, 1, -1 do
-    local e = reduced.removed[i]
-    local r = reduced.trash[e.id]
+  for i = #removed, 1, -1 do
+    local e = removed[i]
+    local r = journal.trashed(e.id)
     if r then
       table.insert(out, { id = e.id, op = e.op, ts = e.ts, comment = view.view_of(r) or r })
     end
@@ -205,13 +207,13 @@ end
 -- in the trash; nil when the trash is empty
 function M.last_removal()
   sync.sync()
-  local reduced = journal.reduced()
-  local last = reduced.removed[#reduced.removed]
+  local removed = journal.removed()
+  local last = removed[#removed]
   if not last then return nil end
   if last.op ~= 'clear' or last.eid == nil then return { op = last.op, ids = { last.id } } end
   local ids = {}
-  for _, e in ipairs(reduced.removed) do
-    if e.eid == last.eid and reduced.trash[e.id] then table.insert(ids, e.id) end
+  for _, e in ipairs(removed) do
+    if e.eid == last.eid and journal.trashed(e.id) then table.insert(ids, e.id) end
   end
   return { op = 'clear', ids = ids }
 end
@@ -223,13 +225,12 @@ end
 -- if the change was refused
 function M.restore(ids)
   return mutate(function()
-    local reduced = journal.reduced()
     local events, res, seen = {}, { restored = 0, live = {}, unknown = {} }, {}
     for _, id in ipairs(ids) do
-      local r = reduced.trash[id]
+      local r = journal.trashed(id)
       if seen[id] then
         -- listed twice: restored (or reported) once
-      elseif reduce.get(reduced, id) then
+      elseif journal.get(id) then
         table.insert(res.live, id)
       elseif not r then
         table.insert(res.unknown, id)
@@ -259,11 +260,10 @@ end
 -- Returns: number of comments updated, or nil if the change was refused
 function M.update(changes, opts)
   return mutate(function()
-    local reduced = journal.reduced()
     local events = {}
     for _, ch in ipairs(changes) do
       local a = record.parse_anchor(ch.anchor)
-      local r = reduce.get(reduced, ch.id)
+      local r = journal.get(ch.id)
       if r and a and a.sha and anchor_changed(r.anchor, a) then
         table.insert(events, log.event('update', {
           id = ch.id,
@@ -284,7 +284,7 @@ end
 function M.edit(id, body)
   if type(body) ~= 'string' or body == '' then return nil end
   return mutate(function()
-    local r = reduce.get(journal.reduced(), id)
+    local r = journal.get(id)
     local c = r and view.view_of(r)
     if not c then return {}, 'missing' end
     if c.body == body then return {}, 'unchanged' end
@@ -299,7 +299,7 @@ end
 function M.remove_if(pred)
   return mutate(function()
     local events = {}
-    for _, r in ipairs(journal.reduced().comments) do
+    for _, r in ipairs(journal.comments()) do
       local c = view.view_of(r)
       if c and pred(c) then
         table.insert(events, log.event('delete', { id = r.id, comment = r }))
@@ -320,13 +320,13 @@ end
 -- Returns: true, or nil if the change was refused
 function M.clear()
   return mutate(function()
-    local reduced = journal.reduced()
-    if #reduced.comments == 0 then return {}, true end
-    return { log.event('clear', { comments = reduced.comments }) }, true
+    local comments = journal.comments()
+    if #comments == 0 then return {}, true end
+    return { log.event('clear', { comments = comments }) }, true
   end)
 end
 
--- Replay the whole log, ignoring the cache
+-- Replay the whole journal, ignoring its checkpoints
 -- Returns: ok (boolean), message (string)
 function M.reload()
   local ok, err = sync.sync({ full = true })
@@ -334,28 +334,31 @@ function M.reload()
   return true, string.format('Review loaded: %d comments', #view.comments())
 end
 
--- Write the cache (state.json) now. Every change is already in the log, so
--- this is never needed for the review to be saved.
+-- Write a checkpoint at the end of the journal now. Every change is
+-- already in the journal, so this is never needed for the review to be
+-- saved: it only makes the next load quicker.
 -- Returns: ok (boolean), message (string)
 function M.save()
   local ok, err = sync.sync()
   if not ok then return false, err end
-  if journal.readonly() then
-    local loc = location.resolve()
+  local loc = location.resolve()
+  local mode = journal.mode()
+  if mode == 'readonly' then
     return false, string.format('%s is not writable: %s is shown read-only', loc.dir, loc.path)
   end
-  local synced = journal.synced()
-  if not synced.log_id then
-    return true, 'Review saved (no comments yet)'
+  if mode == nil then return true, 'Review saved (no comments yet)' end
+  if mode == 'v2' then
+    return true, string.format('Review saved to %s (%d comments; not migrated, so no checkpoint)', loc.log,
+      #view.comments())
   end
   local wrote, werr = journal.flush(true)
   if not wrote then
-    return false, 'Could not write ' .. synced.state .. ': ' .. tostring(werr)
+    return false, 'Could not write a checkpoint in ' .. loc.checkpoints .. ': ' .. tostring(werr)
   end
-  return true, string.format('Review saved to %s (%d comments)', synced.log, #view.comments())
+  return true, string.format('Review saved to %s (%d comments; checkpoint written)', loc.events, #view.comments())
 end
 
--- Write the cache if events were applied since it was last written (on exit)
+-- Write a checkpoint if events were read past the newest one (on exit)
 function M.flush()
   journal.flush()
 end

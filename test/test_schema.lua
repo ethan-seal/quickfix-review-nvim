@@ -258,10 +258,10 @@ assert.run_test('a v1 file is migrated to the log as v2 records, the original ke
     vim.fn.setqflist({}, 'f')
 
     -- Loading again leaves the log and the original alone
-    local bytes = read_bytes(test_helper.log_path(path))
+    local bytes = read_bytes(test_helper.segment_path(1, path))
     qf = restart(path)
     assert.length(qf.comments(), 4, 'reloads')
-    assert.equals(read_bytes(test_helper.log_path(path)), bytes, 'log not appended to')
+    assert.equals(read_bytes(test_helper.segment_path(1, path)), bytes, 'log not appended to')
 
     -- Another v1 write (e.g. an older tool) is not read once a log exists: it
     -- is warned about once and left alone. It is looked for when the log
@@ -388,10 +388,10 @@ assert.run_test('a legacy text field in a v2 record is merged and dropped', func
     assert.truthy(export(list):find(' | Response: fixed', 1, true), 'export shows the response')
     assert.equals(read_bytes(path .. '.pre-log.bak'), json, 'original kept as it was')
 
-    local bytes = read_bytes(test_helper.log_path(path))
+    local bytes = read_bytes(test_helper.segment_path(1, path))
     qf = restart(path)
     assert.equals(qf.comments()[1].response, 'fixed', 'response after restart')
-    assert.equals(read_bytes(test_helper.log_path(path)), bytes, 'not logged again')
+    assert.equals(read_bytes(test_helper.segment_path(1, path)), bytes, 'not logged again')
   end)
 
   -- Text without a headline keeps the record's kind and body
@@ -497,13 +497,13 @@ assert.run_test('a record with a bad lnum is dropped with a warning, the origina
     vim.fn.setqflist({}, 'f')
     assert.truthy(export(list), 'export works')
 
-    local bytes = read_bytes(test_helper.log_path(path))
+    local bytes = read_bytes(test_helper.segment_path(1, path))
     calls = capture_notify(function()
       qf = restart(path)
       assert.length(qf.comments(), 2, 'reloads')
     end)
     assert.length(warnings(calls), 0, 'no warning on the second load')
-    assert.equals(read_bytes(test_helper.log_path(path)), bytes, 'not logged again')
+    assert.equals(read_bytes(test_helper.segment_path(1, path)), bytes, 'not logged again')
   end)
 end)
 

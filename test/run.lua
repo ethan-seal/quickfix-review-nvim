@@ -58,7 +58,8 @@ run_file('test/test_persistence.lua')
 run_file('test/test_sync.lua')
 
 -- Run log rotation tests
-run_file('test/test_rotation.lua')
+run_file('test/test_sealing.lua')
+run_file('test/test_migrate.lua')
 
 -- Run storage schema and upgrade tests
 run_file('test/test_schema.lua')

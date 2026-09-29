@@ -29,10 +29,23 @@ local M = {}
 -- Never touch the real review in stdpath('data')
 M.storage_file = vim.fn.tempname() .. '-quickfix-review.json'
 
--- The event log, cache and lock of a review kept in the explicit storage
--- file `file` (see store/location.lua)
+-- The v2 log (the tombstone once migrated), the v2 cache, the v3 journal
+-- (events), its checkpoints and the lock of a review kept in the explicit
+-- storage file `file` (see store/location.lua)
 function M.log_path(file) return (file or M.storage_file) .. '.log.jsonl' end
 function M.state_path(file) return (file or M.storage_file) .. '.state.json' end
+function M.events_path(file) return (file or M.storage_file) .. '.events' end
+function M.checkpoints_path(file) return (file or M.storage_file) .. '.checkpoints' end
+-- Segment `n` (default 1) of the journal of `file`
+function M.segment_path(n, file) return string.format('%s/%06d.jsonl', M.events_path(file), n or 1) end
+-- The checkpoint files of the journal of `file`, newest first
+function M.checkpoint_files(file)
+  local out = vim.fn.glob(M.checkpoints_path(file) .. '/*.json', true, true)
+  table.sort(out, function(a, b) return a > b end)
+  return out
+end
+-- The newest checkpoint file of the journal of `file`, or nil
+function M.checkpoint_path(file) return M.checkpoint_files(file)[1] end
 function M.lock_path(file) return (file or M.storage_file) .. '.lock' end
 -- The flock'ed lock file (the lock path above is the mkdir fallback's)
 function M.flock_path(file) return (file or M.storage_file) .. '.journal.lock' end
@@ -55,13 +68,51 @@ function M.remove_storage(file)
   vim.fn.delete(M.lock_path(file), 'rf')
   os.remove(M.flock_path(file))
   vim.fn.delete(file .. '.snapshots', 'rf')
+  vim.fn.delete(M.events_path(file), 'rf')
+  vim.fn.delete(M.checkpoints_path(file), 'rf')
+  for _, p in ipairs(vim.fn.glob(M.events_path(file) .. '.tmp.*', true, true)) do os.remove(p) end
 end
 
--- The records of the log at `log_path` (header first)
+-- The journal dir beside the v2 log path `log_path` (<file>.log.jsonl ->
+-- <file>.events, <dir>/log.jsonl -> <dir>/events), or nil
+local function events_of(log_path)
+  local base = log_path:match('^(.*)%.log%.jsonl$')
+  if base then return base .. '.events' end
+  local dir = log_path:match('^(.*)/log%.jsonl$')
+  return dir and (dir .. '/events') or nil
+end
+
+-- The segment paths of the journal beside `log_path` (see events_of), in
+-- order, as { n, path }...; empty when there is none
+function M.segments_of(log_path)
+  local dir = events_of(log_path)
+  local out = {}
+  if not dir then return out end
+  for _, name in ipairs(vim.fn.readdir(dir) or {}) do
+    local n = name:match('^(%d+)%.jsonl$')
+    if n then table.insert(out, { n = tonumber(n), path = dir .. '/' .. name }) end
+  end
+  table.sort(out, function(a, b) return a.n < b.n end)
+  return out
+end
+
+local function decode_lines(path, seg, out)
+  for _, line in ipairs(vim.fn.readfile(path)) do
+    local r = vim.json.decode(line, { luanil = { object = true, array = true } })
+    table.insert(out, seg and { seg = seg, record = r } or r)
+  end
+end
+
+-- The records of the log at `log_path` (header first). When the review
+-- has a v3 journal (log_path a v2 log path, see events_of, with segments
+-- beside it), the records of its segments in order, each header included.
 function M.log_records(log_path)
   local records = {}
-  for _, line in ipairs(vim.fn.readfile(log_path)) do
-    table.insert(records, vim.json.decode(line, { luanil = { object = true, array = true } }))
+  local segs = M.segments_of(log_path)
+  if #segs == 0 then
+    decode_lines(log_path, nil, records)
+  else
+    for _, s in ipairs(segs) do decode_lines(s.path, nil, records) end
   end
   return records
 end
@@ -80,8 +131,13 @@ end
 function M.saved(log_path)
   local reduce = require('quickfix-review.reduce')
   local state = reduce.new()
-  for _, r in ipairs(M.log_records(log_path or M.log_path())) do
-    reduce.apply(state, r)
+  log_path = log_path or M.log_path()
+  local segs = M.segments_of(log_path)
+  if #segs == 0 then segs = { { n = 1, path = log_path } } end
+  for _, s in ipairs(segs) do
+    local recs = {}
+    decode_lines(s.path, nil, recs)
+    for _, r in ipairs(recs) do reduce.apply_in_segment(state, s.n, r) end
   end
   return state.comments
 end

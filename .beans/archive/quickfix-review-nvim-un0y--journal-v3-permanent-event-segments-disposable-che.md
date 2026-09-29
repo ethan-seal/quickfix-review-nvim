@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-un0y
 title: 'Journal v3: permanent event segments, disposable checkpoints with GC, v2 migration'
-status: todo
+status: completed
 type: feature
+priority: normal
 created_at: 2026-09-29T21:06:50Z
-updated_at: 2026-09-29T21:06:50Z
+updated_at: 2026-09-29T22:54:10Z
 blocked_by:
     - quickfix-review-nvim-5ajb
 ---

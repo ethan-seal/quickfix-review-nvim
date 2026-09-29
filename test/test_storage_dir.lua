@@ -128,7 +128,8 @@ storage_test('the default dir is stdpath(data)/quickfix-review/<basename>-<sha25
   assert.equals(store.dir(), expected, 'storage dir')
   assert.equals(store.path(), expected .. '/comments.json', 'storage file')
   assert.equals(store.log_path(), expected .. '/log.jsonl', 'event log')
-  assert.equals(store.state_path(), expected .. '/state.json', 'cache')
+  assert.equals(store.events_dir(), expected .. '/events', 'journal')
+  assert.equals(store.checkpoints_dir(), expected .. '/checkpoints', 'checkpoints')
   assert.equals(store.root(), a, 'project root')
 end)
 
@@ -445,11 +446,11 @@ storage_test('a failed legacy import is retried, not marked done by the next cha
   capture_notify(function() restart() end)
   local _, store = mods()
   local dir_a = default_dir(a)
-  local log = require('quickfix-review.log')
-  local original_append = log.append
-  log.append = function(path, ...)
-    if vim.startswith(path, dir_a .. '/') then return false, 'ENOSPC', 0 end
-    return original_append(path, ...)
+  local segment = require('quickfix-review.store.segment')
+  local original_create = segment.create
+  segment.create = function(dir, ...)
+    if vim.startswith(dir, dir_a .. '/') then return nil, 'ENOSPC' end
+    return original_create(dir, ...)
   end
   local ok, err = pcall(function()
     local calls = capture_notify(function()
@@ -459,8 +460,9 @@ storage_test('a failed legacy import is retried, not marked done by the next cha
     local failed = mentioning(calls, 'import from')
     assert.truthy(#failed > 0, 'import failure reported')
     assert.equals(failed[1].level, vim.log.levels.ERROR, 'at ERROR level')
+    assert.falsy(vim.uv.fs_stat(dir_a .. '/events/000001.jsonl'), 'no segment')
   end)
-  log.append = original_append
+  segment.create = original_create
   if not ok then error(err, 0) end
 
   capture_notify(function()
@@ -488,7 +490,7 @@ storage_test('a torn legacy import is moved aside and imported again', function(
   vim.fn.mkdir(dir_a, 'p')
   local log = require('quickfix-review.log')
   local fh = io.open(dir_a .. '/log.jsonl', 'wb')
-  fh:write(vim.json.encode(log.new_header()) .. '\n{"op":"imp')
+  fh:write(vim.json.encode(log.v2_header()) .. '\n{"op":"imp')
   fh:close()
   cd(a)
   local calls = capture_notify(function() restart() end)
@@ -502,7 +504,7 @@ storage_test('a torn legacy import is moved aside and imported again', function(
   assert.truthy(#mentioning(calls, 'was incomplete') > 0, 'warned about the torn log')
 end)
 
-storage_test('an import torn in this session is moved aside and imported again', function()
+storage_test('an import interrupted in this session leaves no journal and is imported again', function()
   local a = make_repo('gimel')
   local b = make_repo('dalet')
   local c = make_repo('he')
@@ -511,18 +513,20 @@ storage_test('an import torn in this session is moved aside and imported again',
   capture_notify(function() restart() end)
   local _, store = mods()
   local dir_a = default_dir(a)
-  local log = require('quickfix-review.log')
-  local original_append = log.append
+  local segment = require('quickfix-review.store.segment')
+  local original_create = segment.create
   local torn = 0
-  log.append = function(path, events, ...)
-    if path == dir_a .. '/log.jsonl' and torn == 0 then
+  -- A crash after the temp file's partial write, before its link: the
+  -- segment never exists, only a stray temp file
+  segment.create = function(dir, n, events, ...)
+    if dir == dir_a .. '/events' and torn == 0 then
       torn = 1
-      local fh = io.open(path, 'wb')
+      local fh = io.open(dir .. '.tmp.1', 'wb')
       fh:write(vim.json.encode(events[1]) .. '\n{"op":"imp')
       fh:close()
-      return false, 'short write', 1
+      return nil, 'short write'
     end
-    return original_append(path, events, ...)
+    return original_create(dir, n, events, ...)
   end
   local ok, err = pcall(function()
     capture_notify(function()
@@ -530,14 +534,15 @@ storage_test('an import torn in this session is moved aside and imported again',
       store.all()
     end)
   end)
-  log.append = original_append
+  segment.create = original_create
   if not ok then error(err, 0) end
-  assert.equals(torn, 1, 'the import was torn')
+  assert.equals(torn, 1, 'the import was interrupted')
+  capture_notify(function() store.all() end)
+  assert.length(test_helper.segments_of(store.log_path()), 1, 'one segment')
   local list = store.all()
   assert.length(list, 1, 'imported')
   assert.equals(list[1].body, 'from a', 'the legacy comment')
   assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'one import event')
-  assert.length(vim.fn.glob(dir_a .. '/log.jsonl.torn-*', true, true), 1, 'torn log moved aside')
 end)
 
 storage_test('a symlinked checkout imports comments saved under the real path', function()
@@ -762,9 +767,9 @@ storage_test('storage_file set to the legacy global file leaves it in place for 
   assert.equals(read_bytes(legacy), bytes, 'still in place after a sync')
   assert.length(mentioning(calls, 'reappeared'), 0, 'no "reappeared" warning')
 
-  local legacy_log = legacy .. '.log.jsonl'
+  local legacy_log = legacy .. '.events/000001.jsonl'
   local log_bytes = read_bytes(legacy_log)
-  assert.truthy(log_bytes, 'the explicit review has a log')
+  assert.truthy(log_bytes, 'the explicit review has a journal')
   local had_state = vim.fn.filereadable(legacy .. '.state.json') == 1
   local state_bytes = read_bytes(legacy .. '.state.json')
 
@@ -844,7 +849,7 @@ storage_test('a legacy log with no legacy file is imported per project', functio
   local list = store.all()
   assert.length(list, 1, 'the explicit-mode note is imported')
   assert.equals(list[1].body, 'log only', 'its body')
-  assert.length(mentioning(calls, 'imported 1 comments from ' .. legacy .. '.log.jsonl'), 1, 'names the log')
+  assert.length(mentioning(calls, 'imported 1 comments from ' .. legacy .. '.events'), 1, 'names the journal')
 end)
 
 storage_test('a legacy file renamed to .pre-log.bak by an older version is still imported', function()
@@ -883,15 +888,16 @@ storage_test('a legacy record with only a bufnr is not imported onto an open buf
 end)
 
 -- log.append failing for every path under `dir` while fn runs
+-- Run fn with the review journal under `dir` failing to start
 local function with_failing_append(dir, fn)
-  local log = require('quickfix-review.log')
-  local original_append = log.append
-  log.append = function(path, ...)
-    if vim.startswith(path, dir .. '/') then return false, 'ENOSPC', 0 end
-    return original_append(path, ...)
+  local segment = require('quickfix-review.store.segment')
+  local original_create = segment.create
+  segment.create = function(path, ...)
+    if vim.startswith(path, dir .. '/') then return nil, 'ENOSPC' end
+    return original_create(path, ...)
   end
   local ok, err = pcall(fn)
-  log.append = original_append
+  segment.create = original_create
   if not ok then error(err, 0) end
 end
 
@@ -944,23 +950,23 @@ storage_test('a failed import retried by a change does not start the log without
   cd(c)
   capture_notify(function() restart() end)
   local _, store = mods()
-  local log = require('quickfix-review.log')
-  local original_append = log.append
-  log.append = function(path, events, ...)
+  local segment = require('quickfix-review.store.segment')
+  local original_create = segment.create
+  segment.create = function(dir, n, events, ...)
     for _, ev in ipairs(events) do
-      if ev.op == 'import' then return false, 'ENOSPC', 0 end
+      if ev.op == 'import' then return nil, 'ENOSPC' end
     end
-    return original_append(path, events, ...)
+    return original_create(dir, n, events, ...)
   end
   local ok, err = pcall(function()
     capture_notify(function()
       cd(a)
       assert.falsy(store.add({ filename = file_a, lnum = 2, kind = 'note', body = 'first' }), 'the add refused')
     end)
-    local st = vim.uv.fs_stat(store.log_path())
-    assert.truthy(not st or st.size == 0, 'no log started without the import')
+    assert.falsy(vim.uv.fs_stat(store.events_dir()), 'no journal started without the import')
+    assert.falsy(vim.uv.fs_stat(store.log_path()), 'no log.jsonl either')
   end)
-  log.append = original_append
+  segment.create = original_create
   if not ok then error(err, 0) end
 
   local bodies = {}

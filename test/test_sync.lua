@@ -18,7 +18,7 @@ line 5
 ]])
 local abs = vim.fn.fnamemodify(test_file, ':p')
 local file_buf = vim.api.nvim_get_current_buf()
-local log_file = test_helper.log_path()
+local log_file = test_helper.segment_path(1)
 
 local function reset()
   vim.cmd('silent! cclose')
@@ -171,7 +171,7 @@ assert.run_test(':ReviewDelete on a comment another Neovim deleted is a no-op', 
   reset()
 end)
 
-assert.run_test('a sync that finds nothing new stats only the log', function()
+assert.run_test('a sync that finds nothing new stats only the active segment and the next', function()
   reset()
   vim.fn.cursor(1, 1)
   qf.add_comment('NOTE')
@@ -185,8 +185,9 @@ assert.run_test('a sync that finds nothing new stats only the log', function()
   local ok, err = pcall(qf.comments)
   vim.uv.fs_stat = orig
   if not ok then error(err, 0) end
-  assert.length(stats, 1, 'one stat: ' .. table.concat(stats, ', '))
-  assert.equals(stats[1], log_file, 'of the log')
+  assert.length(stats, 2, 'two stats: ' .. table.concat(stats, ', '))
+  assert.equals(stats[1], log_file, 'of the active segment')
+  assert.equals(stats[2], test_helper.segment_path(2), 'and of the next, which would seal it')
   reset()
 end)
 
@@ -231,7 +232,7 @@ assert.run_test('a synced change keeps the selected entry and opens no window', 
   reset()
 end)
 
-assert.run_test('a rotation by another Neovim leaves comments, signs and trash as they were', function()
+assert.run_test('sealing by another Neovim leaves comments, signs and trash as they were', function()
   reset()
   vim.fn.cursor(1, 1)
   qf.add_comment('NOTE')
@@ -245,13 +246,15 @@ assert.run_test('a rotation by another Neovim leaves comments, signs and trash a
   local trashed = vim.tbl_keys(store.trash())
   local ino = vim.uv.fs_stat(log_file).ino
 
-  -- The other one rotates with its tiny limit, on a change that changes nothing
-  -- here (an edit to the same body is not logged, so edit to another and back)
-  other(string.format('require("quickfix-review.config").options.log_max_bytes = 1; '
-    .. 'assert(store.edit(%q, "tmp") == "edited")', before[1]))
-  other(string.format('assert(store.edit(%q, "Test comment") == "edited")', before[1]))
-  assert.truthy(#vim.fn.glob(test_helper.storage_file .. '.log.*.jsonl', true, true) >= 1, 'rotated')
-  assert.not_equals(vim.uv.fs_stat(log_file).ino, ino, 'a new log')
+  -- The other one seals with its tiny limit, on a change that changes
+  -- nothing here (an edit to the same body is not logged, so edit to
+  -- another and back): each change seals the segment it lands in
+  local seal = 'require("quickfix-review.config").options.segment_max_bytes = 1; '
+  other(seal .. string.format('assert(store.edit(%q, "tmp") == "edited")', before[1]))
+  other(seal .. string.format('assert(store.edit(%q, "Test comment") == "edited")', before[1]))
+  assert.truthy(vim.uv.fs_stat(test_helper.segment_path(3)) ~= nil, 'sealed twice')
+  assert.equals(vim.uv.fs_stat(log_file).ino, ino, 'segment 1 is the same file')
+  assert.truthy(vim.uv.fs_stat(test_helper.events_path() .. '/000002.refs') ~= nil, 'sealed with its refs')
 
   local _, notified = capture(function() vim.api.nvim_exec_autocmds('CursorHold', {}) end)
   local errors = vim.tbl_filter(function(n) return n.level == vim.log.levels.ERROR end, notified)
@@ -265,101 +268,33 @@ assert.run_test('a rotation by another Neovim leaves comments, signs and trash a
   reset()
 end)
 
-assert.run_test('a log rewritten in place with another log_id is replayed from the start', function()
+assert.run_test('a journal replaced by another one (a new segment 1) is loaded from the start', function()
   reset()
   vim.fn.cursor(1, 1)
   qf.add_comment('NOTE')
   assert.length(qf.comments(), 1, 'one comment')
   local ino = vim.uv.fs_stat(log_file).ino
 
-  -- Same inode, a new header, and longer than what was read
+  -- Another journal (as if the review's files were restored from elsewhere):
+  -- a new file, so a new inode
   local log = require('quickfix-review.log')
-  local lines = { vim.json.encode(log.new_header()) }
+  local lines = { vim.json.encode(log.segment_header(log.new_journal_id(), 1)) }
   for i = 1, 3 do
     table.insert(lines, vim.json.encode(log.event('add', { comment = {
-      id = string.format('%016x', i), kind = 'issue', filename = abs, lnum = i + 1, body = 'rotated ' .. i,
+      id = string.format('%016x', i), kind = 'issue', filename = abs, lnum = i + 1, body = 'replaced ' .. i,
       created_at = os.time(),
     } })))
   end
-  local f = io.open(log_file, "w")
-  assert.truthy(f, "log opened for writing")
-  f:write(table.concat(lines, '\n') .. '\n')
-  f:close()
-  assert.equals(vim.uv.fs_stat(log_file).ino, ino, 'same inode')
+  local tmp = log_file .. '.new'
+  vim.fn.writefile(lines, tmp)
+  assert.truthy(vim.uv.fs_rename(tmp, log_file), 'replaced')
+  assert.not_equals(vim.uv.fs_stat(log_file).ino, ino, 'another inode')
 
   vim.api.nvim_exec_autocmds('CursorHold', {})
   local list = qf.comments()
-  assert.length(list, 3, 'only the new log\'s comments')
-  assert.equals(list[1].body, 'rotated 1', 'from the new log')
+  assert.length(list, 3, 'only the new journal\'s comments')
+  assert.equals(list[1].body, 'replaced 1', 'from the new journal')
   assert.falsy(has_sign_on_line(1), 'the old comment\'s sign is gone')
-  reset()
-end)
-
-assert.run_test('a log rewritten in place to the same size with another log_id is replayed', function()
-  reset()
-  vim.fn.cursor(1, 1)
-  qf.add_comment('NOTE')
-  assert.length(qf.comments(), 1, 'one comment')
-  local fh = io.open(log_file, 'rb')
-  local old = fh:read('*a')
-  fh:close()
-
-  -- A new header log_id and another body, both of the same length
-  local old_id = old:match('"log_id":"(%x+)"')
-  local new_id = require('quickfix-review.log').new_header().log_id
-  assert.equals(#new_id, #old_id, 'log_ids of one length')
-  local new = old:gsub(old_id, new_id, 1):gsub('"body":"([^"]*)"', function(b)
-    return '"body":"' .. string.rep('z', #b) .. '"'
-  end)
-  assert.equals(#new, #old, 'same size')
-  fh = io.open(log_file, 'r+b')
-  fh:write(new)
-  fh:close()
-
-  vim.api.nvim_exec_autocmds('CursorHold', {})
-  local list = qf.comments()
-  assert.length(list, 1, 'one comment')
-  assert.truthy(list[1].body:match('^z+$'), 'the new log\'s comment: ' .. list[1].body)
-  reset()
-end)
-
-assert.run_test('a log rewritten in place under the same header, leaving the offset mid-line, is replayed', function()
-  reset()
-  vim.fn.cursor(1, 1)
-  qf.add_comment('NOTE')
-  vim.fn.cursor(2, 1)
-  qf.add_comment('NOTE')
-  assert.length(qf.comments(), 2, 'two comments')
-  local fh = io.open(log_file, 'rb')
-  local old = fh:read('*a')
-  fh:close()
-
-  -- Same header (and log_id), same inode; the first event's body grows, so
-  -- the old end of the log now falls inside the second event, and a third
-  -- event makes the file longer than what was read
-  local lines = vim.split(old, '\n', { plain = true, trimempty = true })
-  assert.length(lines, 3, 'header and two events')
-  local grown = lines[2]:gsub('"body":"([^"]*)"', function(b) return '"body":"' .. b .. 'grown"' end, 1)
-  local third = vim.json.decode(lines[3])
-  third.eid = third.eid .. 'x'
-  third.comment.id = string.rep('f', #third.comment.id)
-  third.comment.body = 'third'
-  local new = table.concat({ lines[1], grown, lines[3], vim.json.encode(third) }, '\n') .. '\n'
-  assert.truthy(#new > #old, 'longer than before')
-  assert.truthy(new:sub(#old, #old) ~= '\n', 'the old offset is mid-line now')
-  fh = io.open(log_file, 'r+b')
-  fh:write(new)
-  fh:close()
-
-  local _, notified = capture(function() vim.api.nvim_exec_autocmds('CursorHold', {}) end)
-  local list = qf.comments()
-  local replayed = test_helper.saved(log_file)
-  assert.length(list, #replayed, 'as many comments as a replay')
-  for n, c in ipairs(list) do
-    assert.equals(c.body, replayed[n].body, 'comment ' .. n .. ' as replayed')
-  end
-  assert.truthy(list[1].body:match('grown$'), 'the rewritten first comment: ' .. list[1].body)
-  assert.length(notified, 0, 'no unreadable-line warning from a mid-line read')
   reset()
 end)
 

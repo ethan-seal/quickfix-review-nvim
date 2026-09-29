@@ -277,7 +277,7 @@ assert.run_test('gc: a sha in a torn log line still counts; a newer log stops it
   local old = snapshots.put({ 'old' })
   backdate(torn)
   backdate(old)
-  local fh = io.open(store.log_path(), 'ab')
+  local fh = io.open(store.events_dir() .. '/000001.jsonl', 'ab')
   fh:write('{"op":"add","comment":{"anchor":{"sha":"' .. torn:upper() .. '"')
   fh:close()
   assert.equals(store.gc_snapshots(), 1, 'one deleted')

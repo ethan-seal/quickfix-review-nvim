@@ -45,11 +45,11 @@ end, { desc = 'Re-anchor the outdated comment on current line to its current lin
 
 vim.api.nvim_create_user_command('ReviewSave', function()
   require('quickfix-review').save_review()
-end, { desc = 'Save review to disk' })
+end, { desc = 'Checkpoint the review (every change is already on disk)' })
 
 vim.api.nvim_create_user_command('ReviewLoad', function()
   require('quickfix-review').load_review()
-end, { desc = 'Load review from disk' })
+end, { desc = 'Reload the review from its journal, ignoring checkpoints' })
 
 vim.api.nvim_create_user_command('ReviewSummary', function()
   require('quickfix-review').summary()

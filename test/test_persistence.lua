@@ -15,7 +15,10 @@ line 5
 ]])
 
 local storage_file = test_helper.storage_file
-local log_file = test_helper.log_path()
+-- Segment 1 of the review's journal (the only one: nothing here is large
+-- enough to seal it), and the v2 log path (the tombstone once migrated)
+local log_file = test_helper.segment_path(1)
+local v2_log = test_helper.log_path()
 
 local function reset()
   vim.fn.setqflist({}, 'f')
@@ -227,7 +230,7 @@ assert.run_test('a failed save leaves the file intact', function()
   fh:write(seed)
   fh:close()
 
-  local log_path = test_helper.log_path(path)
+  local log_path = test_helper.segment_path(1, path)
 
   local ok, err = pcall(function()
     qf = restart(path)
@@ -306,7 +309,7 @@ assert.run_test('an add into a read-only storage dir is not reported as added', 
     vim.fn.setfperm(dir, 'r-xr-xr-x')
     -- The lock file is kept open, not created, so a read-only dir alone no
     -- longer fails the change: the log is made read-only too
-    vim.fn.setfperm(test_helper.log_path(path), 'r--r--r--')
+    vim.fn.setfperm(test_helper.segment_path(1, path), 'r--r--r--')
 
     local store = require('quickfix-review.store')
     local added, printed
@@ -726,7 +729,7 @@ assert.run_test('two Neovims appending at once lose nothing and tear nothing', f
     assert.equals(r1.code, 0, 'writer one exits cleanly: ' .. tostring(r1.stderr))
     assert.equals(r2.code, 0, 'writer two exits cleanly: ' .. tostring(r2.stderr))
 
-    local lines = vim.split(read_bytes(test_helper.log_path(file)), '\n', { plain = true })
+    local lines = vim.split(read_bytes(test_helper.segment_path(1, file)), '\n', { plain = true })
     assert.equals(lines[#lines], '', 'the log ends in a newline')
     table.remove(lines)
     assert.length(lines, 101, 'a header and 100 records')
@@ -755,7 +758,7 @@ assert.run_test('two Neovims appending at once lose nothing and tear nothing', f
   if not ok then error(err, 0) end
 end)
 
-assert.run_test('deleting state.json rebuilds the identical state from the log', function()
+assert.run_test('deleting every checkpoint rebuilds the identical state from the journal', function()
   reset()
   vim.fn.cursor(1, 1)
   qf.add_comment('ISSUE')
@@ -767,14 +770,14 @@ assert.run_test('deleting state.json rebuilds the identical state from the log',
   vim.fn.cursor(5, 1)
   qf.add_comment('PRAISE')
 
-  qf = restart() -- writes the cache on the way out
+  qf = restart() -- writes a checkpoint on the way out
   local store = require('quickfix-review.store')
-  assert.equals(vim.fn.filereadable(test_helper.state_path()), 1, 'state.json written')
+  assert.truthy(test_helper.checkpoint_path() ~= nil, 'a checkpoint written')
   local cached_comments, cached_trash = store.all(), store.trash()
   assert.length(cached_comments, 3, 'three live comments')
   assert.length(vim.tbl_keys(cached_trash), 1, 'one in the trash')
 
-  os.remove(test_helper.state_path())
+  vim.fn.delete(test_helper.checkpoints_path(), 'rf')
   qf = restart(nil, { no_flush = true })
   store = require('quickfix-review.store')
   assert.truthy(vim.deep_equal(store.all(), cached_comments), 'same comments after a rebuild')
@@ -797,8 +800,9 @@ assert.run_test('a migration that crashed before its rename is finished without 
   -- What the migration had written when it crashed: the log, with the import
   -- of comments.json, but comments.json not yet renamed
   local log = require('quickfix-review.log')
+  vim.fn.mkdir(test_helper.events_path(), 'p')
   assert.truthy(log.append(log_file, {
-    log.new_header(),
+    log.segment_header(log.new_journal_id(), 1),
     log.event('import', { source_sha256 = vim.fn.sha256(raw), comments = records }),
   }), 'seeded')
 
@@ -837,9 +841,9 @@ for _, case in ipairs({
     fh:write(raw)
     fh:close()
     local log = require('quickfix-review.log')
-    local bytes = case.torn(vim.json.encode(log.new_header()),
+    local bytes = case.torn(vim.json.encode(log.v2_header()),
       vim.json.encode(log.event('import', { source_sha256 = vim.fn.sha256(raw), comments = records })))
-    fh = io.open(log_file, 'wb')
+    fh = io.open(v2_log, 'wb')
     fh:write(bytes)
     fh:close()
 
@@ -847,7 +851,7 @@ for _, case in ipairs({
     local list = qf.comments()
     assert.length(list, 2, 'the comments of comments.json')
     assert.equals(list[1].body, 'one', 'first comment')
-    local aside = vim.fn.glob(log_file .. '.torn-*', true, true)
+    local aside = vim.fn.glob(v2_log .. '.torn-*', true, true)
     assert.length(aside, 1, 'the torn log kept aside')
     assert.equals(read_bytes(aside[1]), bytes, 'with the torn bytes')
     assert.equals(read_bytes(storage_file .. '.pre-log.bak'), raw, 'comments.json migrated')
@@ -890,20 +894,20 @@ end)
 assert.run_test('a log whose first line is torn, with events after it, is refused naming the manual fix', function()
   reset()
   local log = require('quickfix-review.log')
-  local bytes = vim.json.encode(log.new_header()):sub(1, 20) .. '\n'
+  local bytes = vim.json.encode(log.v2_header()):sub(1, 20) .. '\n'
     .. vim.json.encode(log.event('add', { comment = { id = '00000000000000db' } })) .. '\n'
-  local fh = io.open(log_file, 'wb')
+  local fh = io.open(v2_log, 'wb')
   fh:write(bytes)
   fh:close()
   local calls = capture_notify(function()
     qf = restart(nil, { no_flush = true })
     qf.comments()
   end)
-  local errs = errors_mentioning(calls, log_file)
+  local errs = errors_mentioning(calls, v2_log)
   assert.length(errs, 1, 'one error naming the log: ' .. vim.inspect(calls))
   assert.truthy(errs[1].msg:find('move', 1, true), 'says to move it aside: ' .. errs[1].msg)
-  assert.equals(read_bytes(log_file), bytes, 'the log is left alone')
-  os.remove(log_file)
+  assert.equals(read_bytes(v2_log), bytes, 'the log is left alone')
+  os.remove(v2_log)
   qf = restart()
 end)
 
@@ -943,8 +947,8 @@ assert.run_test('an empty object round-trips as {}', function()
   assert.falsy(bytes:find('"context":[]', 1, true), 'not logged as []')
   vim.fn.cursor(3, 1)
   qf.add_comment('NOTE')
-  qf = restart() -- writes and then reads the cache
-  assert.truthy(read_bytes(test_helper.state_path()):find('"context":{}', 1, true), 'cached as {}')
+  qf = restart() -- writes and then reads a checkpoint
+  assert.truthy(read_bytes(test_helper.checkpoint_path()):find('"context":{}', 1, true), 'checkpointed as {}')
   assert.equals(type(qf.comments()[1].context), 'table', 'reloads from the cache as a table')
 
   reset()
@@ -1038,9 +1042,9 @@ assert.run_test('the storage file keeps its permission bits', function()
     vim.fn.cursor(2, 1)
     qf.add_comment('ISSUE')
     assert.length(saved(path), 1, 'comment saved')
-    assert.equals(vim.fn.getfperm(test_helper.log_path(path)), 'rw-------', 'log gets mode 0600')
+    assert.equals(vim.fn.getfperm(test_helper.segment_path(1, path)), 'rw-------', 'segment gets mode 0600')
     require('quickfix-review.store').flush()
-    assert.equals(vim.fn.getfperm(test_helper.state_path(path)), 'rw-------', 'cache gets mode 0600')
+    assert.equals(vim.fn.getfperm(test_helper.checkpoint_path(path)), 'rw-------', 'checkpoint gets mode 0600')
   end)
   qf = restart()
   test_helper.remove_storage(path)
@@ -1143,7 +1147,7 @@ assert.run_test('export with a clipboard provider uses the + register', function
   end)
 end)
 
-assert.run_test('a state.json without `removed` (older cache) is replayed from the log', function()
+assert.run_test('a checkpoint without `removed` is replayed from the journal', function()
   reset()
   vim.fn.cursor(1, 1)
   qf.add_comment('ISSUE')
@@ -1153,10 +1157,10 @@ assert.run_test('a state.json without `removed` (older cache) is replayed from t
   local target = qf.comments()[2].id
   qf.delete_comment({ 3, 3 })
   qf = restart() -- writes the cache
-  local doc = vim.json.decode(read_bytes(test_helper.state_path()))
+  local doc = vim.json.decode(read_bytes(test_helper.checkpoint_path()))
   assert.truthy(type(doc.state.removed) == 'table', 'the cache holds removed')
   doc.state.removed = nil
-  local fh = io.open(test_helper.state_path(), 'wb')
+  local fh = io.open(test_helper.checkpoint_path(), 'wb')
   fh:write(vim.json.encode(doc))
   fh:close()
   qf = restart(nil, { no_flush = true })
@@ -1171,7 +1175,7 @@ assert.run_test('a state.json without `removed` (older cache) is replayed from t
   assert.equals(table.concat(store.last_removal().ids, ','), target, 'same after a cached restart')
 end)
 
-assert.run_test('state.json holds no index, and a cache is indexed on load', function()
+assert.run_test('a checkpoint holds no index, and is indexed on load', function()
   reset()
   vim.fn.cursor(1, 1)
   qf.add_comment('ISSUE')
@@ -1179,7 +1183,7 @@ assert.run_test('state.json holds no index, and a cache is indexed on load', fun
   qf.add_comment('NOTE')
   local target = qf.comments()[2].id
   qf = restart() -- writes the cache
-  local doc = vim.json.decode(read_bytes(test_helper.state_path()))
+  local doc = vim.json.decode(read_bytes(test_helper.checkpoint_path()))
   assert.truthy(type(doc.state) == 'table', 'the cache holds a state')
   assert.equals(doc.state.index, nil, 'the cache holds no index')
 
@@ -1193,7 +1197,7 @@ assert.run_test('state.json holds no index, and a cache is indexed on load', fun
   end
   assert.truthy(edited, 'the comment is in the cache')
   doc.state.index = { by_id = { bogus = { id = 'bogus', body = 'x' } } }
-  local fh = io.open(test_helper.state_path(), 'wb')
+  local fh = io.open(test_helper.checkpoint_path(), 'wb')
   fh:write(vim.json.encode(doc))
   fh:close()
   qf = restart(nil, { no_flush = true })
@@ -1201,9 +1205,9 @@ assert.run_test('state.json holds no index, and a cache is indexed on load', fun
   local c = store.get(target)
   assert.truthy(c ~= nil, 'the comment is live')
   assert.equals(c.body, 'from the cache', 'loaded from the cache')
-  local reduced = require('quickfix-review.store.journal').reduced()
-  assert.equals(require('quickfix-review.reduce').get(reduced, target).body, 'from the cache', 'reduce.get finds it')
-  assert.equals(require('quickfix-review.reduce').get(reduced, 'bogus'), nil, 'the stray index is ignored')
+  local journal = require('quickfix-review.store.journal')
+  assert.equals(journal.get(target).body, 'from the cache', 'journal.get finds it')
+  assert.equals(journal.get('bogus'), nil, 'the stray index is ignored')
   assert.equals(store.edit(target, 'edited again'), 'edited', 'an update finds it')
   assert.equals(store.get(target).body, 'edited again', 'the update applied')
   assert.equals(store.remove(target), 1, 'a delete finds it')
@@ -1212,20 +1216,20 @@ assert.run_test('state.json holds no index, and a cache is indexed on load', fun
   end
 end)
 
-assert.run_test('a state.json holding a record that is not a comment is rejected and the log replayed', function()
+assert.run_test('a checkpoint holding a record that is not a comment is rejected and the journal replayed', function()
   reset()
   vim.fn.cursor(1, 1)
   qf.add_comment('ISSUE')
   vim.fn.cursor(3, 1)
   qf.add_comment('NOTE')
   qf = restart() -- writes the cache
-  local doc = vim.json.decode(read_bytes(test_helper.state_path()))
+  local doc = vim.json.decode(read_bytes(test_helper.checkpoint_path()))
   local size = vim.uv.fs_stat(log_file).size
   assert.equals(doc.offset, size, 'the cache covers the whole log')
   -- Otherwise a valid cache of this log: one record with no id, one a number
   table.insert(doc.state.comments, vim.empty_dict())
   table.insert(doc.state.comments, 42)
-  local fh = io.open(test_helper.state_path(), 'wb')
+  local fh = io.open(test_helper.checkpoint_path(), 'wb')
   fh:write(vim.json.encode(doc))
   fh:close()
   local ok, err = pcall(function()
@@ -1238,29 +1242,28 @@ assert.run_test('a state.json holding a record that is not a comment is rejected
   local want = vim.tbl_map(function(c) return c.id end, saved())
   local got = vim.tbl_map(function(c) return c.id end, list)
   assert.equals(table.concat(got, ','), table.concat(want, ','), 'the log\'s comments')
-  local reduced = require('quickfix-review.store.journal').reduced()
-  assert.length(reduced.comments, 2, 'no bad record in the reduced state')
-  local reduce = require('quickfix-review.reduce')
+  local journal = require('quickfix-review.store.journal')
+  assert.length(journal.comments(), 2, 'no bad record in the reduced state')
   for _, id in ipairs(want) do
-    assert.equals(reduce.get(reduced, id).id, id, 'reduce.get finds ' .. id)
+    assert.equals(journal.get(id).id, id, 'journal.get finds ' .. id)
   end
 end)
 
-assert.run_test('a state.json whose offset lands mid-line is rejected and the log replayed', function()
+assert.run_test('a checkpoint whose offset lands mid-line is rejected and the journal replayed', function()
   reset()
   vim.fn.cursor(1, 1)
   qf.add_comment('ISSUE')
   vim.fn.cursor(3, 1)
   qf.add_comment('NOTE')
   qf = restart() -- writes the cache
-  local doc = vim.json.decode(read_bytes(test_helper.state_path()))
+  local doc = vim.json.decode(read_bytes(test_helper.checkpoint_path()))
   local size = vim.uv.fs_stat(log_file).size
   assert.equals(doc.offset, size, 'the cache covers the whole log')
   -- Mid-line (the byte before it is not a \n), and a state that would show
   -- nothing if it were used
   doc.offset = size - 1
   doc.state.comments = {}
-  local fh = io.open(test_helper.state_path(), 'wb')
+  local fh = io.open(test_helper.checkpoint_path(), 'wb')
   fh:write(vim.json.encode(doc))
   fh:close()
   local calls = capture_notify(function()

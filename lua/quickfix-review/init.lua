@@ -185,8 +185,8 @@ function M.comments()
   return out
 end
 
--- Save the review. Every change is already appended to the review's log as
--- it is made; this only writes the cache of the replayed log (state.json).
+-- Save the review. Every change is already appended to the review's journal as
+-- it is made; this only writes a checkpoint (a cache of the replayed journal).
 function M.save_review()
   local ok, message = store.save()
   if ok then
@@ -205,7 +205,7 @@ local function show_seen()
   end
 end
 
--- Replay the review's log (ignoring the cache) and show it in the quickfix list
+-- Replay the review's journal (ignoring checkpoints) and show it in the quickfix list
 function M.load_review()
   local ok, message = store.reload()
   if ok then show_seen() end
@@ -430,7 +430,8 @@ function M.setup(opts)
     end,
   })
 
-  -- Cache the replayed log on exit, so the next start reads only its tail
+  -- Checkpoint the journal on exit when events were read past the newest
+  -- checkpoint, so the next start reads only the tail past it
   vim.api.nvim_create_autocmd('VimLeavePre', {
     group = augroup,
     callback = function() store.flush() end,

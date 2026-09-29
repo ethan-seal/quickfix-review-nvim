@@ -95,11 +95,13 @@ require('quickfix-review').setup({
   -- function(root) -> string. See "Where reviews are stored".
   storage_dir = nil,
 
-  -- Rotate the review log once it grows past this many bytes, and delete
-  -- rotated logs older than this many days (nil = keep them). See
-  -- "Log rotation".
-  log_max_bytes = 5 * 1024 * 1024,
-  log_retention_days = nil,
+  -- The review journal: seal a segment once it grows past this many bytes,
+  -- write a checkpoint every this many events, and keep this many
+  -- checkpoints. See "Where reviews are stored". (log_max_bytes is the
+  -- deprecated name of segment_max_bytes; log_retention_days is ignored.)
+  segment_max_bytes = 4 * 1024 * 1024,
+  checkpoint_every = 500,
+  checkpoint_keep = 2,
 
   -- Export filename (nil = clipboard only)
   export_file = nil,
@@ -162,27 +164,27 @@ require('quickfix-review').setup({
 
 ### Where reviews are stored
 
-Each project has its own review, kept as an append-only event log, `log.jsonl`, inside a per-project storage directory. By default that is:
+Each project has its own review, kept as an append-only event journal, `events/`, inside a per-project storage directory. By default that is:
 
 ```
 stdpath('data')/quickfix-review/<basename(root)>-<first 12 hex chars of sha256(root)>/
 ```
 
-e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/log.jsonl`, readable in a file browser.
+e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/events/000001.jsonl`, readable in a file browser. The storage directory must be on a local filesystem: the journal relies on `flock(2)` and hard links.
 
-- **The log**: one JSON object per line. The first line is a header; every later line is an event (`add`, `delete`, `clear`, `restore`, `import`, ...), and the review is those events replayed in order. Lines are only ever appended, in a single write under a lock, so several Neovims can share a review and no change can overwrite another. Deleted and cleared comments stay in the log. A line that can't be read is skipped with a warning naming its line number.
-- **`state.json`**: a cache of the replayed log next to it, written on exit and every 50 events. It is never needed: delete it and it is rebuilt from the log.
-- **Log rotation**: once the log grows past `log_max_bytes` (5 MB by default), the change that grew it rotates it: the log is replayed, a new `log.jsonl` starts with a header and one `checkpoint` event holding the whole review (live comments and the trash), and the old log is kept as `log.<unix ms>.jsonl` (`<storage_file>.log.<unix ms>.jsonl` with `storage_file`). `:ReviewHistory` reads the rotated logs too. They are kept forever unless `log_retention_days` is set; then rotated logs older than that (by the time in their name) are deleted when the review is first read in a session. Deleted comments can still be restored, since the trash is in the checkpoint. Only rotated logs are ever deleted. A version of this plugin from before rotation can't read a rotated log's checkpoint and shows it as empty. Logs are written in format v2; from this version on, a log written by a newer version of the plugin is refused with an ERROR and left unmodified, rather than shown empty. A log is rotated again only once it is also more than twice the size of the checkpoint it starts with, so a review whose checkpoint alone exceeds `log_max_bytes` doesn't rotate on every change.
+- **The journal**: `events/000001.jsonl`, `events/000002.jsonl`, ... (segments), one JSON object per line. Each segment starts with a header; every later line is an event (`add`, `delete`, `clear`, `restore`, `import`, ...), and the review is every segment's events replayed in order. Only the highest-numbered segment is written, and only appended to, in a single write under a lock, so several Neovims can share a review and no change can overwrite another. Once it grows past `segment_max_bytes` (4 MiB by default) it is sealed: the next segment is started, and the sealed one is never written again. Segments are never renamed, rewritten or deleted, so the whole history is kept: `:ReviewHistory` reads across them. A line that can't be read is skipped with a warning naming its line number. A segment written by a newer version of the plugin is refused with an ERROR and left unmodified, rather than shown empty.
+- **`checkpoints/`**: the replayed review at a position in the journal, written every `checkpoint_every` events (500), when a segment is sealed, by `:ReviewSave`, and on exit when events were read since the last one; the newest `checkpoint_keep` (2) are kept. They only make loading faster: delete them and the review is rebuilt from the journal. `:ReviewLoad` ignores them.
+- **Upgrading from a v2 `log.jsonl`**: a review kept by an earlier version (`log.jsonl`, rotated `log.<unix ms>.jsonl`, `state.json`) is migrated when it is first opened: each log is hard-linked into `events/` unchanged, the result is checked against the old log, and `log.jsonl` is replaced by a one-line marker pointing at `events/` (so an older version refuses the review instead of showing it empty); the rotated names and `state.json` are then removed. If the check fails, the review stays in `log.jsonl`, you get one warning, and the migration is tried again next session. To go back to the earlier version by hand, replace the marker with the last migrated log: `ln -f events/<its number>.jsonl log.jsonl` (the segment before the first one whose header says `migrated_from`); changes made since the upgrade are not in it.
 
 - **Project root**: the git toplevel of Neovim's global working directory, or that directory itself outside git (symlinks resolved). Each git worktree has its own toplevel, so each worktree gets its own review.
 - **Switching projects**: after `:cd` into another project (or when `'autochdir'` changes directory), the review is re-read from that project's directory and the quickfix view and signs follow. If that project's review can't be read, the list is emptied and it is not modified until the file is fixed. `:lcd` and `:tcd` don't switch projects. The root is looked up once per directory per session, so running `git init` in an open directory takes effect after a restart. Only a definite answer from git is kept: if `git rev-parse` fails or times out, you get a warning, the last root git gave for that directory (else the directory itself) is used meanwhile, and git is asked again a few seconds later.
 - **`storage_dir`**: a function receives the resolved root and returns the directory to use; a string is used as-is, so every project shares it (and the import from the global file below takes every comment, not just one project's).
 
-**Migrating from `comments.json`.** Earlier versions kept the review in `comments.json` in the same directory. When a project has a `comments.json` but no log yet, its comments are copied into a new log as one `import` event and the file is renamed to `comments.json.pre-log.bak`, byte for byte as it was. From then on the log is the review: a `comments.json` that reappears next to it (written by an older version or another tool) is not read; you get one warning and the file is left alone.
+**Migrating from `comments.json`.** Earlier versions kept the review in `comments.json` in the same directory. When a project has a `comments.json` but no journal yet, its comments are copied into a new journal as one `import` event and the file is renamed to `comments.json.pre-log.bak`, byte for byte as it was. From then on the journal is the review: a `comments.json` that reappears next to it (written by an older version or another tool) is not read; you get one warning and the file is left alone.
 
-**Migrating from the global file.** Older versions kept every project's comments in one file, `stdpath('data')/quickfix-review.json`. The first time you open a project that has neither a log nor a `comments.json`, the comments in that file whose path is inside the project are imported (you'll see "imported N comments from ..."). The global file is only read, never changed (if it is missing but `quickfix-review.json.pre-log.bak` exists, left by an older version used with `storage_file` pointing at the global file, that copy is read instead). This happens once per project: once its log exists, even with nothing imported, nothing is imported again.
+**Migrating from the global file.** Older versions kept every project's comments in one file, `stdpath('data')/quickfix-review.json`. The first time you open a project that has neither a journal nor a `comments.json`, the comments in that file whose path is inside the project are imported (you'll see "imported N comments from ..."). The global file is only read, never changed (if it is missing but `quickfix-review.json.pre-log.bak` exists, left by an older version used with `storage_file` pointing at the global file, that copy is read instead). This happens once per project: once its journal exists, even with nothing imported, nothing is imported again.
 
-**`storage_file` (deprecated).** If you set `storage_file`, one review is used for every project, as before: no storage directory, no switching on `:cd`, and no import from the global file. Its log and cache sit next to the path you give: `<storage_file>.log.jsonl` and `<storage_file>.state.json` (plus a `<storage_file>.journal.lock` lock file); an existing file at that path is migrated to the log and renamed to `<storage_file>.pre-log.bak`, except the global file `stdpath('data')/quickfix-review.json` itself, which is left in place so per-project reviews can still import from it once you remove `storage_file`. If you copied the old "full configuration" example, remove its `storage_file` line to get per-project reviews.
+**`storage_file` (deprecated).** If you set `storage_file`, one review is used for every project, as before: no storage directory, no switching on `:cd`, and no import from the global file. Its journal and checkpoints sit next to the path you give: `<storage_file>.events/` and `<storage_file>.checkpoints/` (plus a `<storage_file>.journal.lock` lock file; a v2 `<storage_file>.log.jsonl` is migrated as above); an existing file at that path is migrated to the journal and renamed to `<storage_file>.pre-log.bak`, except the global file `stdpath('data')/quickfix-review.json` itself, which is left in place so per-project reviews can still import from it once you remove `storage_file`. If you copied the old "full configuration" example, remove its `storage_file` line to get per-project reviews.
 
 ### When the code changes
 
@@ -277,8 +279,8 @@ A pattern that doesn't accept those four values falls back to the default with a
 | `:ReviewRestore [id]` | Restore a deleted comment; with no id, the last one deleted, or every comment of the last `:ReviewClear` (asks first) |
 | `:ReviewHistory [id]` | Show the logged history of one comment, or the last 50 events |
 | `:ReviewReanchor` | Accept the current lines of the outdated comment at cursor: re-anchor it there, no longer outdated |
-| `:ReviewSave` | Write the `state.json` cache (every change is already in the log as it is made) |
-| `:ReviewLoad` | Replay the review's log from disk and show it in the quickfix list |
+| `:ReviewSave` | Write a checkpoint (every change is already in the journal as it is made) |
+| `:ReviewLoad` | Replay the review's journal from disk, ignoring checkpoints, and show it in the quickfix list |
 | `:ReviewSummary` | Show comment summary |
 | `:ReviewGoto` | Jump to real file from diff |
 

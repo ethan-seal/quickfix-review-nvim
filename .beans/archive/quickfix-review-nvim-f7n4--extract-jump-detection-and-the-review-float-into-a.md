@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-f7n4
 title: Extract jump detection and the review float into a jump.lua state machine
-status: todo
+status: completed
 type: task
+priority: normal
 created_at: 2026-09-29T20:45:35Z
-updated_at: 2026-09-29T20:45:35Z
+updated_at: 2026-09-29T21:16:16Z
 ---
 
 **Background.** lua/quickfix-review/init.lua infers whether a cursor move was a quickfix jump (to show the float and handle E925) from about nine loose module locals: `last_seen` (init.lua:399), `own_jump` (438), `float_state` (537), `hold_next_move` (540), `jump_finishing` (554), plus `pending_jump` and friends. They are set and cleared from separate autocmds. The last several bug beans (e.g. quickfix-review-nvim-y4k3: float closed by CursorMoved after finish_jump, `]r` misdetected as a qf jump) were all interleavings of these flags. All three reviewers (2026-09-29) flagged it.

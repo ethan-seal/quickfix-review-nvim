@@ -51,8 +51,8 @@ local function navigate(cmd)
 end
 
 -- Fire the CursorMoved the main loop dispatches after a relocated jump's
--- finish_jump moved the cursor (navigate fired the jump's own one before
--- finish_jump ran), then let scheduled callbacks run
+-- finish (see jump.lua) moved the cursor (navigate fired the jump's own one
+-- before the finish ran), then let scheduled callbacks run
 local function settle_jump()
   vim.wait(50, function() return false end)
   vim.api.nvim_exec_autocmds('CursorMoved', {})
@@ -501,7 +501,7 @@ assert.run_test('cnext into a file whose comment relocates on read shows it', fu
     vim.fn.writefile({ 'x', 'y', 'a', 'b', 'c', 'd', 'e' }, path)
     navigate('cc 1')
     navigate('cnext')
-    -- The CursorMoved caused by finish_jump's own cursor move
+    -- The CursorMoved caused by the finish's own cursor move
     settle_jump()
     local idx = selected()
     assert.equals(idx, 2, 'on the second entry')
@@ -763,7 +763,7 @@ assert.run_test('cnext into a shifted file after another Neovim logged: relocate
     local id = append_external(path)
     local jumped, jump_err = pcall(navigate, 'cnext')
     assert.truthy(jumped, 'cnext succeeded: ' .. tostring(jump_err))
-    -- The CursorMoved caused by finish_jump's own cursor move
+    -- The CursorMoved caused by the finish's own cursor move
     settle_jump()
     assert.equals(selected(), 2, 'on the second entry')
     assert.equals(vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':p'),
@@ -899,6 +899,160 @@ assert.run_test('jump_comment into a shifted file holding the selected entry', f
   os.remove(path)
   qf.clear_review()
   if not ok then error(err, 0) end
+end)
+
+-- Transitions of the jump state machine (see the table in jump.lua)
+local jump = require('quickfix-review.jump')
+
+-- Run `body(path)` with a review of two comments: line 1 of the test
+-- file, and line 4 of another file (wiped, then shifted two lines down on
+-- disk), entry 1 selected and seen. A cnext then relocates on read.
+local function with_relocating_jump(body)
+  local path = vim.fn.tempname() .. '-moved.txt'
+  vim.fn.writefile({ 'a', 'b', 'c', 'd', 'e' }, path)
+  local ok, err = pcall(function()
+    qf.clear_review()
+    vim.cmd('only')
+    vim.fn.cursor(1, 1)
+    qf.add_comment('NOTE')
+    local home = vim.api.nvim_get_current_buf()
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    local buf = vim.api.nvim_get_current_buf()
+    vim.fn.cursor(4, 1)
+    qf.add_comment('ISSUE')
+    vim.api.nvim_set_current_buf(home)
+    vim.cmd('bwipeout! ' .. buf)
+    qf.show_list()
+    vim.fn.writefile({ 'x', 'y', 'a', 'b', 'c', 'd', 'e' }, path)
+    navigate('cc 1')
+    assert.equals(jump.state(), 'idle', 'idle before the jump')
+    body(path)
+  end)
+  pcall(reset_nav)
+  pcall(vim.cmd, 'bwipeout! ' .. vim.fn.fnameescape(path))
+  os.remove(path)
+  qf.clear_review()
+  if not ok then error(err, 0) end
+end
+
+assert.run_test('jump: held float closes on a CursorMoved elsewhere', function()
+  with_relocating_jump(function()
+    navigate('cnext')
+    vim.wait(50, function() return false end)
+    assert.equals(jump.state(), 'idle', 'idle after finish')
+    assert.equals(vim.fn.line('.'), 6, 'on the relocated line')
+    assert.length(floats(), 1, 'float open, held')
+    -- The first CursorMoved lands somewhere other than the hold
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    vim.api.nvim_exec_autocmds('CursorMoved', {})
+    assert.length(floats(), 0, 'float closed')
+  end)
+end)
+
+assert.run_test('jump: held float closes on BufLeave', function()
+  with_relocating_jump(function()
+    navigate('cnext')
+    vim.wait(50, function() return false end)
+    assert.length(floats(), 1, 'float open, held')
+    vim.api.nvim_exec_autocmds('BufLeave', {})
+    assert.length(floats(), 0, 'float closed')
+  end)
+end)
+
+assert.run_test('jump: cursor check while finishing is ignored', function()
+  with_relocating_jump(function()
+    vim.cmd('cnext')
+    assert.equals(jump.state(), 'finishing', 'finish scheduled by the relocated read')
+    assert.equals(vim.fn.line('.'), 4, 'still on the old line')
+    -- A check now would take the old line for the entry and show a float
+    jump.on_event('cursor')
+    assert.length(floats(), 0, 'no float while finishing')
+    assert.equals(jump.state(), 'finishing', 'still finishing')
+    vim.api.nvim_exec_autocmds('CursorMoved', {})
+    vim.wait(100, function() return #floats() > 0 end)
+    settle_jump()
+    assert.equals(jump.state(), 'idle', 'idle after finish')
+    assert.equals(vim.fn.line('.'), 6, 'on the relocated line')
+    local open = floats()
+    assert.length(open, 1, 'exactly one float after finish')
+    local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(open[1]), 0, -1, false)
+    assert.equals(lines[1], '[ISSUE] Test comment', 'float shows the moved comment')
+  end)
+end)
+
+assert.run_test('jump: jump_comment float skipped when the cursor moved first', function()
+  add_two_comments()
+  vim.fn.cursor(1, 1)
+  qf.jump_comment(1)
+  assert.equals(vim.fn.line('.'), 3, 'on the next comment')
+  -- Moved before the scheduled view runs
+  vim.api.nvim_win_set_cursor(0, { 2, 0 })
+  vim.wait(100, function() return #floats() > 0 end)
+  assert.length(floats(), 0, 'no float')
+  reset_nav()
+  qf.clear_review()
+end)
+
+assert.run_test('jump: own_jump bracket restores the prior state', function()
+  assert.equals(jump.state(), 'idle', 'idle')
+  jump.on_event('own_edit_begin')
+  assert.equals(jump.state(), 'own_jump', 'own_jump inside the bracket')
+  assert.equals(jump.pending(vim.api.nvim_get_current_buf(), true), nil,
+    'no pending jump inside the bracket')
+  jump.on_event('own_edit_end')
+  assert.equals(jump.state(), 'idle', 'back to idle')
+end)
+
+assert.run_test('jump: own_jump bracket restores the prior state (finishing)', function()
+  with_relocating_jump(function()
+    vim.cmd('cnext')
+    local buf = vim.api.nvim_get_current_buf()
+    assert.equals(jump.state(), 'finishing', 'finishing')
+    jump.on_event('own_edit_begin')
+    assert.equals(jump.state(), 'own_jump', 'own_jump inside the bracket')
+    assert.truthy(jump.in_jump(buf), 'still in a jump: the finish is pending')
+    jump.on_event('cursor')
+    assert.length(floats(), 0, 'cursor check still ignored')
+    jump.on_event('own_edit_end')
+    assert.equals(jump.state(), 'finishing', 'finishing restored')
+    vim.api.nvim_exec_autocmds('CursorMoved', {})
+    vim.wait(100, function() return #floats() > 0 end)
+    settle_jump()
+    assert.equals(jump.state(), 'idle', 'idle after finish')
+    assert.equals(vim.fn.line('.'), 6, 'finish moved to the relocated line')
+    assert.length(floats(), 1, 'float after finish')
+  end)
+end)
+
+assert.run_test('jump: in_jump while finishing', function()
+  with_relocating_jump(function()
+    vim.cmd('cnext')
+    local buf = vim.api.nvim_get_current_buf()
+    assert.equals(jump.state(), 'finishing', 'finishing')
+    -- The selection seen: only the finishing branch remains
+    jump.on_event('seen', vim.fn.getqflist({ id = 0, idx = 0 }))
+    assert.equals(jump.pending(buf, false), nil, 'no pending jump')
+    assert.truthy(jump.in_jump(buf), 'in a jump while finishing')
+    vim.wait(100, function() return jump.state() == 'idle' end)
+    assert.equals(jump.state(), 'idle', 'idle after finish')
+    assert.falsy(jump.in_jump(buf), 'no longer in a jump')
+  end)
+end)
+
+assert.run_test('jump: in_jump while pending', function()
+  add_two_comments()
+  qf.show_list()
+  navigate('cc 1')
+  -- Selection changed, not yet seen by the cursor check
+  vim.cmd('cnext')
+  local buf = vim.api.nvim_get_current_buf()
+  assert.equals(jump.state(), 'idle', 'not finishing')
+  assert.truthy(jump.pending(buf, false), 'pending jump into this buffer')
+  assert.truthy(jump.in_jump(buf), 'in a jump while pending')
+  jump.on_event('cursor')
+  assert.falsy(jump.in_jump(buf), 'no longer in a jump once seen')
+  reset_nav()
+  qf.clear_review()
 end)
 
 qf.clear_review()

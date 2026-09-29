@@ -8,6 +8,7 @@ local store = require('quickfix-review.store')
 local export = require('quickfix-review.export')
 local context = require('quickfix-review.context')
 local track = require('quickfix-review.track')
+local jump = require('quickfix-review.jump')
 
 -- State for comment type cycling
 local cycle_state = {
@@ -392,27 +393,12 @@ function M.save_review()
   end
 end
 
--- The review list entry last seen by auto_show_check, whether or not a float
--- opened for it: { id =, idx = }. Only a change of entry (quickfix
--- navigation) may open the float, never plain cursor movement onto it, nor
--- a refill or (re)creation of the list moving its selection.
-local last_seen
-
 -- Show the review as the current quickfix list, its selected entry seen:
 -- the list appearing is not navigation
 local function show_seen()
   store.show()
   if store.is_current_view() then
-    local info = vim.fn.getqflist({ id = 0, idx = 0 })
-    last_seen = { id = info.id, idx = info.idx }
-  end
-end
-
--- A refill moved the list's selection (before_idx to after_idx). Seen, unless
--- a navigation to before_idx hasn't been checked yet: that one still counts.
-local function refill_seen(id, before_idx, after_idx)
-  if last_seen and last_seen.id == id and last_seen.idx == before_idx then
-    last_seen.idx = after_idx
+    jump.on_event('seen', vim.fn.getqflist({ id = 0, idx = 0 }))
   end
 end
 
@@ -433,9 +419,6 @@ function M.open_list()
   show_seen()
   vim.cmd('copen')
 end
-
--- Set while jump_comment's own :edit reads a file (see relocate_buffer)
-local own_jump = false
 
 -- Jump to the next (direction 1) or previous (direction -1) comment across
 -- all files, ordered by file then line, wrapping around at the ends
@@ -511,9 +494,9 @@ function M.jump_comment(direction)
   if target.filename ~= file then
     -- The plugin's own navigation is never a quickfix jump: relocate_buffer
     -- must not take this read for one heading for the selected entry
-    own_jump = true
+    jump.on_event('own_edit_begin')
     local ok, err = pcall(vim.cmd, 'edit ' .. vim.fn.fnameescape(target.filename))
-    own_jump = false
+    jump.on_event('own_edit_end')
     if not ok then error(err, 0) end
   end
   -- The file may have shrunk since the comment was made
@@ -529,46 +512,6 @@ function M.jump_comment(direction)
       M.view_comment()
     end
   end)
-end
-
--- The open comment float, if any: { win = id, autocmd = id, hold = { win, pos }? }
--- `hold`: where the float was opened after finish_jump moved the cursor; the
--- one CursorMoved that move causes, arriving there, doesn't close it
-local float_state
-
--- Set while finish_jump's auto_show_check runs after it moved the cursor
-local hold_next_move = false
-
--- Close the comment float (if still open) and remove its close handler
-local function close_float()
-  if not float_state then return end
-  pcall(vim.api.nvim_win_close, float_state.win, true)
-  pcall(vim.api.nvim_del_autocmd, float_state.autocmd)
-  float_state = nil
-end
-
--- Show the float if the cursor has just landed on a new entry of the review
--- quickfix list (:cnext, :cprev, :cc, :cfirst, :clast). Runs scheduled, after
--- the navigation's events, so everything is re-checked here.
--- Waits while a jump's relocation refill is deferred (finish_jump checks).
-local jump_finishing = false
-local function auto_show_check()
-  if jump_finishing then return end
-  if not store.is_current_view() then return end
-  if vim.fn.win_gettype() ~= '' or vim.bo.buftype == 'quickfix' then return end
-  local info = vim.fn.getqflist({ id = 0, idx = 0 })
-  local changed = not last_seen or last_seen.id ~= info.id or last_seen.idx ~= info.idx
-  -- Track the selection even with auto_show off, so a later reload of the
-  -- selected file isn't taken for a pending jump (see pending_jump)
-  last_seen = { id = info.id, idx = info.idx }
-  if not config.options.auto_show then return end
-  if not changed then return end
-  local item = (vim.fn.getqflist({ id = 0, items = 0 }).items or {})[info.idx]
-  if not item or item.bufnr ~= vim.api.nvim_get_current_buf()
-    or item.lnum ~= vim.fn.line('.') then
-    return
-  end
-  M.view_comment()
 end
 
 -- Accept where the outdated comments covering the current line are now:
@@ -739,7 +682,7 @@ function M.view_comment()
   end
 
   -- One float at a time: replace any float still open
-  close_float()
+  jump.close_float()
 
   local height = math.min(#wrapped, 20)
   local buf = vim.api.nvim_create_buf(false, true)
@@ -754,34 +697,9 @@ function M.view_comment()
   })
   vim.wo[win].wrap = true
 
-  -- Close on cursor move or leaving the buffer. The handler lives in the
-  -- QuickfixReviewFloat group and removes itself (both events) on close.
-  -- Closing the window wipes its buffer (bufhidden=wipe). The one
-  -- CursorMoved caused by finish_jump's own cursor move (dispatched by the
-  -- main loop after the float opened) is ignored, if the cursor is still
-  -- where the float opened.
-  local float_group = vim.api.nvim_create_augroup('QuickfixReviewFloat', { clear = false })
-  float_state = { win = win }
-  if hold_next_move then
-    float_state.hold = {
-      win = vim.api.nvim_get_current_win(), pos = vim.api.nvim_win_get_cursor(0),
-    }
-  end
-  float_state.autocmd = vim.api.nvim_create_autocmd({ 'CursorMoved', 'BufLeave' }, {
-    group = float_group,
-    callback = function(args)
-      local hold = float_state and float_state.hold
-      if hold and args.event == 'CursorMoved' then
-        float_state.hold = nil
-        local pos = vim.api.nvim_win_get_cursor(0)
-        if vim.api.nvim_get_current_win() == hold.win
-            and pos[1] == hold.pos[1] and pos[2] == hold.pos[2] then
-          return
-        end
-      end
-      close_float()
-    end,
-  })
+  -- Close on cursor move or leaving the buffer (the jump module's handler,
+  -- in the QuickfixReviewFloat group, which removes itself on close)
+  jump.on_event('float_opened', { win = win })
 end
 
 -- Comment counts for the review: { total = n, by_type = { { name, count }, ... } }
@@ -1194,53 +1112,6 @@ local function is_file_buffer(bufnr)
     and vim.api.nvim_buf_get_name(bufnr) ~= ''
 end
 
--- The review list entry a quickfix jump into `bufnr` is heading for, if one
--- is under way (:cnext/:cc reading the file): the selection is in `bufnr`,
--- and either auto_show_check hasn't seen it yet, or the file is being read
--- for the first time (`fresh`: a jump to the entry already selected).
--- A jump to the selected entry into a buffer that was :bunload-ed but not
--- wiped is not a first read, so it isn't detected: its cursor stays on the
--- entry's old line. A buffer entered with `noautocmd edit` and reloaded before
--- any write is taken for a first read. A first plain `:edit +N` of the file
--- (goto_real_file's included) that lands on the selected entry's old line
--- counts as a jump to it, and moves to its relocated line.
-local function pending_jump(bufnr, fresh)
-  if not last_seen or not store.is_current_view() then return nil end
-  local info = vim.fn.getqflist({ id = 0, idx = 0, items = 0 })
-  local item = info.items[info.idx]
-  if info.id ~= last_seen.id or (info.idx == last_seen.idx and not fresh)
-      or not item or item.bufnr ~= bufnr then
-    return nil
-  end
-  return item
-end
-
--- Finish a quickfix jump whose file relocated its comments on read, once the
--- jump is done: refill the list (refilling during the jump would abort it
--- with E925), move the cursor from the entry's old line to its new one, and
--- show its float, as the jump alone would have
-local function finish_jump(bufnr, item, seen)
-  jump_finishing = false
-  store.refresh()
-  if vim.api.nvim_get_current_buf() ~= bufnr or not store.is_current_view() then return end
-  local info = vim.fn.getqflist({ id = 0, idx = 0, items = 0 })
-  local now = info.items[info.idx]
-  local moved_cursor = false
-  if now and now.bufnr == bufnr and vim.fn.line('.') == item.lnum then
-    local before = vim.api.nvim_win_get_cursor(0)
-    pcall(vim.api.nvim_win_set_cursor, 0, { now.lnum, math.max(now.col - 1, 0) })
-    local after = vim.api.nvim_win_get_cursor(0)
-    moved_cursor = before[1] ~= after[1] or before[2] ~= after[2]
-  end
-  -- The navigation still counts, whichever of this and the jump's own
-  -- scheduled check runs first
-  last_seen = seen
-  -- The float opened here must survive the CursorMoved the move above causes
-  hold_next_move = moved_cursor
-  pcall(auto_show_check)
-  hold_next_move = false
-end
-
 -- The file in `bufnr` was read or reloaded from disk (`event`): relocate its
 -- comments from its content (never from a diff buffer, which holds an old
 -- revision). Positions are kept in memory only; nothing is logged here
@@ -1257,8 +1128,9 @@ local function relocate_buffer(bufnr, event)
   -- Relocation moves only this buffer's comments: redraw its signs now
   local name = utils.get_real_filepath(bufnr)
   if name ~= '' then draw_signs(bufnr, name, comments) end
-  -- jump_comment's own :edit is never a quickfix jump (see own_jump)
-  local item = (not own_jump) and pending_jump(bufnr, fresh) or nil
+  -- The selected entry a quickfix jump reading this file is heading for
+  -- (never jump_comment's own :edit)
+  local item = jump.pending(bufnr, fresh)
   if item and not relocated and type(item.user_data) == 'table' then
     -- A change another Neovim logged, synced above, redraws the signs and so
     -- places this buffer's marks before relocation runs, which then reports
@@ -1274,9 +1146,8 @@ local function relocate_buffer(bufnr, event)
   end
   if not relocated then return end
   if item then
-    local seen = { id = last_seen.id, idx = last_seen.idx }
-    jump_finishing = true
-    vim.schedule(function() finish_jump(bufnr, item, seen) end)
+    -- Refill and move to the relocated line once the jump is done
+    jump.on_event('relocated', { bufnr = bufnr, item = item })
   elseif moved_here then
     -- Never refill the list during a read: a quickfix jump may be reading
     -- the file, and refilling would abort it with E925 (the sync above
@@ -1378,7 +1249,7 @@ function M.setup(opts)
 
   -- Load the saved review now, so it's in place before any change is made
   store.set_on_change(refresh_all_signs)
-  store.set_on_refill(refill_seen)
+  store.set_on_refill(jump.on_refill)
   refresh_all_signs(store.all())
   -- Unreferenced old snapshots are collected once a session, in the background
   store.schedule_startup_gc()
@@ -1395,8 +1266,7 @@ function M.setup(opts)
     group = augroup,
     pattern = { 'global', 'auto' },
     callback = function(args)
-      local in_jump = jump_finishing
-        or pending_jump(vim.api.nvim_get_current_buf(), false) ~= nil
+      local in_jump = jump.in_jump(vim.api.nvim_get_current_buf())
       store.all({ defer_view = args.match == 'auto' or in_jump })
     end,
   })
@@ -1416,7 +1286,7 @@ function M.setup(opts)
   vim.api.nvim_create_autocmd({ 'CursorMoved', 'BufEnter' }, {
     group = augroup,
     callback = function()
-      vim.schedule(function() pcall(auto_show_check) end)
+      vim.schedule(function() pcall(jump.on_event, 'cursor') end)
     end,
   })
 

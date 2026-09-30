@@ -43,7 +43,7 @@ local function relocate_buffer(bufnr, event)
   if name ~= '' then signs.draw(bufnr, name, store.in_file(utils.path_key(name))) end
   -- The selected entry a quickfix jump reading this file is heading for
   -- (never jump_comment's own :edit)
-  local item = jump.pending(bufnr, fresh)
+  local item = jump.state() ~= 'own_jump' and jump.pending(bufnr, fresh) or nil
   if item and not relocated and type(item.user_data) == 'table' then
     -- A change another Neovim logged, synced above, redraws the signs and so
     -- places this buffer's marks before relocation runs, which then reports

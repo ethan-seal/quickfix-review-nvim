@@ -25,6 +25,10 @@
 --   seen       finish's snapshot of last_seen, taken at `relocated` and
 --              carried by the scheduled finish itself (a second relocation
 --              schedules a second finish with its own snapshot).
+--   finish_gen the latest relocation's number, carried by the finish it
+--              scheduled: only that finish runs, so a second relocation
+--              while finishing keeps the state finishing until its own
+--              finish, not the first one, is done.
 --
 -- Transitions (event: from -> to; test covering it, in test_qf_window.lua
 -- unless named):
@@ -34,14 +38,20 @@
 --                   the prior state'
 --   own_edit_end    own_jump -> resume. Always runs, even if :edit fails.
 --                   'own_jump bracket restores the prior state (finishing)'
---   pending query   in own_jump: nil (]r is never a quickfix jump); else the
---                   entry a jump into the buffer is heading for, if any
+--   pending query   any -> same; the entry a jump into the buffer is heading
+--                   for, if any, in own_jump too (relocate_buffer skips it in
+--                   own_jump itself: ]r is never a quickfix jump, but a
+--                   DirChanged during its :edit still defers, see in_jump).
+--                   'in_jump while pending'; 'in_jump while pending, inside
+--                   the own_jump bracket'
 --   relocated       idle|finishing -> finishing. Schedules finish (the
 --                   E925 deferral: the jump must return to the main loop
---                   first). A second relocation while finishing schedules a
---                   second finish; the first one returns to idle.
+--                   first), as finish_gen's latest. A second relocation while
+--                   finishing supersedes the first finish: the state stays
+--                   finishing until the second one runs.
 --                   'cnext into a file whose comment relocates on read shows
---                   it'; 'cursor check while finishing is ignored'
+--                   it'; 'cursor check while finishing is ignored'; 'second
+--                   relocation while finishing stays finishing'
 --   cursor          (the CursorMoved/BufEnter check, scheduled by init.lua so
 --                   it runs after the jump's own CursorMoved)
 --                   finishing (or own_jump resuming finishing) -> same,
@@ -50,29 +60,39 @@
 --                   opens the float when the entry changed and the cursor is
 --                   on it: 'cc 1 then cnext shows exactly one float ...',
 --                   'moving the cursor onto the current entry opens no float'
---   finish          finishing -> idle, refills the list and moves the cursor
---                   to the entry's relocated line; restores last_seen = seen;
---                   then -> holding if the cursor moved, runs the cursor
+--   finish          superseded (not finish_gen's latest): no-op, any -> same.
+--                   'second relocation while finishing stays finishing'
+--                   latest: finishing -> idle, refills the list and moves the
+--                   cursor to the entry's relocated line; restores last_seen =
+--                   seen; then -> holding if the cursor moved, runs the cursor
 --                   check, -> idle. It must leave finishing before the check,
 --                   or the check is ignored. 'cnext into a file whose
 --                   comment relocates on read shows it' (y4k3)
 --   seen            any -> same; last_seen = the list's selection (the list
---                   appearing is not navigation)
+--                   appearing is not navigation). 'moving onto the current
+--                   entry right after showing the list opens no float'
 --   refill          any -> same; last_seen.idx follows the selection only if
 --                   it was at the refill's old idx (an unchecked navigation
 --                   still counts). 'adding or deleting another comment keeps
 --                   the same comment selected'
 --   float_opened    any -> same; records the float, with a hold if holding,
 --                   and one close handler (augroup QuickfixReviewFloat, over
---                   CursorMoved and BufLeave; test_setup.lua counts them)
---   float CursorMoved at hold  clears the hold, float stays: y4k3 test
+--                   CursorMoved and BufLeave; test_setup.lua counts them).
+--                   'cc 1 then cnext shows exactly one float with comment 2';
+--                   'cnext into a file whose comment relocates on read shows
+--                   it'; test_setup.lua's 'view_comment float close autocmd
+--                   is grouped and removed on close'
+--   float CursorMoved at hold  clears the hold, float stays: 'cnext into a
+--                   file whose comment relocates on read shows it' (y4k3)
 --   float CursorMoved elsewhere, or BufLeave  closes the float:
 --                   'held float closes on a CursorMoved elsewhere',
 --                   'held float closes on BufLeave'
 --   in_jump query   finishing (or resuming it), or a pending jump into the
 --                   current buffer: DirChanged defers its refill.
---                   'in_jump while finishing', 'in_jump while pending', and
---                   the E925 DirChanged tests
+--                   'in_jump while finishing', 'in_jump while pending', the
+--                   E925 DirChanged tests, and (inside ]r's :edit) 'jump_comment
+--                   with a :cd from BufEnter and a stale selection defers the
+--                   refill'
 local M = {}
 
 local config = require('quickfix-review.config')
@@ -83,6 +103,8 @@ local state = 'idle'
 local resume = 'idle'
 local last_seen
 local float
+-- The latest relocation's number: only the finish it scheduled runs
+local finish_gen = 0
 -- Shows the comment float for the cursor line (edit.view_comment, which
 -- registers itself when it loads: edit requires this module)
 local view_comment_fn = nil
@@ -114,7 +136,8 @@ end
 -- is under way (:cnext/:cc reading the file): the selection is in `bufnr`,
 -- and either the cursor check hasn't seen it yet, or the file is being read
 -- for the first time (`fresh`: a jump to the entry already selected).
--- jump_comment's own :edit is never one.
+-- Not guarded against own_jump: relocate_buffer, the caller that must not
+-- take jump_comment's own :edit for a jump, checks the state itself.
 -- A jump to the selected entry into a buffer that was :bunload-ed but not
 -- wiped is not a first read, so it isn't detected: its cursor stays on the
 -- entry's old line. A buffer entered with `noautocmd edit` and reloaded before
@@ -122,7 +145,6 @@ end
 -- (goto_real_file's included) that lands on the selected entry's old line
 -- counts as a jump to it, and moves to its relocated line.
 function M.pending(bufnr, fresh)
-  if state == 'own_jump' then return nil end
   if not last_seen or not store.is_current_view() then return nil end
   local info = vim.fn.getqflist({ id = 0, idx = 0, items = 0 })
   local item = info.items[info.idx]
@@ -164,8 +186,10 @@ end
 -- Finish a quickfix jump whose file relocated its comments on read, once the
 -- jump is done: refill the list (refilling during the jump would abort it
 -- with E925), move the cursor from the entry's old line to its new one, and
--- show its float, as the jump alone would have
-local function finish(bufnr, item, seen)
+-- show its float, as the jump alone would have. `gen` is the relocation
+-- that scheduled it: a later relocation supersedes it, and it does nothing.
+local function finish(bufnr, item, seen, gen)
+  if gen ~= finish_gen then return end
   if state == 'own_jump' then resume = 'idle' else state = 'idle' end
   store.refresh()
   if vim.api.nvim_get_current_buf() ~= bufnr or not store.is_current_view() then return end
@@ -234,7 +258,9 @@ end
 function handlers.relocated(args)
   local seen = { id = last_seen.id, idx = last_seen.idx }
   state = 'finishing'
-  vim.schedule(function() finish(args.bufnr, args.item, seen) end)
+  finish_gen = finish_gen + 1
+  local gen = finish_gen
+  vim.schedule(function() finish(args.bufnr, args.item, seen, gen) end)
 end
 
 -- args: { win = } (the float view_comment just opened; it closed any old

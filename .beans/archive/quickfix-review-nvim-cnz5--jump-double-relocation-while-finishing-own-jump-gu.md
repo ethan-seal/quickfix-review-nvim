@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-cnz5
 title: 'Jump: double relocation while finishing; own_jump guard leaks into in_jump'
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-09-29T21:16:26Z
-updated_at: 2026-09-29T21:16:26Z
+updated_at: 2026-09-30T00:02:55Z
 ---
 
 **Symptom**: two edge cases left by the jump.lua extraction (f7n4 review, cdbac59).

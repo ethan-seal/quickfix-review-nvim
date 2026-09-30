@@ -980,6 +980,39 @@ assert.run_test('jump: cursor check while finishing is ignored', function()
   end)
 end)
 
+-- A second relocated read while finishing supersedes the first finish: the
+-- state stays finishing until the latest finish runs
+assert.run_test('jump: second relocation while finishing stays finishing', function()
+  with_relocating_jump(function(path)
+    local relocations = 0
+    local on_event = jump.on_event
+    jump.on_event = function(name, args)
+      if name == 'relocated' then relocations = relocations + 1 end
+      return on_event(name, args)
+    end
+    local ok, err = pcall(function()
+      vim.cmd('cnext')
+      assert.equals(jump.state(), 'finishing', 'finish scheduled by the first read')
+      assert.equals(relocations, 1, 'first read relocated')
+      -- Runs after the first finish, before the second
+      local probe
+      vim.schedule(function() probe = jump.state() end)
+      -- One more line inserted at the top: the comment moves again
+      vim.fn.writefile({ 'z', 'x', 'y', 'a', 'b', 'c', 'd', 'e' }, path)
+      vim.cmd('edit!')
+      assert.equals(relocations, 2, 'second read relocated')
+      assert.equals(jump.state(), 'finishing', 'still finishing after the second read')
+      settle_jump()
+      assert.equals(probe, 'finishing', 'still finishing between the two finishes')
+      assert.equals(jump.state(), 'idle', 'idle after the last finish')
+      assert.equals(vim.fn.line('.'), 7, 'on the relocated line')
+      assert.length(floats(), 1, 'exactly one float')
+    end)
+    jump.on_event = on_event
+    if not ok then error(err, 0) end
+  end)
+end)
+
 assert.run_test('jump: jump_comment float skipped when the cursor moved first', function()
   add_two_comments()
   vim.fn.cursor(1, 1)
@@ -997,8 +1030,6 @@ assert.run_test('jump: own_jump bracket restores the prior state', function()
   assert.equals(jump.state(), 'idle', 'idle')
   jump.on_event('own_edit_begin')
   assert.equals(jump.state(), 'own_jump', 'own_jump inside the bracket')
-  assert.equals(jump.pending(vim.api.nvim_get_current_buf(), true), nil,
-    'no pending jump inside the bracket')
   jump.on_event('own_edit_end')
   assert.equals(jump.state(), 'idle', 'back to idle')
 end)
@@ -1053,6 +1084,80 @@ assert.run_test('jump: in_jump while pending', function()
   assert.falsy(jump.in_jump(buf), 'no longer in a jump once seen')
   reset_nav()
   qf.clear_review()
+end)
+
+-- The own_jump guard sits at relocate_buffer's call only: in_jump still sees
+-- a pending entry inside ]r's :edit, so a DirChanged there defers its refill
+assert.run_test('jump: in_jump while pending, inside the own_jump bracket', function()
+  add_two_comments()
+  qf.show_list()
+  navigate('cc 1')
+  -- Selection changed, not yet seen by the cursor check
+  vim.cmd('cnext')
+  local buf = vim.api.nvim_get_current_buf()
+  local ok, err = pcall(function()
+    jump.on_event('own_edit_begin')
+    assert.equals(jump.state(), 'own_jump', 'own_jump inside the bracket')
+    assert.truthy(jump.pending(buf, false), 'pending entry inside the bracket')
+    assert.truthy(jump.in_jump(buf), 'in a jump inside the bracket')
+  end)
+  jump.on_event('own_edit_end')
+  reset_nav()
+  qf.clear_review()
+  if not ok then error(err, 0) end
+end)
+
+-- A :cd from BufEnter (vim-rooter and the like) during ]r's own :edit into
+-- the file holding a selected entry the cursor check hasn't seen: the sync
+-- DirChanged runs defers its refill, as it would for a quickfix jump
+assert.run_test('jump_comment with a :cd from BufEnter and a stale selection defers the refill', function()
+  local path = vim.fn.tempname() .. '-rooter.txt'
+  vim.fn.writefile({ 'a', 'b', 'c', 'd', 'e' }, path)
+  local group = vim.api.nvim_create_augroup('QuickfixReviewTestOwnRooter', { clear = true })
+  local ok, err = pcall(function()
+    qf.clear_review()
+    vim.cmd('only')
+    vim.fn.cursor(1, 1)
+    qf.add_comment('NOTE')
+    local home = vim.api.nvim_get_current_buf()
+    vim.cmd('edit ' .. vim.fn.fnameescape(path))
+    local target = vim.api.nvim_get_current_buf()
+    vim.fn.cursor(4, 1)
+    qf.add_comment('ISSUE')
+    vim.api.nvim_set_current_buf(home)
+    qf.show_list()
+    navigate('cc 1')
+    -- Entry 2 selected without the cursor check seeing it
+    vim.fn.setqflist({}, 'a', { idx = 2 })
+    local idx, item = selected()
+    assert.equals(idx, 2, 'entry 2 selected')
+    assert.equals(item.bufnr, target, 'entry 2 is in the target file')
+    local id, listed_during
+    vim.api.nvim_create_autocmd('BufEnter', {
+      group = group,
+      buffer = target,
+      once = true,
+      callback = function()
+        id = append_external(path)
+        vim.api.nvim_exec_autocmds('DirChanged', { pattern = 'global' })
+        listed_during = listed(id)
+      end,
+    })
+    vim.api.nvim_set_current_buf(home)
+    vim.fn.cursor(1, 1)
+    qf.jump_comment(1)
+    assert.equals(vim.api.nvim_get_current_buf(), target, 'in the target file')
+    assert.truthy(id, 'the BufEnter hook ran')
+    assert.falsy(listed_during, 'list not refilled during the edit')
+    vim.wait(100, function() return listed(id) end)
+    assert.truthy(listed(id), 'external comment listed after the edit')
+  end)
+  pcall(vim.api.nvim_del_augroup_by_id, group)
+  pcall(reset_nav)
+  pcall(vim.cmd, 'bwipeout! ' .. vim.fn.fnameescape(path))
+  os.remove(path)
+  qf.clear_review()
+  if not ok then error(err, 0) end
 end)
 
 qf.clear_review()

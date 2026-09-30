@@ -290,31 +290,46 @@ end
 -- Set into[id] = true for every comment id raw event `ev` mentions: added,
 -- imported, restored, updated, deleted or cleared ones, and every id in a
 -- checkpoint event's state (live, trashed or removed), read before any
--- pruning. Tolerates malformed events (they add nothing).
+-- pruning. When `records` is a list, every comment record the event
+-- carries whole (an add, restore or import event's, and a checkpoint's live
+-- and trashed ones) is appended to it, raw and unvalidated. Tolerates
+-- malformed events (they add nothing).
 -- Returns: into
-function M.event_ids(ev, into)
+function M.event_ids(ev, into, records)
   if type(ev) ~= 'table' then return into end
   local function note(id)
     if type(id) == 'string' then into[id] = true end
   end
-  local function note_records(list)
+  local function keep(r)
+    if records and type(r) == 'table' then records[#records + 1] = r end
+  end
+  local function note_records(list, whole)
     if type(list) ~= 'table' then return end
     for _, r in ipairs(list) do
-      if type(r) == 'table' then note(r.id) end
+      if type(r) == 'table' then
+        note(r.id)
+        if whole then keep(r) end
+      end
     end
   end
   local op = ev.op
   if op == 'add' or op == 'restore' then
-    if type(ev.comment) == 'table' then note(ev.comment.id) end
+    if type(ev.comment) == 'table' then
+      note(ev.comment.id)
+      keep(ev.comment)
+    end
   elseif op == 'import' or op == 'clear' then
-    note_records(ev.comments)
+    note_records(ev.comments, op == 'import')
   elseif op == 'delete' or op == 'update' then
     note(ev.id)
   elseif op == 'checkpoint' and type(ev.state) == 'table' then
     local s = ev.state
-    note_records(s.comments)
+    note_records(s.comments, true)
     if type(s.trash) == 'table' then
-      for id in pairs(s.trash) do note(id) end
+      for id, r in pairs(s.trash) do
+        note(id)
+        keep(r)
+      end
     end
     note_records(s.removed)
   end

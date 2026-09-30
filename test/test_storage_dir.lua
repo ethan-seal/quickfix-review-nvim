@@ -898,6 +898,33 @@ storage_test('id-less legacy records are imported once after the legacy file cha
   assert.equals(read_bytes(legacy), bytes, 'the legacy file is untouched')
 end)
 
+storage_test('a deleted id-less legacy record is not re-imported after the legacy file changes', function()
+  local a = make_repo('tau')
+  local b = make_repo('upsilon')
+  local config = mods()
+  local legacy = seed_legacy(a, b, true)
+  cd(a)
+  capture_notify(function()
+    restart({ storage_file = config.legacy_storage_file() })
+    local _, store = mods()
+    local mine = vim.tbl_filter(function(c) return c.body == 'from a' end, store.all())
+    assert.length(mine, 1, 'the id-less record is imported')
+    assert.equals(store.remove(mine[1].id), 1, 'deleted "from a"')
+  end)
+  -- The file changes after the review imported it (its sha no longer matches)
+  local content = vim.json.encode({
+    { filename = a .. '/a.txt', lnum = 1, col = 1, text = '[ISSUE] from a' },
+    { filename = b .. '/b.txt', lnum = 2, col = 1, text = '[NOTE] from b' },
+    { filename = a .. '2/c.txt', lnum = 3, col = 1, text = '[NOTE] from sibling' },
+    { filename = a .. '/a.txt', lnum = 2, col = 1, text = '[NOTE] added later' },
+  })
+  vim.fn.writefile({ content }, legacy)
+  capture_notify(function() restart() end)
+  local _, store = mods()
+  local bodies = vim.tbl_map(function(c) return c.body end, store.all())
+  assert.equals(table.concat(bodies, '|'), 'added later', 'only the new record is imported; "from a" stays deleted')
+end)
+
 storage_test('a comment deleted while storage_file pointed at the legacy file is not imported', function()
   local a = make_repo('eta')
   local b = make_repo('theta')

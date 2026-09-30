@@ -100,11 +100,12 @@ end
 
 -- Apply events read from segment `seg` to `state`, noting imports in
 -- `imports`; `where` names the file, for the duplicate warning. When
--- `ids` is a table, every comment id the events mention is set in it
--- (reduce.event_ids, read before the event is applied and pruned)
-local function apply(state, imports, seg, events, where, ids)
+-- `ids` is a table, every comment id the events mention is set in it, and
+-- when `records` is a list too, every comment record they carry is appended
+-- to it (reduce.event_ids, read before the event is applied and pruned)
+local function apply(state, imports, seg, events, where, ids, records)
   for _, ev in ipairs(events) do
-    if ids then reduce.event_ids(ev, ids) end
+    if ids then reduce.event_ids(ev, ids, records) end
     if ev.op == 'import' and type(ev.source_sha256) == 'string' then
       imports[ev.source_sha256] = true
     elseif ev.op == 'checkpoint' and type(ev.imports) == 'table' then
@@ -160,10 +161,12 @@ end
 -- Replay the journal in `events` into a new state, from its newest valid
 -- checkpoint in `checkpoints` (unless that is nil). Only reads. When `ids`
 -- is a table, the ids the replayed events mention are collected in it (see
--- apply) and returned as .ids; pass checkpoints = nil for every event.
+-- apply) and returned as .ids, and with `records` a list the comment
+-- records they carry, returned as .records; pass checkpoints = nil for
+-- every event.
 -- Returns: { state, imports, seg, path, ino, offset, lines, journal_id,
--- migrated, since = { events, bytes }, ids }, or nil and an error
-function M.replay(events, checkpoints, ids)
+-- migrated, since = { events, bytes }, ids, records }, or nil and an error
+function M.replay(events, checkpoints, ids, records)
   local j, err = M.inspect(events)
   if not j then return nil, err end
   local state, imports = reduce.new(), {}
@@ -186,13 +189,13 @@ function M.replay(events, checkpoints, ids)
       local res, rerr = log.read(path, offset, n == from_seg and from_lines or 0,
         seen_lines(path, j.journal_id))
       if not res then return nil, rerr end
-      apply(state, imports, n, res.events, path, ids)
+      apply(state, imports, n, res.events, path, ids, records)
       out.since.events = out.since.events + #res.events
       out.since.bytes = out.since.bytes + res.offset - offset
       out.seg, out.path, out.ino, out.offset, out.lines = n, path, res.ino, res.offset, res.lines
     end
   end
-  out.state, out.imports, out.ids = state, imports, ids
+  out.state, out.imports, out.ids, out.records = state, imports, ids, records
   return out
 end
 
@@ -211,15 +214,15 @@ function M.load(loc, opts)
 end
 
 -- The v2 log at `path`, replayed on its own (its leading checkpoint, if
--- any, is its base, as for segment 1). `ids`: as for replay.
--- Returns: the read result (log.read's) with .state, .imports and .ids, or
--- nil and an error
-function M.replay_v2(path, ids)
+-- any, is its base, as for segment 1). `ids`, `records`: as for replay.
+-- Returns: the read result (log.read's) with .state, .imports, .ids and
+-- .records, or nil and an error
+function M.replay_v2(path, ids, records)
   local res, err = log.read(path, 0, 0, seen_lines(path, log.read_id(path)))
   if not res then return nil, err end
   if log.is_tombstone(res.header) then return nil, path .. ' was moved to a v3 journal' end
-  res.state, res.imports, res.ids = reduce.new(), {}, ids
-  apply(res.state, res.imports, 1, res.events, path, ids)
+  res.state, res.imports, res.ids, res.records = reduce.new(), {}, ids, records
+  apply(res.state, res.imports, 1, res.events, path, ids, records)
   return res
 end
 

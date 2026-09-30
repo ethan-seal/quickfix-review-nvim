@@ -410,7 +410,9 @@ Corrections to the plan above, and where the code differs from it.
   review imported it, its records are re-imported only if their ids appear
   in none of the review's raw events (every event is replayed, so no
   checkpoint is used), not merely if its pruned state lacks them: a deletion
-  pruned from the bounded trash is not resurrected.
+  pruned from the bounded trash is not resurrected. An id-less record is
+  matched by file name, line and body against every comment record those
+  events carried (and the live comments), so a deleted one stays deleted too.
 - **Step 7 leaves the mkdir lock dir alone**: the migration holds it, and
   its holder removes it on release, as with every v2 write.
 - **A stray `state.json`** beside a v3 journal is ignored and deleted at

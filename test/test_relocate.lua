@@ -237,6 +237,38 @@ assert.run_test("deleting a mid-file range's last line makes it outdated", funct
   assert.equals(state, 'outdated', 'outdated after 5Gdd')
 end)
 
+assert.run_test('deleting a 2-3 range at EOF of a 3-line file then undoing restores it', function()
+  qf.clear_review()
+  rewrite({ 'line 1', 'line 2', 'line 3' })
+  qf.add_comment('ISSUE', { 2, 3 })
+  local c = qf.comments()[1]
+
+  vim.cmd('2,3d')
+  vim.cmd('silent undo')
+  local pos = store.pos(c)
+  local lnum, end_lnum = store.range(c)
+  local p = track.positions(file_buf)[c.id]
+  vim.cmd('silent edit!')
+
+  assert.equals(lnum, 2, 'on line 2 after undo')
+  assert.equals(end_lnum, 3, 'ends on line 3 after undo')
+  assert.equals(pos.state, 'current', 'current after undo')
+  assert.truthy(p and p.lnum == 2 and p.end_lnum == 3 and p.state == 'current',
+    'positions() agrees after undo')
+end)
+
+assert.run_test("deleting only a range's last line at EOF then undoing makes it current", function()
+  local c = four_with_eof_range()
+  vim.cmd('normal! 4Gdd')
+  vim.cmd('silent undo')
+  local pos = store.pos(c)
+  local lnum, end_lnum = store.range(c)
+  vim.cmd('silent edit!')
+  assert.equals(lnum, 3, 'on line 3 after undo')
+  assert.equals(end_lnum, 4, 'ends on line 4 after undo')
+  assert.equals(pos.state, 'current', 'current after undo')
+end)
+
 assert.run_test('dd on a commented line: sign and view agree without a save', function()
   fresh()
   vim.fn.cursor(5, 1)
@@ -854,6 +886,82 @@ assert.run_test('an edit inside a range, saved: outdated, the anchor kept', func
   assert.truthy(vim.deep_equal(test_helper.saved()[1].anchor, anchor), 'anchor unchanged')
   assert.equals(store.pos(qf.comments()[1]).state, 'outdated', 'outdated')
   rewrite(TEN)
+end)
+
+assert.run_test('an unsaved edit inside a range: outdated, and current again after undo', function()
+  fresh()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('ISSUE')
+  local c = qf.comments()[1]
+  assert.truthy(c.anchor.sha, 'has a sha')
+
+  vim.cmd('normal! 2Gciwfoo')
+  local edited = store.pos(c).state
+  local p = track.positions(file_buf)[c.id]
+
+  vim.cmd('silent undo')
+  local pos = store.pos(c)
+  local lnum, end_lnum = store.range(c)
+  local q = track.positions(file_buf)[c.id]
+
+  vim.cmd('normal! 2Gciwline')
+  local retyped = store.pos(c).state
+  vim.cmd('silent edit!')
+
+  assert.equals(edited, 'outdated', 'outdated after ciw')
+  assert.truthy(p and p.state == 'outdated', 'positions() agrees after ciw')
+  assert.equals(pos.state, 'current', 'current after undo')
+  assert.equals(lnum, 2, 'on line 2 after undo')
+  assert.equals(end_lnum, 2, 'ends on line 2 after undo')
+  assert.truthy(q and q.state == 'current', 'positions() agrees after undo')
+  assert.equals(retyped, 'current', 'current after retyping the same text')
+end)
+
+-- Run the callbacks scheduled so far (e.g. deferred list refills)
+local function drain()
+  local drained = false
+  vim.schedule(function() drained = true end)
+  vim.wait(1000, function() return drained end)
+end
+
+assert.run_test('an edit inside a range, redrawn then saved: the list shows it outdated', function()
+  fresh()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('ISSUE')
+  local c = qf.comments()[1]
+  assert.truthy(c.anchor.sha, 'has a sha')
+  -- No refill left pending from the setup, so only the save's can tag it
+  drain()
+  qf.show_list()
+  assert.truthy(not vim.startswith(vim.fn.getqflist()[1].text, '[outdated]'), 'not outdated before the edit')
+
+  vim.cmd('normal! 2Gciwfoo')
+  -- Cache the position as the TextChanged sign redraw does, before the save
+  assert.equals(track.positions(file_buf)[c.id].state, 'outdated', 'outdated before the save')
+  save()
+  -- Run the refill the save deferred until after the write
+  drain()
+
+  local text
+  for _, item in ipairs(vim.fn.getqflist()) do
+    if item.user_data and item.user_data.id == c.id then text = item.text end
+  end
+  rewrite(TEN)
+  assert.truthy(text, 'the comment is in the list')
+  assert.truthy(vim.startswith(text, '[outdated] '), 'list row tagged outdated, got ' .. tostring(text))
+end)
+
+assert.run_test('an unsaved edit inside a legacy range with no sha is not outdated', function()
+  fresh()
+  store.add({ filename = abs, lnum = 4, end_lnum = 5, kind = 'note', body = 'legacy' })
+  vim.cmd('silent edit!')
+  vim.cmd('let &undolevels = &undolevels')
+  local c = qf.comments()[1]
+  assert.equals(c.anchor.sha, nil, 'no sha')
+  vim.cmd('normal! 4Gciwfoo')
+  local state = store.pos(c).state
+  vim.cmd('silent edit!')
+  assert.truthy(state ~= 'outdated', 'not outdated, got ' .. tostring(state))
 end)
 
 assert.run_test('comments above the edit are re-anchored to the new file too', function()

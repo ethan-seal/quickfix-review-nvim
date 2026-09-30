@@ -471,6 +471,17 @@ local function place(c, buf)
   return pos
 end
 
+-- Whether lines `lnum`..`end_lnum` of `buf` differ from `saved` (the
+-- anchor's lines, capped at 50). Compares only the first #saved lines.
+local function edited_in_place(buf, lnum, end_lnum, saved)
+  local n = math.min(#saved, end_lnum - lnum + 1)
+  local got = vim.api.nvim_buf_get_lines(buf, lnum - 1, lnum - 1 + n, false)
+  for i = 1, n do
+    if norm(got[i] or '') ~= norm(saved[i]) then return true end
+  end
+  return false
+end
+
 -- The position of a tracked comment from its extmark, or nil when it has
 -- none (or its buffer was unloaded or renamed, or its anchor changed since
 -- the extmark was placed)
@@ -519,6 +530,12 @@ local function from_mark(c)
       -- A valid mark whose span changed had lines deleted or inserted
       -- inside the range. A comment with no sha has nothing to be outdated
       -- against, so it follows its mark and a save re-anchors it there.
+      state = 'outdated'
+    elseif a.sha and type(a.lines) == 'table' and #a.lines > 0 and edited_in_place(m.buf, lnum, end_lnum, a.lines) then
+      -- Same span, but a line inside the range no longer reads as saved:
+      -- an in-place edit. Only the range is read, and pos_at caches the
+      -- result per changedtick. Not written to m.pos, so an undo gives
+      -- current/shifted again.
       state = 'outdated'
     else
       state = (lnum == a.lnum and end_lnum == (a.end_lnum or a.lnum)) and 'current' or 'shifted'

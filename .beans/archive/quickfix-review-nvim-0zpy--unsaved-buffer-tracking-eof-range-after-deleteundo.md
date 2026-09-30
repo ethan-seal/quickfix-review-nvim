@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-0zpy
 title: 'Unsaved-buffer tracking: EOF range after delete+undo; in-place edits stay current'
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-09-30T01:29:01Z
-updated_at: 2026-09-30T01:29:01Z
+updated_at: 2026-09-30T02:02:46Z
 ---
 
 **Symptom** (unsaved buffers, lua/quickfix-review/track.lua `from_mark` ~:490-523):
@@ -28,3 +29,7 @@ updated_at: 2026-09-30T01:29:01Z
 
 - Do not hash the whole buffer on every positions() call.
 - Do not run test files directly with nvim; only `scripts/test.sh` is hermetic.
+
+## Outcome
+
+Symptom (1) already behaved correctly (extmark undo restores the mark; 7dv8's d.invalid path does not mutate it); only regression tests were added. Symptom (2) fixed via `edited_in_place` in track.lua plus a list refresh on save in buffer_sync.lua. Known limit: edits past `ANCHOR_MAX_LINES` (50) of a range stay current until save.

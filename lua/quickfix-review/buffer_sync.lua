@@ -81,9 +81,11 @@ end
 -- comment whose anchor changed, so they reopen where they are now. Positions
 -- are first recomputed by diffing each anchor's snapshot against the saved
 -- content (an edit inside a range makes it outdated, which the tracking
--- extmark alone would not); outdated comments keep their anchor. A write of
--- part of the buffer, or to another file, is ignored: the anchors would name
--- content the file doesn't have.
+-- extmark alone would not); outdated comments keep their anchor. The list is
+-- refilled when a position changed, or when any comment is outdated (an
+-- in-place edit may have been cached as outdated before the save, so the
+-- relocation sees no change). A write of part of the buffer, or to another
+-- file, is ignored: the anchors would name content the file doesn't have.
 local function write_back(bufnr, file)
   if not is_file_buffer(bufnr) or vim.bo[bufnr].modified then return end
   local name = vim.api.nvim_buf_get_name(bufnr)
@@ -98,7 +100,7 @@ local function write_back(bufnr, file)
   -- 'autowrite', a quickfix jump (:cnext) writes the buffer mid-jump, and
   -- refilling then would abort the jump with E925
   local defer = { defer_view = true }
-  local relocated
+  local relocated, outdated
   -- One location for the snapshot and the update events naming it
   local updated = store.with_location(function()
     local mine, snapshotted = {}, {}
@@ -115,6 +117,7 @@ local function write_back(bufnr, file)
     local pre
     for _, c in ipairs(mine) do
       local p = store.pos(c)
+      if p and p.state == 'outdated' then outdated = true end
       if p and p.state ~= 'outdated' and moved(c, p) then
         if not pre then
           local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -139,7 +142,7 @@ local function write_back(bufnr, file)
     -- afresh, see track.relocate_buffer), then redraw
     track.relocate_buffer(bufnr, store.all(defer))
     store.refresh(defer)
-  elseif relocated then
+  elseif relocated or outdated then
     store.refresh(defer)
   end
 end

@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-gg4b
 title: 'v2 fallback mode: history walks rotated logs again; re-test rewrite check'
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-09-29T22:54:22Z
-updated_at: 2026-09-29T22:54:22Z
+updated_at: 2026-09-30T00:40:16Z
 ---
 
 **Symptom**: when v2→v3 migration fails verification, the review runs in v2 fallback mode. In that mode `:ReviewHistory` reads only `log.jsonl`, so history from before the last v2 rotation is missing. Pre-un0y code also walked the rotated `log.<ms>.jsonl` files.

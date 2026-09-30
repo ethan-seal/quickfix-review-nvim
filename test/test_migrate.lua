@@ -251,6 +251,97 @@ assert.run_test('a migration that does not verify leaves v2 authoritative, with 
   vim.fn.delete(dir, 'rf')
 end)
 
+-- A v2 review whose migration did not verify, loaded in v2 fallback mode
+-- (rotated logs log.1000 and log.2000, then log.jsonl; see write_v2).
+-- Returns: dir, the 4 comment ids, store
+local function v2_fallback(suffix)
+  local dir = vim.fn.tempname() .. suffix
+  vim.fn.mkdir(dir, 'p')
+  local ids = write_v2(dir .. '/log.jsonl')
+  local store
+  capture_notify(function() qf, store = restart_hooked({ storage_dir = dir }, { mismatch = true }) end)
+  assert.falsy(uv.fs_stat(dir .. '/events'), 'in v2 fallback mode')
+  assert.equals(ids_of(store.all()), table.concat(ids, ','), 'read as v2')
+  return dir, ids, store
+end
+
+assert.run_test('v2 fallback: history covers the rotated logs, oldest first, then log.jsonl', function()
+  local dir, ids = v2_fallback('-fallback-history')
+  local history_view = require('quickfix-review.history_view')
+  local rows = history_view.history_rows()
+  local got = {}
+  for i, row in ipairs(rows) do got[i] = row.op .. ':' .. tostring(row.id) end
+  local want = {}
+  for i, id in ipairs(ids) do want[i] = 'add:' .. id end
+  assert.equals(table.concat(got, ','), table.concat(want, ','), 'the adds of all three logs, in order')
+  local first = history_view.history_rows(ids[1])
+  assert.length(first, 1, 'the first comment\'s history, from log.1000')
+  assert.equals(first[1].op, 'add', 'its add')
+  vim.fn.delete(dir, 'rf')
+end)
+
+assert.run_test('v2 fallback: log.jsonl rewritten in place with another log_id is reloaded from the start', function()
+  local dir, ids, store = v2_fallback('-fallback-logid')
+  local log_file = dir .. '/log.jsonl'
+  local old = read_bytes(log_file)
+  local inode = ino(log_file)
+
+  -- A new header log_id and other bodies, all of the same length, so the
+  -- size and inode are what was read
+  local old_id = old:match('"log_id":"(%x+)"')
+  local new_id = log.v2_header().log_id
+  assert.equals(#new_id, #old_id, 'log_ids of one length')
+  local new = old:gsub(old_id, new_id, 1):gsub('"body":"([^"]*)"', function(b)
+    return '"body":"' .. string.rep('z', #b) .. '"'
+  end)
+  assert.equals(#new, #old, 'same size')
+  local fh = io.open(log_file, 'r+b')
+  fh:write(new)
+  fh:close()
+  assert.equals(ino(log_file), inode, 'same inode')
+
+  local list = store.all()
+  assert.equals(ids_of(list), table.concat(ids, ','), 'the same comments')
+  for n, c in ipairs(list) do
+    assert.truthy(c.body:match('^z+$'), 'comment ' .. n .. ' from the rewritten log: ' .. c.body)
+  end
+  assert.falsy(uv.fs_stat(dir .. '/events'), 'still v2')
+  vim.fn.delete(dir, 'rf')
+end)
+
+assert.run_test('v2 fallback: log.jsonl rewritten in place leaving the offset mid-line is reloaded from the start', function()
+  local dir, ids, store = v2_fallback('-fallback-midline')
+  local log_file = dir .. '/log.jsonl'
+  local old = read_bytes(log_file)
+  local inode = ino(log_file)
+
+  -- Same header (and log_id), same inode; a body in the checkpoint grows,
+  -- so the old end of the log now falls inside a later line, and a new
+  -- add makes the file longer than what was read
+  local lines = vim.split(old, '\n', { plain = true, trimempty = true })
+  assert.length(lines, 3, 'header, checkpoint and one add')
+  local grown = lines[2]:gsub('"body":"([^"]*)"', function(b) return '"body":"' .. b .. 'grown"' end, 1)
+  local extra = vim.json.decode(lines[3])
+  extra.eid = extra.eid .. 'x'
+  extra.comment.id = string.rep('f', #extra.comment.id)
+  extra.comment.body = 'extra'
+  local new = table.concat({ lines[1], grown, lines[3], vim.json.encode(extra) }, '\n') .. '\n'
+  assert.truthy(#new > #old, 'longer than before')
+  assert.truthy(new:sub(#old, #old) ~= '\n', 'the old offset is mid-line now')
+  local fh = io.open(log_file, 'r+b')
+  fh:write(new)
+  fh:close()
+  assert.equals(ino(log_file), inode, 'same inode')
+
+  local list
+  local calls = capture_notify(function() list = store.all() end)
+  assert.equals(ids_of(list), table.concat(ids, ',') .. ',' .. extra.comment.id, 'the comments and the new one')
+  assert.equals(list[1].body, 'c1grown', 'the rewritten first comment')
+  assert.equals(list[5].body, 'extra', 'the new comment')
+  assert.length(calls, 0, 'no unreadable-line warning from a mid-line read: ' .. vim.inspect(calls))
+  vim.fn.delete(dir, 'rf')
+end)
+
 assert.run_test('two storage_files in one dir migrate and run independently', function()
   local dir = vim.fn.tempname() .. '-two'
   vim.fn.mkdir(dir, 'p')

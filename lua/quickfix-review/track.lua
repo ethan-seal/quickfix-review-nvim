@@ -264,6 +264,12 @@ local cache = {}
 -- Inside M.batch: its depth and the buffer map ({ exact = name -> buf,
 -- bykey = path_key -> buf }, built on first use)
 local batch_depth, batch_bufs = 0, nil
+-- utils.path_key of each absolute filename whose path resolved, so a
+-- position read costs no fnamemodify or realpath. Only absolute names (a
+-- relative one depends on the cwd, and :lcd/:tcd fire no handler that could
+-- clear it) and only resolved ones (a path under a missing file or
+-- directory may resolve elsewhere once it exists). Cleared by forget_paths.
+local path_memo = {}
 
 -- The comments on a file, by its utils.path_key (store.view.in_file, which
 -- registers itself when it loads: the store sits above track, see set_in_file)
@@ -282,11 +288,36 @@ function M._reset()
   files_count, files_clock = 0, 0
   hunks, hunks_count = {}, 0
   batch_depth, batch_bufs = 0, nil
+  path_memo = {}
+end
+
+-- The utils.path_key of `f`, memoised (see path_memo)
+local function key_of(f)
+  local k = path_memo[f]
+  if k then return k end
+  local resolved
+  k, resolved = utils.resolved_key(f)
+  if resolved and f:sub(1, 1) == '/' then path_memo[f] = k end
+  return k
+end
+
+-- Forget the memoised path keys (after the cwd changes, or a buffer is
+-- wiped out)
+function M.forget_paths()
+  path_memo = {}
+end
+
+-- The number of memoised path keys (for tests)
+function M._path_memo_size()
+  local n = 0
+  for _ in pairs(path_memo) do n = n + 1 end
+  return n
 end
 
 -- Forget the cached content of `buf` (when it is wiped out), and the
 -- positions computed on it
 function M.forget_buffer(buf)
+  M.forget_paths()
   contents[buf] = nil
   local prefix = 'b' .. buf .. ':'
   for key, e in pairs(cache) do
@@ -354,12 +385,12 @@ local function buf_for(file)
         if is_real(buf) then
           local name = vim.api.nvim_buf_get_name(buf)
           if not batch_bufs.exact[name] then batch_bufs.exact[name] = buf end
-          local key = utils.path_key(name)
+          local key = key_of(name)
           if not batch_bufs.bykey[key] then batch_bufs.bykey[key] = buf end
         end
       end
     end
-    return batch_bufs.exact[file] or batch_bufs.bykey[utils.path_key(file)]
+    return batch_bufs.exact[file] or batch_bufs.bykey[key_of(file)]
   end
   local fallback
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
@@ -532,17 +563,28 @@ local function mark_buf(c)
   return nil
 end
 
+-- What a comment on `file` with no tracking extmark in a loaded buffer is
+-- computed on now: the loaded buffer holding the file, else the file on disk.
+-- Returns: stamp (see `cache`), buf or nil, fs_stat or nil
+local function file_source(file)
+  local buf = buf_for(file)
+  if buf then
+    return 'b' .. buf .. ':' .. vim.api.nvim_buf_get_changedtick(buf), buf, nil
+  end
+  local st = uv.fs_stat(file)
+  if not st or st.type ~= 'file' then return 'missing', nil, nil end
+  return string.format('s%d:%d:%d:%d', st.size, st.mtime.sec, st.mtime.nsec, st.ino), nil, st
+end
+
 -- What `c`'s position is computed on now: the loaded buffer holding its
 -- file (the one its tracking extmark is in, if any), else the file on disk.
 -- Returns: stamp (see `cache`), buf or nil, fs_stat or nil
 local function source_of(c)
-  local buf = mark_buf(c) or buf_for(c.filename)
+  local buf = mark_buf(c)
   if buf then
     return 'b' .. buf .. ':' .. vim.api.nvim_buf_get_changedtick(buf), buf, nil
   end
-  local st = uv.fs_stat(c.filename)
-  if not st or st.type ~= 'file' then return 'missing', nil, nil end
-  return string.format('s%d:%d:%d:%d', st.size, st.mtime.sec, st.mtime.nsec, st.ino), nil, st
+  return file_source(c.filename)
 end
 
 -- The cache entry of `path_key` for `stamp`, emptied when its stamp is
@@ -558,14 +600,9 @@ end
 
 local function copy(p) return make_pos(p.sha, p.lnum, p.end_lnum, p.state) end
 
--- The pos of comment `c` now, a fresh table. Read from the position cache
--- while the content it was computed on and the comment's anchor are
--- unchanged; else from its tracking extmark in a loaded buffer of its file
--- (relocating and placing one if it has none there yet), else from the
--- file on disk.
-function M.pos(c)
-  local path_key = utils.path_key(c.filename)
-  local stamp, buf, st = source_of(c)
+-- M.pos, given what `c`'s position is computed on (stamp, buf and st, as
+-- source_of returns them) and `path_key`, the utils.path_key of its file
+local function pos_at(c, path_key, stamp, buf, st)
   local e = entry(path_key, stamp)
   local key = anchor_key(c)
   local hit = e.ids[c.id]
@@ -582,16 +619,41 @@ function M.pos(c)
   return copy(pos)
 end
 
+-- The pos of comment `c` now, a fresh table. Read from the position cache
+-- while the content it was computed on and the comment's anchor are
+-- unchanged; else from its tracking extmark in a loaded buffer of its file
+-- (relocating and placing one if it has none there yet), else from the
+-- file on disk.
+function M.pos(c)
+  return pos_at(c, key_of(c.filename), source_of(c))
+end
+
 -- Where every live comment on a file is now: `target` is a buffer number
 -- (its file, see utils.get_real_filepath) or a file path.
 -- Returns: a fresh { [comment id] = { sha, lnum, end_lnum, state } }
 function M.positions(target)
   local name = type(target) == 'number' and utils.get_real_filepath(target) or target
   if type(name) ~= 'string' or name == '' then return {} end
-  local in_file = in_file_fn(utils.path_key(name))
+  local path_key = key_of(name)
+  local in_file = in_file_fn(path_key)
   local out = {}
   M.batch(function()
-    for _, c in ipairs(in_file) do out[c.id] = M.pos(c) end
+    -- The source of each filename's comments (the same for all of them but
+    -- those with a tracking extmark), computed once for this call only: the
+    -- content may change before the next
+    local sources = {}
+    for _, c in ipairs(in_file) do
+      if mark_buf(c) then
+        out[c.id] = pos_at(c, path_key, source_of(c))
+      else
+        local src = sources[c.filename]
+        if not src then
+          src = { file_source(c.filename) }
+          sources[c.filename] = src
+        end
+        out[c.id] = pos_at(c, path_key, src[1], src[2], src[3])
+      end
+    end
   end)
   return out
 end

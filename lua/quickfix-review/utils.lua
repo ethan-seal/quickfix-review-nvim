@@ -84,21 +84,32 @@ M.OUTDATED_HL = 'QuickfixReviewOutdated'
 -- later in the session is still resolved once it exists
 local realpath_cache = {}
 
-local function realpath(path)
+-- The resolved form of `path`, and whether it resolved (else `path` itself)
+local function resolve(path)
   local cached = realpath_cache[path]
-  if cached then return cached end
+  if cached then return cached, true end
   local resolved = vim.uv.fs_realpath(path)
   if resolved then
     realpath_cache[path] = resolved
-    return resolved
+    return resolved, true
   end
-  return path
+  return path, false
+end
+
+local function realpath(path)
+  return (resolve(path))
 end
 
 -- The absolute, symlink-resolved form of `p`: two paths name the same file
 -- when their keys are equal (see files_match)
 function M.path_key(p)
-  return realpath(vim.fn.fnamemodify(p, ':p'))
+  return (resolve(vim.fn.fnamemodify(p, ':p')))
+end
+
+-- path_key(p), and whether it resolved (false when the file or a directory
+-- on its path is missing, so the key may change once it exists)
+function M.resolved_key(p)
+  return resolve(vim.fn.fnamemodify(p, ':p'))
 end
 
 -- Check if two file paths refer to the same file (symlinks resolved)
@@ -135,10 +146,12 @@ end
 
 -- Refresh all signs for a buffer, showing count when multiple comments overlap
 -- This clears and re-renders all signs, consolidating overlapping start/end lines.
--- Positions come from store.range (the tracking extmarks, see track.lua);
--- only this sign namespace is cleared. A line with an outdated comment gets
--- the QuickfixReviewOutdated highlight.
-function M.refresh_buffer_signs(bufnr, file, comments)
+-- Positions come from `positions` when given (track.positions(file), read
+-- once for the whole file), else from store.range per comment (the tracking
+-- extmarks, see track.lua); a diff buffer never reads `positions`. Only this
+-- sign namespace is cleared. A line with an outdated comment gets the
+-- QuickfixReviewOutdated highlight.
+function M.refresh_buffer_signs(bufnr, file, comments, positions)
   if bufnr <= 0 or vim.fn.bufexists(bufnr) ~= 1 then return end
 
   -- Clear existing signs
@@ -149,16 +162,24 @@ function M.refresh_buffer_signs(bufnr, file, comments)
   local line_info = {}
 
   local special = M.is_special_buffer(bufnr)
+  if special then positions = nil end
   for _, item in ipairs(comments) do
-    local start_line, end_line
-    if M.files_match(item.filename, file) then
+    local start_line, end_line, outdated
+    -- A comment in `positions` is on this file (it lists only those)
+    local p = positions and positions[item.id]
+    if p then
+      -- As store.range reads a pos
+      start_line = p.lnum or item.lnum
+      end_line = p.end_lnum or start_line
+      outdated = p.state == 'outdated'
+    elseif M.files_match(item.filename, file) then
       start_line, end_line = M.range_in(item, bufnr)
+      -- A diff buffer shows a comment only where it holds the comment's
+      -- snapshot, so it is never outdated there
+      outdated = start_line and not special and hooks.is_outdated(item)
     end
     if start_line then
       local comment_type = item.kind
-      -- A diff buffer shows a comment only where it holds the comment's
-      -- snapshot, so it is never outdated there
-      local outdated = not special and hooks.is_outdated(item)
 
       -- Track start line
       if not line_info[start_line] then

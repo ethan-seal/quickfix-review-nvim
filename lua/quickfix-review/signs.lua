@@ -16,9 +16,12 @@ local drawn_at = {}
 local redraw_gen = {}
 local REDRAW_DELAY = 150
 
--- Draw the signs of `comments` in `bufnr`, which shows file `name`
+-- Draw the signs of `comments` in `bufnr`, which shows file `name`. The
+-- positions of a real file's comments are read once for the whole file; a
+-- diff buffer places each comment itself (see utils.range_in).
 function M.draw(bufnr, name, comments)
-  utils.refresh_buffer_signs(bufnr, name, comments)
+  local positions = not utils.is_special_buffer(bufnr) and track.positions(name) or nil
+  utils.refresh_buffer_signs(bufnr, name, comments, positions)
   drawn_at[bufnr] = vim.api.nvim_buf_get_changedtick(bufnr)
 end
 

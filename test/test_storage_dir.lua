@@ -178,6 +178,43 @@ storage_test(':cd into the other repo switches the list and the signs', function
   pcall(vim.api.nvim_buf_delete, buf, { force = true })
 end)
 
+-- track memoises path keys: a relative name must resolve against the new
+-- cwd after a :cd, with no restart in between
+storage_test('after a :cd, a relative filename resolves against the new cwd', function()
+  local track = require('quickfix-review.track')
+  local signs = require('quickfix-review.signs')
+  local _, store = mods()
+  local dirs, ids = {}, {}
+  for _, name in ipairs({ 'A', 'B' }) do
+    local dir = vim.fn.tempname() .. '-' .. name
+    vim.fn.mkdir(dir, 'p')
+    dir = vim.uv.fs_realpath(dir)
+    vim.fn.writefile({ 'line 1', 'line 2' }, dir .. '/rel.txt')
+    note(dir .. '/rel.txt', 'in ' .. name)
+    dirs[name] = dir
+  end
+  for _, c in ipairs(store.all()) do
+    if c.body == 'in A' then ids.A = c.id elseif c.body == 'in B' then ids.B = c.id end
+  end
+  assert.truthy(ids.A and ids.B, 'both comments listed')
+
+  cd(dirs.A)
+  local at_a = track.positions('rel.txt')
+  assert.truthy(at_a[ids.A], "A's comment in A")
+  assert.falsy(at_a[ids.B], "B's comment not in A")
+
+  cd(dirs.B)
+  local at_b = track.positions('rel.txt')
+  assert.truthy(at_b[ids.B], "B's comment in B")
+  assert.falsy(at_b[ids.A], "A's comment not in B")
+
+  vim.cmd('edit ' .. vim.fn.fnameescape(dirs.B .. '/rel.txt'))
+  local buf = vim.api.nvim_get_current_buf()
+  signs.draw_file(buf, 'rel.txt')
+  assert.truthy(extmarks(buf) > 0, "B's sign placed")
+  pcall(vim.api.nvim_buf_delete, buf, { force = true })
+end)
+
 -- :cd into a project whose review can't be read: the other project's comments
 -- must not stay visible, and nothing may be written into the bad review
 for _, case in ipairs({ 'log', 'comments.json' }) do
@@ -1064,6 +1101,25 @@ storage_test('a file under the root is logged repo-relative, and shown absolute'
   assert.equals(qf.comments()[1].filename, file, 'comments() gives absolute filenames')
 end)
 
+storage_test('store.get returns the listed comment, absolute and anchored', function()
+  local a, file = make_repo('getid')
+  cd(a)
+  restart()
+  local _, store = mods()
+  note(file, 'one')
+  note(file, 'two')
+  for _, c in ipairs(store.all()) do
+    local got = store.get(c.id)
+    assert.truthy(rawequal(got, c), 'the same table store.all() lists: ' .. c.body)
+    assert.equals(got.filename, file, 'absolute filename')
+    assert.truthy(got.anchor, 'anchored')
+  end
+  assert.equals(store.get('no-such-id'), nil, 'nil for an unknown id')
+  note(file, 'three')
+  local last = store.all()[3]
+  assert.truthy(rawequal(store.get(last.id), last), 'a comment added later is found')
+end)
+
 storage_test('a file outside the root (or in a sibling sharing its prefix) stays absolute', function()
   local a = make_repo('pi')
   local sibling = a .. '2'
@@ -1342,6 +1398,8 @@ storage_test(':ReviewAdopt remaps absolute filenames logged before they were rel
   assert.length(all, 1, 'the comment is adopted')
   assert.equals(all[1].filename, moved .. '/tau.txt', 'at the same file, in its new place')
   assert.equals(all[1].lnum, 2, 'at the same line')
+  local here = require('quickfix-review.track').positions(moved .. '/tau.txt')
+  assert.truthy(here.abs1, 'positions of the moved file list the adopted comment')
   local seg = read_bytes(new .. '/events/000001.jsonl')
   assert.equals(seg:sub(1, #old_seg), old_seg, 'the copied events are not rewritten')
   assert.equals(read_bytes(old .. '/events/000001.jsonl'), old_seg, 'the old review is unchanged')

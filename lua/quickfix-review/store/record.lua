@@ -252,10 +252,12 @@ function M.range(c)
   return lnum, r.end_lnum or lnum
 end
 
--- A comment as displayed: "[KIND] body", or "[KIND:L1-5] body" for a range
-function M.headline(c)
+-- A comment as displayed: "[KIND] body", or "[KIND:L1-5] body" for a range.
+-- `lnum`, `end_lnum`: its range when the caller already has it (else
+-- M.range(c))
+function M.headline(c, lnum, end_lnum)
   local label = c.kind:upper()
-  local lnum, end_lnum = M.range(c)
+  if not lnum then lnum, end_lnum = M.range(c) end
   if end_lnum > lnum then
     label = string.format('%s:L%d-%d', label, lnum, end_lnum)
   end

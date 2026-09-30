@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-ogpf
 title: 'Positions: cheap cache hits, per-file track.positions() readers, O(1) store.get'
-status: todo
+status: completed
 type: task
+priority: normal
 created_at: 2026-09-29T22:11:02Z
-updated_at: 2026-09-29T22:11:02Z
+updated_at: 2026-09-30T01:07:17Z
 ---
 
 **Background.** Left over from z2v4 (4065858):

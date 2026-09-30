@@ -15,6 +15,8 @@ local comments = {}
 -- The live comments by the utils.path_key of their file (see in_file); nil
 -- until first used after set_comments
 local by_path = nil
+-- The live comments by id (see get); nil until first used after set_comments
+local by_id = nil
 -- The key in by_path of each filename whose path did not resolve when the
 -- index was built (its file or a directory on its path was missing), so
 -- in_file can notice when one now resolves to another key
@@ -30,17 +32,21 @@ local function view_exists()
   return qf_id ~= nil and vim.fn.getqflist({ id = qf_id }).id == qf_id
 end
 
--- The quickfix row for a comment: its headline, with " | Response: reply"
--- when it has one. The row carries only the comment's id in user_data; the
--- context stays in the store.
-local function view_item(c)
+-- The quickfix row for a comment, whose pos is `p` (from track.positions;
+-- nil when it has none): its headline, with " | Response: reply" when it has
+-- one. The row carries only the comment's id in user_data; the context stays
+-- in the store.
+local function view_item(c, p)
+  -- As record.range and record.is_outdated read a pos
+  local r = p or c.anchor or c
+  local lnum = r.lnum or c.lnum
+  local end_lnum = r.end_lnum or lnum
   -- First lines only: a newline would break the quickfix row
-  local text = record.headline(c):match('^[^\n]*')
+  local text = record.headline(c, lnum, end_lnum):match('^[^\n]*')
   if c.response then
     text = text .. ' | Response: ' .. c.response:match('^[^\n]*')
   end
-  if record.is_outdated(c) then text = '[outdated] ' .. text end
-  local lnum, end_lnum = record.range(c)
+  if p ~= nil and p.state == 'outdated' then text = '[outdated] ' .. text end
   return {
     filename = c.filename,
     lnum = lnum,
@@ -52,13 +58,19 @@ local function view_item(c)
   }
 end
 
--- In a track batch, so each comment's three record.range/is_outdated lookups
--- compute its pos once and buffers are looked up in one map
+-- In a track batch, so buffers are looked up in one map. Positions are read
+-- per file (track.positions, once for each filename), not per comment.
 local function view_items()
   return track.batch(function()
     local items = {}
+    local per_file = {}
     for i, c in ipairs(comments) do
-      items[i] = view_item(c)
+      local positions = per_file[c.filename]
+      if not positions then
+        positions = track.positions(c.filename)
+        per_file[c.filename] = positions
+      end
+      items[i] = view_item(c, positions[c.id])
     end
     return items
   end)
@@ -143,6 +155,7 @@ function M.comments() return comments end
 function M.set_comments(list)
   comments = list
   by_path = nil
+  by_id = nil
   unresolved = {}
 end
 
@@ -183,6 +196,19 @@ function M.in_file(key)
     end
   end
   return by_path[key] or EMPTY
+end
+
+-- The live comment with this id, or nil (the same table comments() lists).
+-- Treat as read-only. The index is built on first use after the comments
+-- change.
+function M.get(id)
+  if not by_id then
+    by_id = {}
+    for _, c in ipairs(comments) do
+      if by_id[c.id] == nil then by_id[c.id] = c end
+    end
+  end
+  return by_id[id]
 end
 
 -- Called after any change to the comments, including ones read from disk

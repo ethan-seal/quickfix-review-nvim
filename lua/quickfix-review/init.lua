@@ -437,6 +437,7 @@ function M.setup(opts)
     pattern = { 'global', 'auto' },
     callback = function(args)
       local in_jump = jump.in_jump(vim.api.nvim_get_current_buf())
+      track.forget_paths()
       store.all({ defer_view = args.match == 'auto' or in_jump })
     end,
   })

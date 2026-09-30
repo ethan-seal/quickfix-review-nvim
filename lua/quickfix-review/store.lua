@@ -175,10 +175,7 @@ end
 -- The comment with this id, or nil. Treat as read-only.
 function M.get(id)
   sync.sync()
-  for _, c in ipairs(view.comments()) do
-    if c.id == id then return c end
-  end
-  return nil
+  return view.get(id)
 end
 
 -- The deleted comments, by id (kept in the log, so they can be restored).

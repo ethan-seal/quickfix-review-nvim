@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-iv2p
 title: 'Lock: flock errno handling; mixed-version exclusion and stale mkdir lock dir'
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-09-29T21:26:49Z
-updated_at: 2026-09-29T21:26:49Z
+updated_at: 2026-09-30T00:48:07Z
 ---
 
 **Symptom**: two gaps left by 5ajb (d303dd7).
@@ -17,7 +18,7 @@ updated_at: 2026-09-29T21:26:49Z
 
 ## Decide first: on flock errno failure, error or fall back?
 
-**Default: fall back to the mkdir lock for that path and warn once via notify.once.** Being wrong costs a later one-line change. Record: ____
+**Default: fall back to the mkdir lock for that path and warn once via notify.once.** Being wrong costs a later one-line change. Record: fall back (mkdir lock for that path, notify.once warning).
 
 ## The edit
 

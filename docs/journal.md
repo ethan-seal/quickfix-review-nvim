@@ -170,9 +170,9 @@ beyond libc.
   the current 1 s budget. Hold it only for appends, sealing, checkpoint write
   and GC, never while rendering. x5ft already moved rendering out.
 - **Release is automatic.** The kernel releases the lock when the process
-  exits or crashes. The pid file, `stale()`, `STALE_SECONDS` and break_lock
-  are gone from the flock path. `log.pid_alive` survives only for
-  maintenance's `.rotating-<pid>` stray cleanup, which v3 deletes.
+  exits or crashes. The pid file, `stale()` and `STALE_SECONDS` are gone
+  from the flock path. `log.pid_alive` and break_lock survive there only to
+  remove a dead mkdir lock left by an older version (below).
 - **Not reentrant across fds.** flock is per open file description. Keep one
   fd per lock file per process, plus the existing `lock_held` guard, and key
   that guard by lock path. That also fixes the Opus finding that a single
@@ -182,9 +182,18 @@ beyond libc.
   `LockFileEx` later.
 - **Mixed versions do not exclude each other.** A Neovim still running
   pre-flock code takes the mkdir lock; the new code takes the flock. Until
-  the v3 migration (which takes both), restart every Neovim after updating.
-- **flock errors are not contention.** ENOLCK/EOPNOTSUPP (some NFS/FUSE
-  mounts) must surface as a lock error, not a 1 s spin then "Timed out".
+  the v3 migration (which takes both), restart every Neovim after updating
+  (README says so). Under the flock, a mkdir lock (`loc.lock`) naming a pid
+  that is provably dead (`log.pid_alive` false) is removed through
+  break_lock; one naming a live pid, this process's own, or no pid is left
+  alone, since an older Neovim may be mid-write under it.
+- **flock errors are not contention.** Only EWOULDBLOCK/EAGAIN (11 on Linux,
+  35 on macOS/BSD) and EINTR are retried. Any other errno (ENOLCK,
+  EOPNOTSUPP on some NFS/FUSE mounts) falls back (iv2p's decision) to the
+  mkdir lock for that review, for the rest of the session, with one warning
+  naming the errno, instead of a 1 s spin then "Timed out". On such a
+  mount a Neovim whose flock works and one that fell back would not exclude
+  each other; both see the same mount, so that is not expected.
 
 ## Indexes
 

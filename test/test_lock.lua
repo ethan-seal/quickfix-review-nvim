@@ -183,6 +183,196 @@ run_test('holding one review\'s lock does not skip locking another\'s', function
   vim.fn.delete(dir, 'rf')
 end)
 
+-- A mkdir lock left by a Neovim running older code, next to a flock
+local function seed_old_lock(dir, pid)
+  vim.fn.mkdir(dir, 'p')
+  if pid then write_bytes(dir .. '/pid', tostring(pid) .. '\n') end
+end
+
+run_test('under the flock, an old mkdir lock with a dead pid is removed', function()
+  local loc = loc_at(vim.fn.tempname())
+  local child = vim.system({ 'true' })
+  child:wait()
+  seed_old_lock(loc.lock, child.pid)
+  assert.truthy(lock.with_lock(loc, function() end), 'taken')
+  assert.equals(vim.fn.isdirectory(loc.lock), 0, 'the dead lock dir is removed')
+  assert.length(vim.fn.glob(loc.lock .. '.stale-*', true, true), 0, 'nothing left aside')
+  remove_lock_files(loc)
+end)
+
+run_test('under the flock, an old mkdir lock with a live pid, or none, is left alone', function()
+  local loc = loc_at(vim.fn.tempname())
+  for _, case in ipairs({
+    { 'own pid', uv.os_getpid() },
+    { 'live pid', sleeper().pid },
+    { 'no pid', nil },
+  }) do
+    seed_old_lock(loc.lock, case[2])
+    assert.truthy(lock.with_lock(loc, function() end), case[1] .. ': taken')
+    assert.equals(vim.fn.isdirectory(loc.lock), 1, case[1] .. ': the lock dir is left')
+    local fh = io.open(loc.lock .. '/pid', 'r')
+    local pid = fh and tonumber(fh:read('*l'))
+    if fh then fh:close() end
+    assert.equals(pid, case[2], case[1] .. ': with its pid')
+    vim.fn.delete(loc.lock, 'rf')
+  end
+  remove_lock_files(loc)
+end)
+
+-- flock's errnos, with the FFI replaced by a fake whose flock fails with a
+-- settable errno, and the module reloaded
+
+local notify = require('quickfix-review.notify')
+local saved_ffi_e, saved_preload_e = package.loaded.ffi, package.preload.ffi
+local errno_ok, errno_err = pcall(function()
+  local fake = { errno_value = 0, calls = 0, fail = math.huge }
+  local fake_ffi = {
+    os = 'Linux',
+    cdef = function() end,
+    errno = function() return fake.errno_value end,
+    C = {
+      flock = function(_, op)
+        if op ~= 6 then return 0 end -- LOCK_UN
+        fake.calls = fake.calls + 1
+        if fake.calls <= fake.fail then return -1 end
+        return 0
+      end,
+    },
+  }
+  package.loaded.ffi = nil
+  package.preload.ffi = function() return fake_ffi end
+  package.loaded[MODULE] = nil
+  local flk = require(MODULE)
+
+  local function reset(errno, fail)
+    fake.errno_value, fake.calls, fake.fail = errno, 0, fail or math.huge
+  end
+
+  local function capture_notify(fn)
+    local calls, original = {}, vim.notify
+    vim.notify = function(msg, level) table.insert(calls, { msg = msg, level = level }) end
+    local ok, err = pcall(fn)
+    vim.notify = original
+    if not ok then error(err, 0) end
+    return calls
+  end
+
+  run_test('a flock refused (EOPNOTSUPP) falls back to the mkdir lock at once, warning once', function()
+    assert.equals(flk.backend, 'flock', 'flock is the backend')
+    local loc = loc_at(vim.fn.tempname())
+    notify.forget('lock-flock:' .. loc.flock)
+    reset(95)
+    local runs, dir_during = 0, nil
+    local ok, waited
+    local calls = capture_notify(function()
+      local start = uv.hrtime()
+      ok = flk.with_lock(loc, function()
+        runs = runs + 1
+        dir_during = vim.fn.isdirectory(loc.lock)
+      end)
+      waited = (uv.hrtime() - start) / 1e6
+    end)
+    assert.truthy(ok, 'taken')
+    assert.equals(runs, 1, 'fn ran once')
+    assert.truthy(waited < 100, 'no wait, got ' .. waited .. 'ms')
+    assert.equals(dir_during, 1, 'under the mkdir lock')
+    assert.equals(vim.fn.isdirectory(loc.lock), 0, 'released')
+    assert.length(calls, 1, 'one warning')
+    assert.equals(calls[1].level, vim.log.levels.WARN, 'at WARN')
+    assert.truthy(calls[1].msg:find('errno 95', 1, true), 'naming the errno: ' .. calls[1].msg)
+    assert.truthy(calls[1].msg:find('mkdir', 1, true), 'and the fallback: ' .. calls[1].msg)
+    local flock_calls = fake.calls
+    local calls2 = capture_notify(function()
+      assert.truthy(flk.with_lock(loc, function() runs = runs + 1 end), 'taken again')
+    end)
+    assert.equals(runs, 2, 'fn ran again')
+    assert.length(calls2, 0, 'no second warning')
+    assert.equals(fake.calls, flock_calls, 'flock not tried again')
+    assert.falsy(flk.held(loc.flock), 'flock not held')
+    assert.falsy(flk.held(loc.lock), 'mkdir lock not held')
+    remove_lock_files(loc)
+  end)
+
+  run_test('after a flock fallback, a nested call runs under the outer mkdir lock', function()
+    local loc = loc_at(vim.fn.tempname())
+    reset(95)
+    local inner, pid_after
+    capture_notify(function()
+      assert.truthy(flk.with_lock(loc, function()
+        inner = flk.with_lock(loc, function() return true end)
+        local fh = io.open(loc.lock .. '/pid', 'r')
+        pid_after = fh and tonumber(fh:read('*l'))
+        if fh then fh:close() end
+      end), 'taken')
+    end)
+    assert.truthy(inner, 'the nested call ran')
+    assert.equals(pid_after, uv.os_getpid(), 'the outer lock is still this process\'s')
+    assert.length(vim.fn.glob(loc.lock .. '.stale-*', true, true), 0, 'not broken aside')
+    assert.equals(vim.fn.isdirectory(loc.lock), 0, 'released')
+    remove_lock_files(loc)
+  end)
+
+  run_test('with_both after a flock refusal runs fn once under the mkdir lock', function()
+    local loc = loc_at(vim.fn.tempname())
+    reset(38) -- ENOSYS
+    local runs = 0
+    local ok, a
+    local start = uv.hrtime()
+    capture_notify(function()
+      ok, a = flk.with_both(loc, function()
+        runs = runs + 1
+        return vim.fn.isdirectory(loc.lock)
+      end)
+    end)
+    local waited = (uv.hrtime() - start) / 1e6
+    assert.truthy(ok, 'taken')
+    assert.equals(a, 1, 'under the mkdir lock')
+    assert.equals(runs, 1, 'fn ran once')
+    assert.truthy(waited < 100, 'no wait, got ' .. waited .. 'ms')
+    assert.equals(vim.fn.isdirectory(loc.lock), 0, 'released')
+    remove_lock_files(loc)
+  end)
+
+  run_test('a contended flock (EWOULDBLOCK) is still retried, then times out', function()
+    local loc = loc_at(vim.fn.tempname())
+    notify.forget('lock-flock:' .. loc.flock)
+    reset(11)
+    local ran, ok, err = false, nil, nil
+    local start = uv.hrtime()
+    local calls = capture_notify(function()
+      ok, err = flk.with_lock(loc, function() ran = true end)
+    end)
+    local waited = (uv.hrtime() - start) / 1e6
+    assert.falsy(ok, 'not taken')
+    assert.truthy(tostring(err):find('Timed out', 1, true), 'times out: ' .. tostring(err))
+    assert.truthy(waited >= 900, 'waited about a second, got ' .. waited .. 'ms')
+    assert.truthy(fake.calls > 1, 'retried')
+    assert.falsy(ran, 'fn not run')
+    assert.equals(vim.fn.isdirectory(loc.lock), 0, 'no mkdir lock taken')
+    assert.length(calls, 0, 'no warning')
+    assert.falsy(flk.held(loc.flock), 'not counted as held')
+    remove_lock_files(loc)
+  end)
+
+  run_test('a flock interrupted (EINTR) is retried', function()
+    local loc = loc_at(vim.fn.tempname())
+    reset(4, 1)
+    local ran = false
+    local calls = capture_notify(function()
+      assert.truthy(flk.with_lock(loc, function() ran = true end), 'taken')
+    end)
+    assert.truthy(ran, 'fn ran')
+    assert.equals(fake.calls, 2, 'retried once')
+    assert.length(calls, 0, 'no warning')
+    assert.equals(vim.fn.isdirectory(loc.lock), 0, 'no mkdir lock taken')
+    remove_lock_files(loc)
+  end)
+end)
+package.loaded.ffi, package.preload.ffi = saved_ffi_e, saved_preload_e
+package.loaded[MODULE] = lock
+kill_children()
+if not errno_ok then error(errno_err, 0) end
+
 -- The mkdir fallback, with the FFI made unavailable and the module reloaded
 
 local saved_ffi, saved_preload = package.loaded.ffi, package.preload.ffi

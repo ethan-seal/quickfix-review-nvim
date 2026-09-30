@@ -245,7 +245,8 @@ function M.readable_header(data)
 end
 
 -- Whether process `pid` may be alive: only a definite ESRCH says it is not
--- (the mkdir lock's staleness check, store/lock.lua)
+-- (the mkdir lock's staleness check, and the removal of a dead mkdir lock
+-- under the flock, store/lock.lua)
 function M.pid_alive(pid)
   local alive, _, name = uv.kill(pid, 0)
   return alive or name ~= 'ESRCH'

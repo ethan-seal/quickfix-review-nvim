@@ -1,7 +1,8 @@
 -- The storage lock of a review: flock(2) on its lock file (loc.flock), which
 -- the kernel releases when the holder exits, however it exits. Where LuaJIT's
--- FFI is missing, or on Windows, an mkdir lock (loc.lock) is used instead.
--- See docs/journal.md#locking.
+-- FFI is missing, or on Windows, an mkdir lock (loc.lock) is used instead;
+-- so it is, with a warning, for a lock file whose flock fails with anything
+-- but contention (a filesystem that refuses flock). See docs/journal.md#locking.
 local uv = vim.uv or vim.loop
 
 local M = {}
@@ -23,18 +24,41 @@ local has_ffi, ffi = pcall(require, 'ffi')
 if has_ffi then
   -- Raises if already declared (by another plugin, or a reload of this one)
   pcall(ffi.cdef, 'int flock(int fd, int op);')
+  pcall(ffi.cdef, 'char *strerror(int errnum);')
 end
 
 local LOCK_EX_NB, LOCK_UN = 6, 8 -- LOCK_EX | LOCK_NB, LOCK_UN
+-- The errnos of a flock that is only contended: EWOULDBLOCK (EAGAIN on
+-- Linux, 11; 35 on macOS and the BSDs), and EINTR
+local EAGAIN = (has_ffi and ffi.os == 'Linux') and 11 or 35
+local EINTR = 4
+
+-- The text of errno `e`, or "errno <e>" where strerror can't be called
+local function errno_text(e)
+  local ok, text = pcall(function() return ffi.string(ffi.C.strerror(e)) end)
+  if ok and type(text) == 'string' and text ~= '' then return text .. ' (errno ' .. tostring(e) .. ')' end
+  return 'errno ' .. tostring(e)
+end
+
+-- The flock paths whose flock failed with anything but contention: their
+-- review takes the mkdir lock instead, for the rest of the session
+local flock_unsupported = {}
 
 -- Run fn with `path` flock'ed. The file is opened for appending (never
 -- truncated nor written: its content is irrelevant) and kept open for as
--- long as the lock is held; closing it releases the lock.
+-- long as the lock is held; closing it releases the lock. Only contention
+-- is retried: any other failure returns nil, 'unsupported' and its errno.
 local function with_flock(path, fn)
   local fd, err = uv.fs_open(path, 'a', 420) -- 0644
   if not fd then return false, 'Could not lock ' .. path .. ': ' .. tostring(err) end
   local deadline = uv.hrtime() + WAIT_MS * 1e6
   while ffi.C.flock(fd, LOCK_EX_NB) ~= 0 do
+    -- Read before any other call can overwrite it
+    local e = ffi.errno()
+    if e ~= EAGAIN and e ~= EINTR then
+      uv.fs_close(fd)
+      return nil, 'unsupported', e
+    end
     if uv.hrtime() > deadline then
       uv.fs_close(fd)
       return timed_out(path)
@@ -169,16 +193,43 @@ end
 -- 'flock', or 'mkdir' where flock can't be called
 M.backend = (has_ffi and vim.fn.has('win32') == 0) and 'flock' or 'mkdir'
 
+-- Remove the mkdir lock `lockdir` a Neovim running older code left behind,
+-- once it is provably dead: it names a pid, and that process is gone. One
+-- naming a live process (which may be mid-write), or no pid, is left alone.
+-- Called with the flock held.
+local function clear_dead_v2_lock(lockdir)
+  if not lockdir or held[lockdir] then return end
+  local pid = read_pid(lockdir)
+  if pid and not log.pid_alive(pid) then break_lock(lockdir, pid) end
+end
+
 -- Run fn with the lock of the review at `loc` (a store/location) held. A
 -- lock another process holds is waited on for up to a second. Nested calls
 -- on the same review run under the outer lock; another review's lock is
--- taken as usual.
+-- taken as usual. Under the flock, a dead mkdir lock (loc.lock) left by an
+-- older version is removed first. Where flock fails with anything but
+-- contention, the mkdir lock is taken instead, from then on, with one warning.
 -- Returns: true and fn's results, or false and an error (fn not run)
 function M.with_lock(loc, fn)
-  local path = M.backend == 'flock' and loc.flock or loc.lock
+  local use_flock = M.backend == 'flock' and not flock_unsupported[loc.flock]
+  local path = use_flock and loc.flock or loc.lock
   if held[path] then return true, fn() end
-  if M.backend == 'flock' then return with_flock(path, fn) end
-  return with_mkdir(path, fn)
+  if not use_flock then return with_mkdir(path, fn) end
+  local r = vim.F.pack_len(with_flock(path, function()
+    clear_dead_v2_lock(loc.lock)
+    return fn()
+  end))
+  if r[1] == nil and r[2] == 'unsupported' then
+    -- Set before with_mkdir, so a nested with_lock runs under it
+    flock_unsupported[path] = true
+    require('quickfix-review.notify').once(
+      'lock-flock:' .. path,
+      'flock on ' .. path .. ' failed (' .. errno_text(r[3]) .. '); using the mkdir lock ' .. tostring(loc.lock) .. ' instead',
+      vim.log.levels.WARN
+    )
+    return with_mkdir(loc.lock, fn)
+  end
+  return unpack(r, 1, r.n)
 end
 
 -- Run fn with both locks of the review at `loc` held: the flock, and inside

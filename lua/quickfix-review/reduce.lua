@@ -4,10 +4,14 @@
 --
 -- State: { comments = { record... }, trash = { [id] = record },
 -- removed = { { id, op, eid, ts }... }, rebases = { from_root... } }. `comments` are the live comments in
--- the order they were added; `trash` holds every deleted comment, so it can
+-- the order they were added; `trash` holds the deleted comments, so they can
 -- be restored. `removed` lists the trashed ids in the (file) order they were
 -- removed, with the removing event's op ('delete' or 'clear'), eid and ts:
--- the comments of one clear share its eid. `rebases` lists the old project
+-- the comments of one clear share its eid. Both are bounded: after each
+-- delete, clear or checkpoint only the newest M.TRASH_KEEP removals are kept,
+-- plus every removal of the newest removing event (a clear is never cut in
+-- half); older ones are dropped from both (see prune). The events stay in
+-- the journal. `rebases` lists the old project
 -- roots of the review (rebase events, written by store/adopt.lua), in the
 -- order they were logged: an absolute filename under one of them is shown
 -- under the current root (record.resolve_filename). Records are comment records in
@@ -19,8 +23,9 @@
 -- serialised (encode M.persisted(state), not the state itself).
 --
 -- Rules:
--- - add (and each comment of an import) of an id that is live or in the
---   trash is ignored, so appending the same event twice changes nothing.
+-- - add (and each comment of an import) of an id that is live or still in
+--   the trash is ignored, so appending the same event twice changes nothing.
+--   An id pruned from the trash is no longer known: an add of it is applied.
 -- - update and delete of an unknown or deleted id are ignored: nothing is
 --   ever resurrected by them.
 -- - delete and clear move comments to the trash; restore makes a trashed (or
@@ -39,7 +44,11 @@ local M = {}
 -- The shape of the state a checkpoint (store/checkpoint.lua) holds. Bump it
 -- when that shape changes: checkpoints of another STATE_VERSION are ignored
 -- and rebuilt by replaying the events (docs/journal.md#checkpoints).
-M.STATE_VERSION = 2
+M.STATE_VERSION = 3
+
+-- How many removals `trash`/`removed` keep (see prune). A module constant,
+-- never a user option: replay and checkpoints must agree for every config.
+M.TRASH_KEEP = 1000
 
 function M.new()
   return { comments = {}, trash = {}, removed = {}, rebases = {}, index = { by_id = {} } }
@@ -111,6 +120,29 @@ local function trash(state, id, ev)
   return nil
 end
 
+-- Drop the oldest removals from state.removed, and their records from
+-- state.trash, until at most M.TRASH_KEEP are left. The removals of the
+-- newest removing event (those sharing the last entry's non-nil eid, which
+-- are contiguous at the end) are never dropped, so undo of the last delete
+-- or clear stays complete. Call once per event, never per comment of a clear.
+local function prune(state)
+  local removed = state.removed
+  local n = #removed
+  local drop = n - M.TRASH_KEEP
+  if drop <= 0 then return end
+  local eid = removed[n].eid
+  if eid ~= nil then
+    local first = n
+    while first > 1 and removed[first - 1].eid == eid do first = first - 1 end
+    drop = math.min(drop, first - 1)
+  end
+  if drop <= 0 then return end
+  for i = 1, drop do state.trash[removed[i].id] = nil end
+  local kept = {}
+  for i = drop + 1, n do kept[i - drop] = removed[i] end
+  state.removed = kept
+end
+
 local handlers = {}
 
 function handlers.header() return nil end
@@ -154,7 +186,9 @@ end
 
 function handlers.delete(state, ev)
   if type(ev.id) ~= 'string' then return 'invalid' end
-  return trash(state, ev.id, ev)
+  local why = trash(state, ev.id, ev)
+  if not why then prune(state) end
+  return why
 end
 
 -- Only the comments the clear lists are trashed, so a comment added by
@@ -164,6 +198,7 @@ function handlers.clear(state, ev)
   for _, record in ipairs(ev.comments) do
     if valid(record) then trash(state, record.id, ev) end
   end
+  prune(state)
   return nil
 end
 
@@ -208,6 +243,7 @@ function handlers.checkpoint(state, ev)
     removed[i] = { id = e.id, op = e.op, eid = e.eid, ts = type(e.ts) == 'number' and e.ts or nil }
   end
   state.comments, state.trash, state.removed = comments, trashed, removed
+  prune(state)
   if s.rebases ~= nil then
     local rebases = {}
     for i, root in ipairs(s.rebases) do rebases[i] = root end

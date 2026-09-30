@@ -118,6 +118,18 @@ position.
   `{"v":3,"state_v":S,"journal_id":…,"seg":N,"offset":O,"state":{comments,trash,removed,rebases},"imports":[…],"refs":[…]}`.
   `refs` is the set of snapshot hashes referenced by the active segment up to
   O, so snapshot GC does not need to read the active segment.
+- **Bounded trash.** `trash` and `removed` keep only the newest
+  `reduce.TRASH_KEEP` (1000) removals, plus every removal of the newest
+  removing event, so undo of the last delete or clear stays whole. The
+  reducer prunes the oldest after each delete, clear and checkpoint event,
+  so checkpoint size is bounded by the live comments plus that tail rather
+  than by every deletion ever made. `TRASH_KEEP` is a module constant, never
+  a user option: replay and checkpoints must agree for every config. Raw
+  events stay forever; only the reduced state is bounded. An id pruned from
+  the trash is no longer known to the reducer, so an `add` or `import` of it
+  is applied rather than ignored as a duplicate, and `:ReviewTrash` /
+  `:ReviewRestore {id}` cannot reach it. Introducing the bound bumped
+  `STATE_VERSION` to 3.
 - **Written:**
   - on sealing;
   - after an append that leaves the tail at least `checkpoint_every` events
@@ -215,7 +227,7 @@ store/view.lua (`view.in_file` / `store.in_file`), built lazily from the
 live comments and cleared by `set_comments`, and it is never serialised
 either. Reducer indexes are never serialised: the state.json cache and the rotation
 checkpoint write only `comments`, `trash` and `removed`
-(`reduce.persisted`), and the index is rebuilt (`reduce.reindex`, O(n))
+(`reduce.persisted`; the last two bounded, see Checkpoints), and the index is rebuilt (`reduce.reindex`, O(n))
 when a checkpoint is applied or a cache is loaded. Duplicate checks and
 lookups are O(1), which removes the O(n²) cost of adding many comments;
 update and delete still scan `comments` for the record's position, since

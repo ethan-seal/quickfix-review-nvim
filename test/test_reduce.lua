@@ -273,6 +273,85 @@ assert.run_test('a checkpoint keeps records verbatim', function()
   assert.equals(got.pos, nil, 'no pos')
 end)
 
+
+-- K adds, then K deletes each with its own eid, K = TRASH_KEEP + 500
+local function many_deletes()
+  local K = reduce.TRASH_KEEP + 500
+  local events = {}
+  for i = 1, K do table.insert(events, { op = 'add', comment = rec('c' .. i) }) end
+  for i = 1, K do table.insert(events, { op = 'delete', id = 'c' .. i, eid = 'e' .. i, ts = i }) end
+  return events, K
+end
+
+assert.run_test('removed and trash keep only the newest TRASH_KEEP removals', function()
+  local events, K = many_deletes()
+  local state = replay(events)
+  assert.equals(#state.removed, reduce.TRASH_KEEP, 'removed bounded')
+  assert.equals(state.removed[1].id, 'c501', 'oldest kept is c501')
+  assert.equals(state.removed[#state.removed].id, 'c' .. K, 'newest last')
+  assert.equals(state.trash.c1, nil, 'c1 pruned')
+  assert.equals(state.trash.c500, nil, 'c500 pruned')
+  assert.truthy(state.trash.c501, 'c501 kept')
+  assert.truthy(state.trash['c' .. K], 'newest kept')
+  assert.equals(vim.tbl_count(state.trash), reduce.TRASH_KEEP, 'trash bounded')
+  for _, e in ipairs(state.removed) do
+    assert.truthy(state.trash[e.id], 'every removed id is in the trash: ' .. e.id)
+  end
+  check_index(state, 'after many deletes')
+
+  -- Replay from scratch equals a checkpoint of a prefix plus the rest
+  local split = 2 * K - 300
+  local prefix = {}
+  for i = 1, split do prefix[i] = events[i] end
+  local rest = { as_checkpoint(replay(prefix)) }
+  for i = split + 1, #events do table.insert(rest, events[i]) end
+  local again = replay(rest)
+  assert.truthy(vim.deep_equal(again.comments, state.comments), 'same comments')
+  assert.truthy(vim.deep_equal(again.trash, state.trash), 'same trash')
+  assert.truthy(vim.deep_equal(again.removed, state.removed), 'same removals, in order')
+end)
+
+assert.run_test('a restore of a pruned id makes it live', function()
+  local events = many_deletes()
+  local state = replay(events)
+  local _, why = reduce.apply(state, { op = 'restore', id = 'c1', comment = rec('c1'), eid = 'r1' })
+  assert.equals(why, nil, 'applied')
+  assert.truthy(reduce.get(state, 'c1'), 'c1 live')
+  assert.equals(#state.removed, reduce.TRASH_KEEP, 'removed unchanged')
+  check_index(state, 'after restoring a pruned id')
+end)
+
+assert.run_test('an add of a pruned id is applied', function()
+  local events = many_deletes()
+  local state = replay(events)
+  local _, why = reduce.apply(state, { op = 'add', comment = rec('c1', 'back') })
+  assert.equals(why, nil, 'no longer a duplicate')
+  assert.equals(reduce.get(state, 'c1').body, 'back', 'live again')
+  -- An id still in the trash stays a duplicate
+  local _, why2 = reduce.apply(state, { op = 'add', comment = rec('c501', 'back') })
+  assert.equals(why2, 'duplicate', 'kept trash id still a duplicate')
+end)
+
+assert.run_test('a clear larger than TRASH_KEEP is kept whole', function()
+  local n = reduce.TRASH_KEEP + 10
+  local events, cleared = {}, {}
+  for i = 1, n do
+    table.insert(events, { op = 'add', comment = rec('k' .. i) })
+    cleared[i] = rec('k' .. i)
+  end
+  table.insert(events, { op = 'add', comment = rec('last') })
+  table.insert(events, { op = 'clear', comments = cleared, eid = 'big' })
+  local state = replay(events)
+  assert.equals(#state.removed, n, 'the whole clear is kept')
+  for i = 1, n do assert.truthy(state.trash['k' .. i], 'k' .. i .. ' in the trash') end
+
+  reduce.apply(state, { op = 'delete', id = 'last', eid = 'd1' })
+  assert.equals(#state.removed, reduce.TRASH_KEEP, 'pruned to the bound by the next removal')
+  assert.equals(state.removed[#state.removed].id, 'last', 'newest last')
+  assert.equals(state.trash.k11, nil, 'oldest of the clear pruned')
+  assert.truthy(state.trash.k12, 'rest of the clear kept')
+  assert.equals(vim.tbl_count(state.trash), reduce.TRASH_KEEP, 'trash bounded')
+end)
 assert.run_test('a malformed checkpoint is ignored and changes nothing', function()
   local base = { { op = 'add', comment = rec('a') } }
   for i, bad in ipairs({

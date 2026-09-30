@@ -551,7 +551,11 @@ press `dd` to delete the comment under cursor.
                         "Review trash" (the review's list is left alone).
                         Each row shows when and how (delete or clear) the
                         comment was removed, its kind, the first line of
-                        its body and its id.
+                        its body and its id. The trash keeps the 1000 most
+                        recent removals (plus every comment of the last
+                        delete or clear). Older deleted comments stay in
+                        the log and in |:ReviewHistory|, but can no longer
+                        be listed, completed or restored by id.
 
                                                             *:ReviewAdopt*
 :ReviewAdopt {dir}      Copy the review in the storage directory {dir}
@@ -579,7 +583,8 @@ press `dd` to delete the comment under cursor.
                         first, default No, when that is more than one).
                         Restoring a comment that is already in the review
                         only says so. A restore is appended to the log
-                        like any other change.
+                        like any other change. Only comments still in the
+                        trash (see |:ReviewTrash|) can be restored.
 
                                                           *:ReviewHistory*
 :ReviewHistory [id]     Show the logged events of comment {id} in order

@@ -284,6 +284,37 @@ assert.run_test('a v1 file is migrated to the log as v2 records, the original ke
   end)
 end)
 
+assert.run_test('a second migration keeps the earlier .pre-log.bak', function()
+  with_file(V1, function(path)
+    qf = restart(path)
+    assert.length(qf.comments(), 4, 'first migration')
+    assert.equals(read_bytes(path .. '.pre-log.bak'), V1, 'first backup')
+
+    -- The journal is gone (e.g. deleted by hand) and a new comments.json
+    -- appears: it is migrated again, beside the earlier backup
+    for _, p in ipairs({ test_helper.events_path(path), test_helper.checkpoints_path(path),
+      test_helper.log_path(path), test_helper.state_path(path), path .. '.snapshots' }) do
+      vim.fn.delete(p, 'rf')
+    end
+    local other = string.format('[{"filename":%q,"lnum":1,"text":"[NOTE] later"}]', abs)
+    write_bytes(path, other)
+    qf = restart(path)
+    assert.length(qf.comments(), 1, 'second migration')
+
+    assert.equals(read_bytes(path .. '.pre-log.bak'), V1, 'earlier backup kept')
+    local dir, base = vim.fn.fnamemodify(path, ':h'), vim.fn.fnamemodify(path, ':t')
+    local stamped = {}
+    for name, _ in vim.fs.dir(dir) do
+      if name:sub(1, #base) == base and name:sub(#base + 1):match('^%.pre%-log%.%d+%.bak$') then
+        table.insert(stamped, name)
+      end
+    end
+    assert.length(stamped, 1, 'one timestamped backup')
+    assert.equals(read_bytes(dir .. '/' .. stamped[1]), other, 'it holds the new original')
+    assert.equals(vim.fn.filereadable(path), 0, 'comments.json moved aside')
+  end)
+end)
+
 assert.run_test('an empty v1 file upgrades cleanly', function()
   with_file('[]', function(path)
     qf = restart(path)

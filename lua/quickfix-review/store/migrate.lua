@@ -85,11 +85,27 @@ local function start_journal(loc, events, mode)
   return true, nil
 end
 
+-- Where to keep comments.json (at `path`) when it is moved aside:
+-- comments.json.pre-log.bak, or, when an earlier migration's backup already
+-- has that name, comments.json.pre-log.<unix ms>.bak (never overwritten).
+-- Call with the lock held.
+local function backup_name(path)
+  local plain = path .. location.MIGRATED
+  if not uv.fs_stat(plain) then return plain end
+  local sec, usec = uv.gettimeofday()
+  local stem = path .. '.pre-log.' .. string.format('%d', sec * 1000 + math.floor(usec / 1000))
+  local bak, n = stem .. '.bak', 1
+  while uv.fs_stat(bak) do
+    bak, n = stem .. '-' .. n .. '.bak', n + 1
+  end
+  return bak
+end
+
 -- Move comments.json into a new journal: under the lock, create segment 1
 -- holding the header and an import of its comments (with the sha256 of its
--- bytes), then rename it to comments.json.pre-log.bak, which keeps the
--- original bytes. A crash before the rename is finished by the next sync,
--- which finds the import's sha256 in the journal. An unreadable
+-- bytes), then rename it to comments.json.pre-log.bak (see backup_name),
+-- which keeps the original bytes. A crash before the rename is finished by
+-- the next sync, which finds the import's sha256 in the journal. An unreadable
 -- comments.json is refused: nothing is written and the file is left alone.
 -- Returns: ok (boolean), err (string or nil)
 local function migrate_json(loc)
@@ -99,7 +115,8 @@ local function migrate_json(loc)
     if not src then return true end
     local raw = location.read_bytes(loc.path)
     if not raw then return nil, 'Could not read ' .. loc.path end
-    local records, lerr = load_records(raw, loc.path, loc.path .. location.MIGRATED, loc.root)
+    local bak = backup_name(loc.path)
+    local records, lerr = load_records(raw, loc.path, bak, loc.root)
     if not records then return nil, lerr end
     local import = log.event('import', { source_sha256 = vim.fn.sha256(raw), comments = serialise_all(records, loc) })
     local sok, serr = start_journal(loc, { import }, bit.band(src.mode, 511))
@@ -108,7 +125,7 @@ local function migrate_json(loc)
     -- import source (see import_legacy); the journal's import sha256 marks
     -- it done
     if is_legacy_global(loc) then return true end
-    local renamed, rerr = uv.fs_rename(loc.path, loc.path .. location.MIGRATED)
+    local renamed, rerr = uv.fs_rename(loc.path, bak)
     if not renamed then
       vim.notify(string.format('quickfix-review: migrated %s into %s but could not rename it: %s',
         loc.path, loc.events, tostring(rerr)), vim.log.levels.WARN)
@@ -162,6 +179,16 @@ local function legacy_review(loc, legacy_path)
   if not res then return false, err, legacy_log end
   local bytes = location.read_bytes(legacy_log)
   return { state = res.state, imports = res.imports, sha = bytes and vim.fn.sha256(bytes) or nil, source = legacy_log }
+end
+
+-- Whether `root` is $HOME or / (symlinks resolved, trailing slashes ignored)
+local function is_broad_root(root)
+  local r = root:gsub('/+$', '')
+  if r == '' then return true end
+  local home = vim.env.HOME
+  if not home or home == '' then return false end
+  home = utils.realpath(home):gsub('/+$', '')
+  return home ~= '' and r == home
 end
 
 -- First use of a project with neither a journal nor a comments.json: copy
@@ -274,6 +301,17 @@ local function import_legacy(loc)
   end
   -- Nothing for this project: leave the dir empty (see above)
   if #imported == 0 then return done() end
+  -- A review rooted at $HOME or / (Neovim started outside any project)
+  -- would take nearly every comment: skip it, with a warning. It is settled
+  -- (done), not failed, so the review is usable; its first change starts
+  -- the journal, which marks it imported. A shared dir still imports
+  -- everything (it is every project's review).
+  if not loc.shared and is_broad_root(loc.root) then
+    warn_once(loc, string.format('not importing comments from %s into the review at %s (your home directory'
+      .. ' or /, which would take nearly every comment): open Neovim inside a project to import its comments',
+      source, loc.root))
+    return done()
+  end
   if dropped + unplaced > 0 then
     warn_once(loc, string.format('not importing %d comment(s) from %s: invalid line number'
       .. ' or no file name (the file is unchanged)', dropped + unplaced, source))
@@ -668,7 +706,7 @@ function M.check_reappeared(loc)
   local raw = location.read_bytes(loc.path)
   if raw and journal.has_import(vim.fn.sha256(raw)) then
     journal.locked(loc, function()
-      if uv.fs_stat(loc.path) then uv.fs_rename(loc.path, loc.path .. location.MIGRATED) end
+      if uv.fs_stat(loc.path) then uv.fs_rename(loc.path, backup_name(loc.path)) end
     end)
     return
   end

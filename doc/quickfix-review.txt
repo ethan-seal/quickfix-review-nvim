@@ -291,8 +291,10 @@ comment's new position.
 Earlier versions kept the review in `comments.json` in the same directory.
 When a project has a `comments.json` but no log yet, its comments are
 copied into a new log as one `import` event and the file is renamed to
-`comments.json.pre-log.bak`, byte for byte as it was. From then on the log
-is the review: a `comments.json` that reappears next to it (written by an
+`comments.json.pre-log.bak`, byte for byte as it was. If a
+`comments.json.pre-log.bak` from an earlier migration is already there, it
+is kept and the new copy is named `comments.json.pre-log.<unix ms>.bak`.
+From then on the log is the review: a `comments.json` that reappears next to it (written by an
 older version or another tool) is not read; you get one warning and the
 file is left alone.
 
@@ -306,7 +308,13 @@ with `storage_file` pointing at the global file), that copy is read
 instead. The import happens once per project: once its journal exists,
 nothing is imported again. When nothing in the file is inside the project,
 no journal is started, so the storage dir stays empty (and |:ReviewAdopt|
-can still fill it) until the project's first change.
+can still fill it) until the project's first change. A project rooted at
+your home directory or at `/` (Neovim started outside any git repo, in `~`)
+imports nothing, since nearly every comment is inside it: you get one
+warning naming the global file, and its first change starts its journal,
+so it never imports later. Open Neovim inside the project to import its
+comments. A string `storage_dir` still imports every comment, wherever
+Neovim is started.
 
                                                  *quickfix-review-storage_file*
 `storage_file` is deprecated. When set, one review is used for every

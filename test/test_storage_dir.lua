@@ -420,6 +420,48 @@ for _, v1 in ipairs({ true, false }) do
   end)
 end
 
+storage_test('a legacy file is not imported into a review rooted at $HOME', function()
+  -- A fake HOME (a temp dir, not a git repo): the real one is never touched
+  local original_home = vim.env.HOME
+  local dir = vim.fn.tempname() .. '-home'
+  vim.fn.mkdir(dir .. '/proj', 'p')
+  local home = vim.uv.fs_realpath(dir)
+  vim.env.HOME = home
+  local ok, err = pcall(function()
+    local config = mods()
+    local legacy = config.legacy_storage_file()
+    vim.fn.mkdir(vim.fn.fnamemodify(legacy, ':h'), 'p')
+    vim.fn.writefile({ vim.json.encode({ version = 2, comments = {
+      { id = '0000000000000001', filename = home .. '/proj/a.txt', lnum = 1, kind = 'issue', body = 'one',
+        created_at = 1 },
+      { id = '0000000000000002', filename = home .. '/b.txt', lnum = 2, kind = 'note', body = 'two',
+        created_at = 2 },
+    } }) }, legacy)
+    local bytes = read_bytes(legacy)
+
+    cd(home)
+    local calls = capture_notify(function()
+      restart()
+      local _, store = mods()
+      assert.equals(store.root(), home, 'the review is rooted at the fake HOME')
+      assert.length(store.all(), 0, 'nothing imported')
+      assert.length(store.all(), 0, 'nothing imported at the next sync')
+    end)
+    assert.length(mentioning(calls, 'imported'), 0, 'no import notice')
+    local warns = {}
+    for _, c in ipairs(calls) do
+      if c.level == vim.log.levels.WARN then table.insert(warns, c) end
+    end
+    assert.length(warns, 1, 'one warning')
+    assert.truthy(warns[1].msg:find(legacy, 1, true), 'the warning names the legacy file: ' .. warns[1].msg)
+    assert.length(vim.fn.glob(default_dir(home) .. '/events/*', false, true), 0, 'no journal started')
+    assert.equals(read_bytes(legacy), bytes, 'legacy bytes unchanged')
+  end)
+  vim.env.HOME = original_home
+  vim.fn.delete(dir, 'rf')
+  if not ok then error(err, 0) end
+end)
+
 storage_test('a storage_dir that cannot be created: setup and add report an error, never throw', function()
   local a, file_a = make_repo('sigma')
   local b = make_repo('tau')

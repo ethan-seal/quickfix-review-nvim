@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-4r18
 title: 'Huge end_lnum hangs sign refresh: clamp comment ranges to the buffer'
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-09-30T01:29:01Z
-updated_at: 2026-09-30T01:29:01Z
+updated_at: 2026-09-30T03:42:06Z
 ---
 
 **Symptom**: a record with a huge `end_lnum` (hand-edited or foreign journal, e.g. 1e9) makes every sign refresh loop ~1e9 times and hangs Neovim.

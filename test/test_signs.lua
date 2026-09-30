@@ -683,6 +683,40 @@ assert.run_test('refresh_buffer_signs skips lines past the end of the buffer', f
   qf.clear_review()
 end)
 
+assert.run_test('a huge end_lnum is clamped to the buffer: refresh_all returns fast', function()
+  qf.clear_review()
+  local store = require('quickfix-review.store')
+  local signs = require('quickfix-review.signs')
+  local orig_buf = vim.fn.bufnr()
+  local path = vim.fn.tempname() .. '_huge_end.txt'
+  vim.fn.writefile({ 'one', 'two', 'three' }, path)
+  vim.cmd('edit ' .. vim.fn.fnameescape(path))
+  local buf = vim.fn.bufnr()
+  local abs = vim.fn.fnamemodify(path, ':p')
+
+  assert.truthy(store.add({ filename = abs, lnum = 1, end_lnum = 1e9, kind = 'note', body = 'huge' }),
+    'record with a huge end_lnum added')
+  local start = vim.uv.hrtime()
+  local ok, err = pcall(signs.refresh_all, store.all())
+  local ms = (vim.uv.hrtime() - start) / 1e6
+
+  local lines = {}
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, utils.get_ns_id(), 0, -1, {})) do
+    lines[m[2] + 1] = true
+  end
+  local stored = store.all()[1]
+  vim.cmd('buffer ' .. orig_buf)
+  vim.cmd('bwipeout! ' .. buf)
+  qf.clear_review()
+  vim.fn.delete(path)
+
+  assert.truthy(ok, 'refresh_all does not error: ' .. tostring(err))
+  assert.truthy(ms < 100, 'refresh_all took ' .. ms .. ' ms')
+  assert.truthy(lines[1] and lines[2] and lines[3], 'signs on lines 1-3')
+  assert.length(vim.tbl_keys(lines), 3, 'signs on lines 1-3 only')
+  assert.equals(stored.end_lnum, 1e9, 'stored record not rewritten')
+end)
+
 test_helper.cleanup_test_environment()
 
 return assert

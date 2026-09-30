@@ -160,6 +160,9 @@ function M.refresh_buffer_signs(bufnr, file, comments, positions)
   -- Collect all comments for this file
   -- Track: line -> { count = N, types = {type1, type2, ...}, is_continuation = bool }
   local line_info = {}
+  -- Ranges are clamped to the buffer at use (a hand-edited or foreign record
+  -- may carry a huge end_lnum): the per-line loop below never runs past it
+  local buf_line_count = vim.api.nvim_buf_line_count(bufnr)
 
   local special = M.is_special_buffer(bufnr)
   if special then positions = nil end
@@ -178,7 +181,7 @@ function M.refresh_buffer_signs(bufnr, file, comments, positions)
       -- snapshot, so it is never outdated there
       outdated = start_line and not special and hooks.is_outdated(item)
     end
-    if start_line then
+    if start_line and start_line <= buf_line_count then
       local comment_type = item.kind
 
       -- Track start line
@@ -199,7 +202,7 @@ function M.refresh_buffer_signs(bufnr, file, comments, positions)
         table.insert(line_info[end_line].types, comment_type)
 
         -- Track continuation lines (middle lines)
-        for line = start_line + 1, end_line - 1 do
+        for line = math.max(start_line + 1, 1), math.min(end_line - 1, buf_line_count) do
           if not line_info[line] then
             line_info[line] = { count = 0, types = {}, is_continuation = true }
           end
@@ -215,7 +218,6 @@ function M.refresh_buffer_signs(bufnr, file, comments, positions)
   end
 
   -- Place signs based on collected info
-  local buf_line_count = vim.api.nvim_buf_line_count(bufnr)
   for line, info in pairs(line_info) do
     if line < 1 or line > buf_line_count then goto continue end
     if info.is_continuation and info.count == 0 then

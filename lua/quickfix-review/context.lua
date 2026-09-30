@@ -8,19 +8,33 @@ local utils = require('quickfix-review.utils')
 local GIT_TIMEOUT_MS = 2000
 local SNIPPET_PAD = 3
 
--- Run git in `dir` (argv form: no shell quoting, no shell rc). Returns stdout
--- lines, or nil on non-zero exit, timeout, or failure to spawn. `env` is
--- merged into the inherited environment.
-local function git(dir, args, env)
-  local cmd = { 'git', '-C', dir }
-  vim.list_extend(cmd, args)
-  local ok, result = pcall(function()
-    return vim.system(cmd, { text = true, timeout = GIT_TIMEOUT_MS, env = env }):wait()
-  end)
-  if not ok or not result or result.code ~= 0 or not result.stdout then return nil end
+-- stdout lines of a finished git, or nil on non-zero exit or timeout
+local function git_lines(result)
+  if not result or result.code ~= 0 or not result.stdout then return nil end
   local out = vim.split(result.stdout, '\n', { plain = true })
   if out[#out] == '' then table.remove(out) end
   return out
+end
+
+-- Run git in `dir` (argv form: no shell quoting, no shell rc). Returns stdout
+-- lines, or nil on non-zero exit, timeout, or failure to spawn. `env` is
+-- merged into the inherited environment. With `on_done`, git runs in the
+-- background and on_done(lines or nil) is called on the main loop once it
+-- exits (straight away when it can't be spawned); nothing is returned.
+local function git(dir, args, env, on_done)
+  local cmd = { 'git', '-C', dir }
+  vim.list_extend(cmd, args)
+  local opts = { text = true, timeout = GIT_TIMEOUT_MS, env = env }
+  if on_done then
+    local ok = pcall(vim.system, cmd, opts, function(result)
+      vim.schedule(function() on_done(git_lines(result)) end)
+    end)
+    if not ok then vim.schedule(function() on_done(nil) end) end
+    return
+  end
+  local ok, result = pcall(function() return vim.system(cmd, opts):wait() end)
+  if not ok then return nil end
+  return git_lines(result)
 end
 
 local function parse_hunks(diff_lines)
@@ -54,16 +68,30 @@ end
 M._parse_hunks = parse_hunks
 M._find_hunk_for_line = find_hunk_for_line
 
-local function diff_hunk(toplevel, rel, lnum, base)
-  -- Literal pathspecs so a path with glob characters (app/[id]/page.tsx)
-  -- matches only itself, not siblings like app/d/page.tsx. Set by env rather
-  -- than ':(literal)', which a user's GIT_LITERAL_PATHSPECS=1 would take as
-  -- part of the file name.
-  local diff = git(toplevel, { 'diff', '--no-color', '--unified=3', base, '--', rel },
-    { GIT_LITERAL_PATHSPECS = '1' })
+-- The lines of the hunk covering `lnum` in a diff, or nil
+local function hunk_for(diff, lnum)
   if not diff or #diff == 0 then return nil end
   local h = find_hunk_for_line(parse_hunks(diff), lnum)
   return h and h.lines or nil
+end
+
+-- Literal pathspecs so a path with glob characters (app/[id]/page.tsx)
+-- matches only itself, not siblings like app/d/page.tsx. Set by env rather
+-- than ':(literal)', which a user's GIT_LITERAL_PATHSPECS=1 would take as
+-- part of the file name.
+local function diff_args(rel, base)
+  return { 'diff', '--no-color', '--unified=3', base, '--', rel }, { GIT_LITERAL_PATHSPECS = '1' }
+end
+
+local function diff_hunk(toplevel, rel, lnum, base)
+  local args, env = diff_args(rel, base)
+  return hunk_for(git(toplevel, args, env), lnum)
+end
+
+-- As diff_hunk, in the background: on_done(lines or nil) on the main loop
+local function diff_hunk_async(toplevel, rel, lnum, base, on_done)
+  local args, env = diff_args(rel, base)
+  git(toplevel, args, env, function(diff) on_done(hunk_for(diff, lnum)) end)
 end
 
 -- Snippet from the commenting buffer, so it always matches the commented
@@ -94,40 +122,81 @@ local function repo_relative(toplevel, abs)
   return real:sub(#prefix + 1)
 end
 
--- Capture git context for `file` (absolute or cwd-relative) lines
--- start_line..end_line. `bufnr` is the buffer the comment is made from
--- (default: current). git runs in the file's own repo, never nvim's cwd;
--- any git failure leaves the commit fields nil and uses the buffer snippet.
-function M.capture(file, start_line, end_line, bufnr)
+-- What capture needs before git runs: the file's repo (toplevel, nil
+-- outside git), its path in it when a diff snippet is wanted (rel, nil
+-- otherwise), and the context without git (the buffer snippet)
+local function prepare(file, start_line, end_line, bufnr)
   bufnr = (bufnr == nil or bufnr == 0) and vim.api.nvim_get_current_buf() or bufnr
   local buffer_modified = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].modified or false
 
   local abs = vim.fn.fnamemodify(file, ':p')
   local toplevel = utils.git_toplevel(abs)
 
-  local commit, snippet
-  if toplevel then
-    local head = git(toplevel, { 'rev-parse', 'HEAD' })
-    commit = head and head[1] ~= '' and head[1] or nil
-
-    -- The diff is against the file on disk; with unsaved edits, or in a
-    -- diffview/fugitive buffer showing another revision, its line numbers
-    -- would not match the commented buffer lines.
-    local rel = repo_relative(toplevel, abs)
-    if rel and not buffer_modified and not utils.is_special_buffer(bufnr) then
-      snippet = diff_hunk(toplevel, rel, start_line, 'HEAD~1')
-             or diff_hunk(toplevel, rel, start_line, 'HEAD')
-    end
+  -- The diff is against the file on disk; with unsaved edits, or in a
+  -- diffview/fugitive buffer showing another revision, its line numbers
+  -- would not match the commented buffer lines.
+  local rel
+  if toplevel and not buffer_modified and not utils.is_special_buffer(bufnr) then
+    rel = repo_relative(toplevel, abs)
   end
 
-  local ctx = {
-    commit = commit,
-    commit_short = commit and commit:sub(1, 8) or nil,
-    snippet = snippet or buffer_snippet(bufnr, start_line, end_line),
-    snippet_source = snippet and 'diff' or 'buffer',
+  local base = {
+    snippet = buffer_snippet(bufnr, start_line, end_line),
+    snippet_source = 'buffer',
   }
-  if buffer_modified then ctx.buffer_modified = true end
+  if buffer_modified then base.buffer_modified = true end
+  return toplevel, rel, base
+end
+
+-- `base` with what git found: the HEAD lines (head, or nil) and the diff
+-- snippet (or nil)
+local function with_git(base, head, snippet)
+  local ctx = vim.deepcopy(base)
+  local commit = head and head[1] ~= '' and head[1] or nil
+  ctx.commit = commit
+  ctx.commit_short = commit and commit:sub(1, 8) or nil
+  if snippet then ctx.snippet, ctx.snippet_source = snippet, 'diff' end
   return ctx
+end
+
+-- Capture git context for `file` (absolute or cwd-relative) lines
+-- start_line..end_line. `bufnr` is the buffer the comment is made from
+-- (default: current). git runs in the file's own repo, never nvim's cwd;
+-- any git failure leaves the commit fields nil and uses the buffer snippet.
+function M.capture(file, start_line, end_line, bufnr)
+  local toplevel, rel, base = prepare(file, start_line, end_line, bufnr)
+  if not toplevel then return base end
+  local head = git(toplevel, { 'rev-parse', 'HEAD' })
+  local snippet
+  if rel then
+    snippet = diff_hunk(toplevel, rel, start_line, 'HEAD~1')
+           or diff_hunk(toplevel, rel, start_line, 'HEAD')
+  end
+  return with_git(base, head, snippet)
+end
+
+-- As capture, without waiting for git: returns the context without git
+-- (the buffer snippet) now, and runs git in the background (only the file's
+-- toplevel, cached per file, is asked for synchronously). Once git is done,
+-- on_git(ctx) is called on the main loop with the full context, only when
+-- git found a commit or a diff snippet; it may never be called (outside
+-- git, or when git fails). The background part uses only the file path,
+-- never the buffer, which may be gone by then.
+function M.capture_async(file, start_line, end_line, bufnr, on_git)
+  local toplevel, rel, base = prepare(file, start_line, end_line, bufnr)
+  if not toplevel then return base end
+  local function finish(head, snippet)
+    local ctx = with_git(base, head, snippet)
+    if ctx.commit or snippet then on_git(ctx) end
+  end
+  git(toplevel, { 'rev-parse', 'HEAD' }, nil, function(head)
+    if not rel then return finish(head, nil) end
+    diff_hunk_async(toplevel, rel, start_line, 'HEAD~1', function(snippet)
+      if snippet then return finish(head, snippet) end
+      diff_hunk_async(toplevel, rel, start_line, 'HEAD', function(s) finish(head, s) end)
+    end)
+  end)
+  return base
 end
 
 -- Lines first..last of `all` (clamped to it), each without a trailing CR,

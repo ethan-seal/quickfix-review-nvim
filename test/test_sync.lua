@@ -398,6 +398,142 @@ assert.run_test('a snapshot another Neovim wrote, before its event is appended, 
   assert.falsy(vim.uv.fs_stat(path), 'deleted')
 end)
 
+assert.run_test('two BufEnters 50 ms apart read the journal once; FocusGained still reads', function()
+  reset()
+  vim.fn.cursor(1, 1)
+  qf.add_comment('NOTE')
+  qf.comments()
+  local events_dir = test_helper.events_path()
+  local stats = {}
+  local orig = vim.uv.fs_stat
+  vim.uv.fs_stat = function(path, ...)
+    if type(path) == 'string' and path:sub(1, #events_dir) == events_dir then table.insert(stats, path) end
+    return orig(path, ...)
+  end
+  local ok, err = pcall(function()
+    vim.api.nvim_exec_autocmds('BufEnter', { buffer = file_buf })
+    vim.wait(50)
+    vim.api.nvim_exec_autocmds('BufEnter', { buffer = file_buf })
+    assert.length(stats, 2, 'one sync (active segment and the next): ' .. table.concat(stats, ', '))
+    vim.api.nvim_exec_autocmds('FocusGained', {})
+    assert.length(stats, 4, 'FocusGained is not debounced: ' .. table.concat(stats, ', '))
+  end)
+  vim.uv.fs_stat = orig
+  if not ok then error(err, 0) end
+  reset()
+end)
+
+-- A repo with file.txt committed twice (so HEAD~1 exists and its diff has a
+-- hunk at line 2); returns its dir and the file's path
+local function repo_file()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, 'p')
+  local function git(...)
+    local r = vim.system(vim.list_extend({ 'git', '-C', dir, '-c', 'user.name=T', '-c', 'user.email=t@x',
+      '-c', 'commit.gpgsign=false' }, { ... }), { text = true }):wait()
+    assert.equals(r.code, 0, 'git ' .. table.concat({ ... }, ' ') .. ': ' .. tostring(r.stderr))
+  end
+  git('init', '-q')
+  vim.fn.writefile({ 'a', 'b', 'c' }, dir .. '/file.txt')
+  git('add', 'file.txt')
+  git('commit', '-q', '-m', 'one')
+  vim.fn.writefile({ 'a', 'changed', 'c' }, dir .. '/file.txt')
+  git('commit', '-q', '-am', 'two')
+  return dir, dir .. '/file.txt'
+end
+
+-- Run fn with the context's background git calls (rev-parse HEAD, diff)
+-- answering 1 s late; fn gets a function returning how many answered
+local function with_slow_git(fn)
+  local real = vim.system
+  local answered = 0
+  vim.system = function(cmd, opts, on_exit)
+    if on_exit and cmd[1] == 'git' and (vim.tbl_contains(cmd, 'HEAD') or vim.tbl_contains(cmd, 'diff')) then
+      return real(cmd, opts, function(r)
+        vim.schedule(function()
+          vim.defer_fn(function()
+            answered = answered + 1
+            on_exit(r)
+          end, 1000)
+        end)
+      end)
+    end
+    return real(cmd, opts, on_exit)
+  end
+  local ok, err = pcall(fn, function() return answered end)
+  vim.system = real
+  if not ok then error(err, 0) end
+end
+
+assert.run_test('add_comment does not wait for git; the context is logged by an update', function()
+  reset()
+  local dir, file = repo_file()
+  local buf = vim.fn.bufadd(file)
+  vim.fn.bufload(buf)
+  vim.api.nvim_set_current_buf(buf)
+  with_slow_git(function(answered)
+    vim.fn.cursor(2, 1)
+    local t0 = vim.uv.hrtime()
+    qf.add_comment('NOTE')
+    local ms = (vim.uv.hrtime() - t0) / 1e6
+    assert.truthy(ms < 100, 'returns in under 100 ms, took ' .. ms)
+    local c = qf.comments()[1]
+    assert.truthy(c, 'added')
+    assert.equals(c.context.snippet_source, 'buffer', 'the buffer snippet for now')
+    assert.falsy(c.context.commit, 'no commit yet')
+    assert.length(test_helper.log_ops(log_file, 'update'), 0, 'no update yet')
+
+    assert.truthy(vim.wait(5000, function()
+      local now = qf.comments()[1]
+      return now and now.context.commit ~= nil
+    end, 20), 'the commit appears on the record')
+    local now = qf.comments()[1]
+    assert.equals(now.context.snippet_source, 'diff', 'the diff snippet')
+    assert.contains(now.context.snippet, '+changed', 'hunk of the change')
+    assert.equals(answered(), 2, 'rev-parse and diff HEAD~1 (no fallback to HEAD)')
+    local updates = test_helper.log_ops(log_file, 'update')
+    assert.length(updates, 1, 'one update')
+    assert.equals(updates[1].id, now.id, 'of the comment')
+    assert.truthy(updates[1].set and updates[1].set.context, 'setting the context')
+  end)
+  vim.api.nvim_set_current_buf(file_buf)
+  vim.api.nvim_buf_delete(buf, { force = true })
+  vim.fn.delete(dir, 'rf')
+  reset()
+end)
+
+assert.run_test('a context git finds after the review switched is not logged in either review', function()
+  reset()
+  local config = require('quickfix-review.config')
+  local dir, file = repo_file()
+  local buf = vim.fn.bufadd(file)
+  vim.fn.bufload(buf)
+  vim.api.nvim_set_current_buf(buf)
+  local other_file = vim.fn.tempname() .. '-other-review.json'
+  local original = config.options.storage_file
+  local ok, err = pcall(with_slow_git, function(answered)
+    vim.fn.cursor(2, 1)
+    qf.add_comment('NOTE')
+    assert.length(qf.comments(), 1, 'added')
+    config.options.storage_file = other_file
+    assert.length(qf.comments(), 0, 'the other review is empty')
+    assert.truthy(vim.wait(5000, function() return answered() >= 2 end, 20), 'git answered')
+    -- Let the scheduled callbacks run
+    vim.wait(200)
+    config.options.storage_file = original
+    assert.length(test_helper.log_ops(log_file, 'update'), 0, 'no update in the first review')
+    assert.falsy(qf.comments()[1].context.commit, 'its comment keeps the buffer context')
+    assert.falsy(vim.uv.fs_stat(test_helper.events_path(other_file)), 'nothing written to the other review')
+  end)
+  config.options.storage_file = original
+  test_helper.remove_storage(other_file)
+  vim.api.nvim_set_current_buf(file_buf)
+  vim.api.nvim_buf_delete(buf, { force = true })
+  vim.fn.delete(dir, 'rf')
+  if not ok then error(err, 0) end
+  reset()
+end)
+
 test_helper.cleanup_test_environment()
 
 return assert

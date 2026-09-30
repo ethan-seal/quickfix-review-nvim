@@ -8,6 +8,28 @@ local location = require('quickfix-review.store.location')
 local migrate = require('quickfix-review.store.migrate')
 local view = require('quickfix-review.store.view')
 
+-- Bumped by every sync_data, so a debounced sync can tell whether any other
+-- sync (or change) ran since the last one
+local generation = 0
+-- The last debounced sync that read the journal: { ns, gen, key }
+local last_debounced = nil
+local DEBOUNCE_NS = 200e6
+
+-- Test hook: how close together debounced syncs are skipped
+function M._set_debounce_ns(ns)
+  DEBOUNCE_NS = ns
+  last_debounced = nil
+end
+
+-- Whether a debounced sync can be skipped: the previous one ran less than
+-- DEBOUNCE_NS ago, no other sync ran since, and the review is the same
+local function recently_synced()
+  local last = last_debounced
+  if not last or last.gen ~= generation then return false end
+  if vim.uv.hrtime() - last.ns >= DEBOUNCE_NS then return false end
+  return journal.key() == last.key and location.resolve().events == last.key
+end
+
 -- Bring the comments up to date with the journal (opening it first when it
 -- is not loaded, or was replaced), without rendering them: safe to run
 -- under the lock. opts.full replays every event, ignoring checkpoints.
@@ -15,6 +37,7 @@ local view = require('quickfix-review.store.view')
 -- changed and the view needs rendering, even when not ok)
 function M.sync_data(opts)
   opts = opts or {}
+  generation = generation + 1
   local loc = location.resolve()
   local changed = false
   -- A review that can't be read after a switch (or once its journal is
@@ -59,11 +82,19 @@ function M.sync_data(opts)
 end
 
 -- sync_data, then render if the comments changed. opts.defer_view: as for
--- render. Not for use under the lock (mutate_at renders after it instead).
+-- render. opts.debounce (for BufEnter and CursorHold, which may fire in
+-- bursts): skip the sync when the last debounced one ran less than 200 ms
+-- ago with no other sync since, in the same review. Not for use under the
+-- lock (mutate_at renders after it instead).
 -- Returns: ok (boolean), err (string or nil)
 function M.sync(opts)
+  local debounce = opts and opts.debounce
+  if debounce and recently_synced() then return true, nil end
   local ok, err, changed = M.sync_data(opts)
   if changed then view.render((opts or {}).defer_view) end
+  if debounce then
+    last_debounced = { ns = vim.uv.hrtime(), gen = generation, key = journal.key() }
+  end
   return ok, err
 end
 

@@ -139,16 +139,24 @@ function M.add_comment(comment_type, range)
 
   if text ~= '' then
     local bufnr = vim.api.nvim_get_current_buf()
-    -- One location for the anchor's snapshot and the add event naming it
+    -- One location for the anchor's snapshot and the add event naming it.
+    -- The git callback is scheduled, so it runs after the add has returned
+    local stored = false
     local added, err = store.with_location(function()
+      -- git runs in the background: its context is logged by an update
+      -- once it is done, to this comment in this review only
+      local id, key = store.new_id(), store.review_key()
       return store.add({
+        id = id,
         filename = file,
         kind = comment_type:lower(),
         body = text,
         lnum = start_line,
         end_lnum = end_line,
         anchor = context.anchor(start_line, end_line, bufnr),
-        context = context.capture(file, start_line, end_line, bufnr),
+        context = context.capture_async(file, start_line, end_line, bufnr, function(ctx)
+          if stored then store.set_context(key, id, ctx) end
+        end),
         created_at = os.time(),
       })
     end)
@@ -158,6 +166,7 @@ function M.add_comment(comment_type, range)
         .. (err or UNCHANGED) .. '); the text is in register "', vim.log.levels.WARN)
       return
     end
+    stored = true
 
     local display_file = vim.fn.fnamemodify(file, ':.')
     if start_line ~= end_line then

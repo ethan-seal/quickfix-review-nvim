@@ -465,10 +465,15 @@ function M.setup(opts)
   -- Pick up changes another Neovim logged when coming back to this one or
   -- idling. Reading the review is a stat and a header read when nothing was
   -- logged; a change refreshes the list view and every buffer's signs
-  -- (on_change).
-  vim.api.nvim_create_autocmd({ 'FocusGained', 'CursorHold' }, {
+  -- (on_change). CursorHold is debounced (see store.all); FocusGained, a
+  -- return to this Neovim, always reads.
+  vim.api.nvim_create_autocmd('FocusGained', {
     group = augroup,
     callback = function() store.all() end,
+  })
+  vim.api.nvim_create_autocmd('CursorHold', {
+    group = augroup,
+    callback = function() store.all({ debounce = true }) end,
   })
 
   -- Read the review on entering any buffer, and draw signs for a file.
@@ -482,10 +487,10 @@ function M.setup(opts)
       local file = utils.get_real_filepath(args.buf)
       if file == '' then
         -- Still sync: another Neovim's change is picked up on any BufEnter
-        store.all({ defer_view = true })
+        store.all({ defer_view = true, debounce = true })
         return
       end
-      signs.on_buf_enter(args.buf, file, { defer_view = true })
+      signs.on_buf_enter(args.buf, file, { defer_view = true, debounce = true })
     end
   })
 

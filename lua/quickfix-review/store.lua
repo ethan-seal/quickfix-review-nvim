@@ -59,6 +59,12 @@ function M._set_retry_ns(ns)
   location._set_retry_ns(ns)
 end
 
+-- Test hook: how close together debounced syncs (M.all with debounce) are
+-- skipped
+function M._set_sync_debounce_ns(ns)
+  sync._set_debounce_ns(ns)
+end
+
 -- The comments.json of the review: the pre-log storage file, which is
 -- migrated into the journal (and renamed to comments.json.pre-log.bak) on first use
 function M.path()
@@ -147,8 +153,11 @@ end
 -- opts.defer_view: for callers inside a buffer read or enter, where a
 -- quickfix jump may be running: a change another Neovim logged refills the
 -- list after the event, as refilling during the jump would abort it (E925).
+-- opts.debounce: for autocmds that fire in bursts (BufEnter, CursorHold):
+-- skip the sync when the last such one ran under 200 ms ago with no other
+-- sync since, in the same review (see sync.sync).
 function M.all(opts)
-  sync.sync(opts and { defer_view = opts.defer_view } or nil)
+  sync.sync(opts and { defer_view = opts.defer_view, debounce = opts.debounce } or nil)
   return view.comments()
 end
 
@@ -282,6 +291,34 @@ function M.update(changes, opts)
     end
     return events, #events
   end, opts)
+end
+
+-- The events key of the review now (location.resolve().events): pass it to
+-- set_context so a context found later is logged only in that review
+function M.review_key()
+  return location.resolve().events
+end
+
+-- A fresh comment id, for a caller that needs it before add (see set_context)
+function M.new_id()
+  return record.new_id()
+end
+
+-- Set the git context of comment `id`, found after it was added: one update
+-- event setting `context`, with the previous one in `prev`. Nothing is
+-- logged when the review is no longer the one whose key (review_key()) is
+-- `key`, the comment is gone, or the context is unchanged.
+-- Returns: true if it was logged, false if not (or nil if refused)
+function M.set_context(key, id, ctx)
+  if location.resolve().events ~= key then return false end
+  return mutate(function()
+    -- The location is pinned; the sync inside the lock may still have found
+    -- the journal switched, so compare against what it now holds
+    if location.resolve().events ~= key or journal.key() ~= key then return {}, false end
+    local r = journal.get(id)
+    if not r or vim.deep_equal(r.context, ctx) then return {}, false end
+    return { log.event('update', { id = id, set = { context = ctx }, prev = { context = r.context } }) }, true
+  end)
 end
 
 -- Change a comment's text: one update event setting its body, with the

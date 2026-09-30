@@ -32,6 +32,12 @@ end
 -- snapshots); store.gc_snapshots is called directly instead
 vim.g._quickfix_review_no_startup_gc = true
 
+-- Source plugin/ as Neovim's startup would have, had this checkout been on
+-- the runtimepath then (--clean, and the rtp is only prepended above), so the
+-- user commands (:ReviewReanchor, :ReviewHistory...) exist in every test file
+-- run alone. The plugin's own guard makes it a no-op once sourced.
+vim.cmd.runtime('plugin/quickfix-review.lua')
+
 -- Load the plugin
 local quickfix_review = require('quickfix-review')
 

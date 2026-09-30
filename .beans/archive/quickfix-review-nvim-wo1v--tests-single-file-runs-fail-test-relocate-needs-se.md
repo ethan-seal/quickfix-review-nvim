@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-wo1v
 title: 'Tests: single-file runs fail (test_relocate needs setup from an earlier file)'
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-09-30T01:45:02Z
-updated_at: 2026-09-30T01:45:02Z
+updated_at: 2026-09-30T04:59:07Z
 ---
 
 **Symptom**: `scripts/test.sh test/test_relocate.lua` fails 3 tests with "E492: Not an editor command: ReviewReanchor" on a clean tree; the full `scripts/test.sh` run passes. Some test files rely on setup (plugin commands registered by `require('quickfix-review').setup()` or plugin/ loading) done by an earlier file in `test/run.lua`'s `default_files` order.
@@ -16,8 +17,8 @@ updated_at: 2026-09-30T01:45:02Z
 
 ## Checklist
 
-- [ ] `for f in test/test_*.lua; do scripts/test.sh $f >/dev/null || echo FAIL $f; done` → no FAIL lines.
-- [ ] Full `scripts/test.sh` still passes with the same count.
+- [x] `for f in test/test_*.lua; do scripts/test.sh $f >/dev/null || echo FAIL $f; done` → no FAIL lines.
+- [x] Full `scripts/test.sh` still passes with the same count.
 
 ## Do not
 

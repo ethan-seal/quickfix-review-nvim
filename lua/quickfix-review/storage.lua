@@ -1,11 +1,14 @@
 -- Storage functionality for quickfix-review.nvim
 local M = {}
 
+local segment = require('quickfix-review.store.segment')
+
 local uv = vim.uv or vim.loop
 
 -- Replace `path` with `str` so that readers only ever see the old or the new
 -- contents: write a per-process temp file next to it, fsync, then rename it
--- over `path`. On failure the temp file is removed and `path` is untouched.
+-- over `path` and fsync its directory, so the rename survives a crash.
+-- On failure the temp file is removed and `path` is untouched.
 -- A symlink is followed, so the link stays and its target is replaced, and an
 -- existing file keeps its permission bits.
 -- Returns: ok (boolean), err (string or nil)
@@ -43,6 +46,7 @@ function M.atomic_write(path, str)
 
   local renamed, rerr = uv.fs_rename(tmp, target)
   if not renamed then return fail(rerr) end
+  segment.fsync_dir(vim.fn.fnamemodify(target, ':h'))
 
   return true, nil
 end

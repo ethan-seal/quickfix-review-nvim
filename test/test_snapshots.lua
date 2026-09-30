@@ -257,7 +257,7 @@ assert.run_test('gc: unreferenced old deleted; fresh, live and trash kept', func
   assert.equals(store.remove(trashed_id), 1, 'moved to the trash')
   local old = snapshots.put({ 'old' })
   local fresh = snapshots.put({ 'fresh' })
-  local tmp = store.snapshots_dir() .. '/' .. old .. '.tmp.123'
+  local tmp = store.snapshots_dir() .. '/' .. old .. '.tmp.' .. vim.uv.os_getpid()
   write_bytes(tmp, 'x')
   vim.uv.fs_utime(tmp, DAY_AGO, DAY_AGO)
   for _, sha in ipairs({ live, trashed, old }) do backdate(sha) end
@@ -327,6 +327,35 @@ assert.run_test('gc: runs at most once a day, gated by gc.stamp', function()
   assert.equals(store.gc_snapshots(), 1, 'a day later: collects again')
   assert.falsy(exists(second), 'deleted')
   assert.truthy(os.time() - vim.uv.fs_stat(stamp).mtime.sec < 3600, 'gc.stamp touched')
+end)
+
+assert.run_test('gc: stale tmp files of dead pids are swept; live-pid and recent ones kept', function()
+  local dir = use_dir()
+  anchored({ 'x' })
+  local log = require('quickfix-review.log')
+  local dead = 4194303
+  while log.pid_alive(dead) and dead > 1 do dead = dead - 1 end
+  assert.falsy(log.pid_alive(dead), 'found a dead pid')
+  local half_hour_ago = os.time() - 1800
+  local function plant(path, t)
+    write_bytes(path, 'x')
+    vim.uv.fs_utime(path, t, t)
+    return path
+  end
+  local snap_dead = plant(store.snapshots_dir() .. '/' .. ('a'):rep(64) .. '.tmp.' .. dead, DAY_AGO)
+  local refs_dead = plant(store.events_dir() .. '/000001.refs.tmp.' .. dead, DAY_AGO)
+  local create_dead = plant(store.events_dir() .. '.tmp.' .. dead, DAY_AGO)
+  local snap_live = plant(store.snapshots_dir() .. '/' .. ('b'):rep(64) .. '.tmp.' .. vim.uv.os_getpid(), DAY_AGO)
+  local refs_recent = plant(store.events_dir() .. '/000002.refs.tmp.' .. dead, half_hour_ago)
+  local foreign = plant(dir .. '/foreign.tmp.' .. dead, DAY_AGO)
+
+  assert.equals(store.gc_snapshots({ force = true }), 0, 'tmp files are not counted')
+  assert.falsy(vim.uv.fs_stat(snap_dead), 'dead pid in snapshots/: removed')
+  assert.falsy(vim.uv.fs_stat(refs_dead), 'dead pid in events/: removed')
+  assert.falsy(vim.uv.fs_stat(create_dead), 'dead pid segment temp beside events/: removed')
+  assert.truthy(vim.uv.fs_stat(snap_live), 'this process\'s pid: kept')
+  assert.truthy(vim.uv.fs_stat(refs_recent), 'under an hour old: kept')
+  assert.truthy(vim.uv.fs_stat(foreign), 'a name the plugin does not write in the review dir: kept')
 end)
 
 assert.run_test('gc: a snapshot named by the newest checkpoint\'s refs is kept', function()

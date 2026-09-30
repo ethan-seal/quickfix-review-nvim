@@ -71,6 +71,47 @@ local GC_GRACE = 24 * 3600
 local GC_EVERY = 24 * 3600
 local SHA_RUN = segment.SHA_RUN
 
+-- Temp files (<name>.tmp.<pid>) a crashed writer left behind: those of
+-- storage.atomic_write in snapshots/, of segment.durable_write in events/,
+-- and the segment.create and v2 tombstone temps beside events/ (checkpoints/
+-- is checkpoint.gc's). Swept with the GC
+-- (outside the lock: a dead pid has no writer), when the writer's pid is
+-- dead and the file is older than TMP_MAX_AGE; a live (or reused) pid's
+-- file is kept, as another Neovim may be mid-write. In the review's own dir,
+-- which may be a user's directory (storage_file, storage_dir), only the
+-- exact names this plugin writes there are matched.
+local TMP_MAX_AGE = 3600
+
+local function sweep_tmp(loc)
+  local now = os.time()
+  local function sweep(dir, pid_of)
+    local handle = uv.fs_scandir(dir)
+    while handle do
+      local name = uv.fs_scandir_next(handle)
+      if not name then break end
+      local pid = tonumber(pid_of(name))
+      if pid then
+        local path = dir .. '/' .. name
+        local st = uv.fs_stat(path)
+        if st and st.type == 'file' and now - st.mtime.sec > TMP_MAX_AGE and not log.pid_alive(pid) then
+          os.remove(path)
+        end
+      end
+    end
+  end
+  local function any(name) return name:match('^.+%.tmp%.(%d+)$') end
+  sweep(loc.snapshots, any)
+  sweep(loc.events, any)
+  local owned = {}
+  for _, p in ipairs({ loc.events, loc.log }) do
+    owned[vim.fn.fnamemodify(p, ':t')] = true
+  end
+  sweep(vim.fn.fnamemodify(loc.events, ':h'), function(name)
+    local base, pid = name:match('^(.+)%.tmp%.(%d+)$')
+    return base and owned[base] and pid or nil
+  end)
+end
+
 local function is_sha(s) return type(s) == 'string' and #s == 64 and s:match('^%x+$') ~= nil end
 
 -- The hashes in the `.refs` of sealed segment `n` into `refs`
@@ -112,6 +153,7 @@ function M.gc(loc, opts)
     return not st or os.time() - st.mtime.sec >= GC_EVERY
   end
   if not due() then return 0 end
+  sweep_tmp(loc)
 
   local refs = {}
   -- The sealed segments whose .refs were read, outside the lock

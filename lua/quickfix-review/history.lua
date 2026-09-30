@@ -123,7 +123,8 @@ end
 -- The rows for `events` (in log order): every event about comment `id`, or,
 -- without an id, the last `limit` (default M.LIMIT) events. Each row is
 -- { ts, op, id, kind, where, changes, text }, `text` being the line shown.
--- A checkpoint (see reduce.lua) is not a row: its records are what later
+-- A checkpoint (see reduce.lua) is not a row (nor is a rebase, which is not
+-- about a comment): a checkpoint's records are what later
 -- events are shown with.
 function M.rows(events, id, limit)
   limit = limit or M.LIMIT
@@ -136,7 +137,7 @@ function M.rows(events, id, limit)
       for _, r in ipairs(checkpoint_records(ev)) do
         if type(r) == 'table' and type(r.id) == 'string' then known[r.id] = r end
       end
-    elseif type(ev) == 'table' and ev.op ~= 'header' then
+    elseif type(ev) == 'table' and ev.op ~= 'header' and ev.op ~= 'rebase' then
       for _, r in ipairs(records_of(ev)) do
         if type(r) == 'table' and type(r.id) == 'string' then known[r.id] = r end
       end

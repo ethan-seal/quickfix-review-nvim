@@ -112,9 +112,23 @@ end
 -- relativize) joined to `root`, the project root of the review it was read
 -- from; an absolute one, or a relative one with no root (never written by
 -- this plugin: only a hand-edited or foreign record), made absolute by
--- fnamemodify(':p') as before.
-function M.resolve_filename(filename, root)
+-- fnamemodify(':p') as before. `rebases` (the review's old project roots,
+-- see reduce.lua) apply first: an absolute filename strictly under one of
+-- them (the longest that matches) is taken as the same relative path under
+-- `root`, so a review adopted from a moved project (store/adopt.lua) shows
+-- its comments from before relative filenames where the files are now.
+function M.resolve_filename(filename, root, rebases)
   if root and filename:sub(1, 1) ~= '/' then return join(root, filename) end
+  if root and rebases and filename:sub(1, 1) == '/' then
+    local best
+    for _, from in ipairs(rebases) do
+      if type(from) == 'string' and filename:sub(1, #from + 1) == from .. '/' and #filename > #from + 1
+          and (not best or #from > #best) then
+        best = from
+      end
+    end
+    if best then return join(root, filename:sub(#best + 2)) end
+  end
   return vim.fn.fnamemodify(filename, ':p')
 end
 
@@ -151,8 +165,9 @@ end
 -- file or no valid line number.
 -- A relative filename (as record.relativize writes it) is resolved against
 -- `root`, the project root of the review it was read from, never the cwd;
--- an absolute one is kept as it is (only made canonical by fnamemodify).
-function M.normalize(item, root)
+-- an absolute one is kept as it is (only made canonical by fnamemodify),
+-- unless it is under one of `rebases` (see resolve_filename).
+function M.normalize(item, root, rebases)
   local filename = item.filename
   if type(filename) ~= 'string' or filename == '' then return nil end
   local lnum = to_line(item.lnum)
@@ -199,7 +214,7 @@ function M.normalize(item, root)
 
   return {
     id = id,
-    filename = M.resolve_filename(filename, root),
+    filename = M.resolve_filename(filename, root, rebases),
     kind = kind and kind:lower() or 'note',
     body = body or '',
     response = response,

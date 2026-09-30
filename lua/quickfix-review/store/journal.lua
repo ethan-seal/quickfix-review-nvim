@@ -451,6 +451,10 @@ function M.trash() return reduced.trash end
 -- The removals, in the order they were made: { id, op, eid, ts }...
 function M.removed() return reduced.removed end
 
+-- The old project roots of the review (rebase events, see reduce.lua), or
+-- nil for a state from before them
+function M.rebases() return reduced.rebases end
+
 -- Whether an import with this source_sha256 is in the journal
 function M.has_import(sha) return synced.imports[sha] == true end
 

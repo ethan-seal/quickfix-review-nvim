@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-6t6e
 title: 'Adopt: remap pre-fgb6 absolute filenames via a rebase event'
-status: todo
+status: completed
 type: feature
+priority: normal
 created_at: 2026-09-30T00:23:41Z
-updated_at: 2026-09-30T00:23:41Z
+updated_at: 2026-09-30T00:36:01Z
 ---
 
 **Background.** fgb6 made new records repo-relative and added `:ReviewAdopt` (lua/quickfix-review/store/adopt.lua). Records logged before fgb6 hold absolute filenames under the *old* root (record.lua:117-119 passes absolute names through), so after `mv` + `:ReviewAdopt` those comments still point at the old location. Segments must never be rewritten (docs/journal.md).

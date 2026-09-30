@@ -348,6 +348,66 @@ assert.run_test('persisted state has no index', function()
   assert.equals(decoded.comments[1].id, 'a', 'comments kept')
 end)
 
+assert.run_test('a rebase records its from_root; again it is a no-op, never a duplicate', function()
+  local state, why = replay({
+    { op = 'add', comment = rec('a') },
+    { op = 'rebase', from_root = '/old/root', eid = 'r1' },
+    { op = 'rebase', from_root = '/other', eid = 'r2' },
+    { op = 'rebase', from_root = '/old/root', eid = 'r3' },
+  })
+  assert.equals(why[2], false, 'applied')
+  assert.equals(why[4], false, 'a repeat is not reported (never duplicate)')
+  assert.equals(table.concat(state.rebases, ','), '/old/root,/other', 'recorded once, in order')
+  assert.equals(ids(state), 'a', 'comments untouched')
+end)
+
+assert.run_test('a malformed rebase is invalid and changes nothing', function()
+  for i, bad in ipairs({
+    { op = 'rebase' },
+    { op = 'rebase', from_root = 3 },
+    { op = 'rebase', from_root = 'rel/path' },
+    { op = 'rebase', from_root = '/' },
+    { op = 'rebase', from_root = '/old/' },
+    { op = 'rebase', from_root = '' },
+  }) do
+    local state, why = replay({ bad })
+    assert.equals(why[1], 'invalid', 'case ' .. i .. ' invalid')
+    assert.length(state.rebases, 0, 'case ' .. i .. ' nothing recorded')
+  end
+end)
+
+assert.run_test('a checkpoint keeps the rebases; one without them keeps the state\'s', function()
+  local state = replay({ { op = 'add', comment = rec('a') }, { op = 'rebase', from_root = '/old' } })
+  assert.equals(reduce.persisted(state).rebases[1], '/old', 'persisted carries the rebases')
+  local again, why = replay({ as_checkpoint(state) })
+  assert.equals(why[1], false, 'applied')
+  assert.equals(table.concat(again.rebases, ','), '/old', 'rebases restored')
+  assert.truthy(again.rebases ~= state.rebases, 'copied')
+  -- A v2 rotation checkpoint has no rebases: they are left as they are
+  local kept, kwhy = replay({
+    { op = 'rebase', from_root = '/old' },
+    { op = 'checkpoint', state = { comments = { rec('b') }, trash = {}, removed = {} } },
+  })
+  assert.equals(kwhy[2], false, 'a checkpoint without rebases is valid')
+  assert.equals(table.concat(kept.rebases, ','), '/old', 'rebases kept')
+  assert.equals(ids(kept), 'b', 'the state replaced')
+  local _, bwhy = replay({ { op = 'checkpoint', state = { comments = {}, trash = {}, removed = {}, rebases = 'x' } } })
+  assert.equals(bwhy[1], 'invalid', 'rebases not a list')
+  _, bwhy = replay({ { op = 'checkpoint', state = { comments = {}, trash = {}, removed = {}, rebases = { 1 } } } })
+  assert.equals(bwhy[1], 'invalid', 'a rebase not a string')
+end)
+
+assert.run_test('resolve_filename maps a path under a rebase root, the longest first', function()
+  local record = require('quickfix-review.store.record')
+  local rebases = { '/old', '/old/sub' }
+  assert.equals(record.resolve_filename('/old/a.txt', '/new', rebases), '/new/a.txt', 'under /old')
+  assert.equals(record.resolve_filename('/old/sub/b.txt', '/new', rebases), '/new/b.txt', 'the longest wins')
+  assert.equals(record.resolve_filename('/old2/c.txt', '/new', rebases), '/old2/c.txt', 'a sibling prefix')
+  assert.equals(record.resolve_filename('/old', '/new', rebases), '/old', 'the root itself')
+  assert.equals(record.resolve_filename('rel.txt', '/new', rebases), '/new/rel.txt', 'relative, as before')
+  assert.equals(record.resolve_filename('/old/a.txt', nil, rebases), '/old/a.txt', 'no root: unchanged')
+end)
+
 assert.run_test('replaying 5000 adds is fast', function()
   local events = {}
   for i = 1, 5000 do events[i] = { op = 'add', comment = rec('c' .. i) } end

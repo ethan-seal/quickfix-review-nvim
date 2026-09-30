@@ -73,6 +73,17 @@ position.
   copied in from another review.
 - **Events are unchanged.** They keep the v2 shape (`op`, `eid`, `ts`, payload)
   and the reducer's rules.
+- **Rebase events.** `{"op":"rebase","from_root":"/old/root",…}` is the one
+  event that `:ReviewAdopt` appends. It goes on the end of the copied active
+  segment, before the journal is moved into place; segments are never
+  rewritten. It records the project root of the adopted review. Reading
+  resolves an absolute filename that is strictly under a recorded
+  `from_root` (it starts with `from_root .. '/'`) to the same relative path
+  under the current root. When several match, the longest wins. Rebases are
+  permanent and part of the state (`rebases`), so replay is deterministic. A
+  `from_root` already recorded is a no-op. Versions from before rebase events
+  skip it as an unknown op, and show those comments at the old path. The
+  state shape change bumped `STATE_VERSION` to 2.
 - **No checkpoint events in v3 segments.** The only exception is a migrated
   v2 segment 1, see Migration.
 - **Append** takes the lock, appends to the highest-numbered segment, fsyncs
@@ -104,7 +115,7 @@ position.
 ## Checkpoints
 
 - **Content.**
-  `{"v":3,"state_v":S,"journal_id":…,"seg":N,"offset":O,"state":{comments,trash,removed},"imports":[…],"refs":[…]}`.
+  `{"v":3,"state_v":S,"journal_id":…,"seg":N,"offset":O,"state":{comments,trash,removed,rebases},"imports":[…],"refs":[…]}`.
   `refs` is the set of snapshot hashes referenced by the active segment up to
   O, so snapshot GC does not need to read the active segment.
 - **Written:**
@@ -146,7 +157,7 @@ checkpoint write, never on a timer):
    - Delete invalid ones. That covers files that fail to parse, have the
      wrong `journal_id`, a stale `state_v`, or a position past the end of
      the journal (restored from a backup of a different history).
-3. **Never delete anything in `events/`.**
+3. **Never delete anything in `events/`.** One exception: `:ReviewAdopt` replaces a target journal that never held a comment (only a header and an empty import, from before fgb6), since it holds no history to lose.
 
 ## Locking
 

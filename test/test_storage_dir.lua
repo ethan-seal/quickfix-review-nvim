@@ -1271,6 +1271,232 @@ storage_test(':ReviewAdopt refuses its own dir, a dir with no review, and a stor
   assert.truthy(msg:find('per-project', 1, true), 'saying why: ' .. msg)
 end)
 
+-- Pre-relative absolute filenames and :ReviewAdopt (bean 6t6e)
+
+-- Write, by hand, a review as it was logged before filenames were relative
+-- into the storage dir `dir`: segment 1 with an add of each record (absolute
+-- filenames) and the tombstone log.jsonl. Returns the journal id.
+local function write_absolute_review(dir, records)
+  local log = require('quickfix-review.log')
+  local jid = log.new_journal_id()
+  local lines = { vim.json.encode(log.segment_header(jid, 1)) }
+  for _, r in ipairs(records) do
+    local c = vim.tbl_extend('force', { kind = 'note', body = r.id, end_lnum = r.lnum, created_at = 1 }, r)
+    table.insert(lines, vim.json.encode(log.event('add', { comment = c })))
+  end
+  vim.fn.mkdir(dir .. '/events', 'p')
+  vim.fn.writefile(lines, dir .. '/events/000001.jsonl')
+  vim.fn.writefile({ vim.json.encode(log.tombstone(jid)) }, dir .. '/log.jsonl')
+  return jid
+end
+
+-- Move the project `a` to `a-moved`, open it and adopt the review in `old`
+-- Returns: the moved root, its storage dir, and the store module
+local function move_and_adopt(a, old)
+  cd(original_cwd)
+  local moved = a .. '-moved'
+  assert.truthy(vim.uv.fs_rename(a, moved), 'project moved')
+  moved = vim.uv.fs_realpath(moved)
+  cd(moved)
+  restart()
+  local _, store = mods()
+  assert.length(store.all(), 0, 'the moved project starts with an empty review')
+  local calls = capture_notify(function() vim.cmd('ReviewAdopt ' .. vim.fn.fnameescape(old)) end)
+  assert.length(mentioning(calls, 'Adopted'), 1, 'adopted')
+  return moved, store.dir(), store
+end
+
+-- The decoded lines of the file at `path`
+local function lines_of(path)
+  local out = {}
+  for _, l in ipairs(vim.fn.readfile(path)) do
+    if l ~= '' then table.insert(out, vim.json.decode(l)) end
+  end
+  return out
+end
+
+-- The rebase events in the segments of the storage dir `dir`
+local function rebases_in(dir)
+  local out = {}
+  for _, name in ipairs(segment_files(dir)) do
+    for _, ev in ipairs(lines_of(dir .. '/events/' .. name)) do
+      if ev.op == 'rebase' then table.insert(out, ev) end
+    end
+  end
+  return out
+end
+
+local function by_id(list)
+  local out = {}
+  for _, c in ipairs(list) do out[c.id] = c end
+  return out
+end
+
+storage_test(':ReviewAdopt remaps absolute filenames logged before they were relative', function()
+  local a, file = make_repo('tau')
+  local old = default_dir(a)
+  write_absolute_review(old, { { id = 'abs1', filename = file, lnum = 2 } })
+  local old_seg = read_bytes(old .. '/events/000001.jsonl')
+  local moved, new, store = move_and_adopt(a, old)
+  local all = store.all()
+  assert.length(all, 1, 'the comment is adopted')
+  assert.equals(all[1].filename, moved .. '/tau.txt', 'at the same file, in its new place')
+  assert.equals(all[1].lnum, 2, 'at the same line')
+  local seg = read_bytes(new .. '/events/000001.jsonl')
+  assert.equals(seg:sub(1, #old_seg), old_seg, 'the copied events are not rewritten')
+  assert.equals(read_bytes(old .. '/events/000001.jsonl'), old_seg, 'the old review is unchanged')
+  assert.equals(saved(store.log_path())[1].filename, file, 'the record still names the old path')
+  local evs = lines_of(new .. '/events/000001.jsonl')
+  assert.equals(evs[#evs].op, 'rebase', 'a rebase event is appended')
+  assert.equals(evs[#evs].from_root, a, 'from the old root')
+  assert.length(rebases_in(old), 0, 'none in the old review')
+  store.save()
+  assert.truthy(vim.fn.glob(new .. '/checkpoints/*.json') ~= '', 'a checkpoint is written')
+  restart()
+  _, store = mods()
+  all = store.all()
+  assert.length(all, 1, 'loaded from the checkpoint')
+  assert.equals(all[1].filename, moved .. '/tau.txt', 'still remapped after a restart')
+end)
+
+storage_test('an absolute path outside the old root is unchanged after adopt', function()
+  local a, file = make_repo('ups')
+  local sibling = a .. '2'
+  vim.fn.mkdir(sibling, 'p')
+  vim.fn.writefile({ 'x', 'y' }, sibling .. '/s.txt')
+  local outside = vim.uv.fs_realpath(vim.fn.fnamemodify(vim.fn.tempname(), ':h')) .. '/ups-out.txt'
+  vim.fn.writefile({ 'x', 'y' }, outside)
+  local old = default_dir(a)
+  write_absolute_review(old, {
+    { id = 'under', filename = file, lnum = 1 },
+    { id = 'sib', filename = sibling .. '/s.txt', lnum = 2 },
+    { id = 'out', filename = outside, lnum = 2 },
+  })
+  local moved, new, store = move_and_adopt(a, old)
+  local all = by_id(store.all())
+  assert.equals(all.under.filename, moved .. '/ups.txt', 'a file under the old root is remapped')
+  assert.equals(all.sib.filename, sibling .. '/s.txt', 'a sibling sharing the prefix is unchanged')
+  assert.equals(all.out.filename, outside, 'a file outside the tree is unchanged')
+  assert.length(rebases_in(new), 1, 'one rebase event')
+end)
+
+storage_test('a review with only relative filenames gets no rebase event', function()
+  local a, file = make_repo('phi')
+  cd(a)
+  restart()
+  local _, store = mods()
+  note(file, 'relative')
+  local old = store.dir()
+  local _, new = move_and_adopt(a, old)
+  assert.length(rebases_in(new), 0, 'no rebase event')
+end)
+
+storage_test('a dir whose journal holds only an empty import is accepted by adopt', function()
+  local a, file = make_repo('chi')
+  cd(a)
+  restart()
+  local _, store = mods()
+  note(file, 'to adopt')
+  local old = store.dir()
+  store.save()
+  local old_jid = vim.json.decode(vim.fn.readfile(old .. '/events/000001.jsonl')[1]).journal_id
+  cd(original_cwd)
+  local moved = a .. '-moved'
+  assert.truthy(vim.uv.fs_rename(a, moved), 'project moved')
+  moved = vim.uv.fs_realpath(moved)
+  -- A journal holding only an empty import, as reviews created before empty
+  -- imports were skipped have
+  local new = default_dir(moved)
+  local log = require('quickfix-review.log')
+  local jid = log.new_journal_id()
+  vim.fn.mkdir(new .. '/events', 'p')
+  vim.fn.writefile({
+    vim.json.encode(log.segment_header(jid, 1)),
+    vim.json.encode(log.event('import', { comments = {}, source_sha256 = ('0'):rep(64) })),
+  }, new .. '/events/000001.jsonl')
+  vim.fn.writefile({ vim.json.encode(log.tombstone(jid)) }, new .. '/log.jsonl')
+  cd(moved)
+  restart()
+  _, store = mods()
+  assert.equals(store.dir(), new, 'the planted dir')
+  assert.length(store.all(), 0, 'empty')
+  local ok, msg = store.adopt(old)
+  assert.truthy(ok, 'adopted: ' .. tostring(msg))
+  local all = store.all()
+  assert.length(all, 1, 'the comment is adopted')
+  assert.equals(all[1].body, 'to adopt', 'the comment')
+  assert.equals(vim.json.decode(vim.fn.readfile(new .. '/events/000001.jsonl')[1]).journal_id, old_jid,
+    'segment 1 is the old journal\'s')
+  assert.equals(vim.json.decode(vim.fn.readfile(new .. '/log.jsonl')[1]).log_id, old_jid,
+    'the tombstone names the adopted journal')
+  assert.equals(vim.fn.glob(new .. '/events.replaced-*'), '', 'the empty journal is gone')
+  assert.equals(vim.fn.glob(new .. '/events.adopt-*'), '', 'no staging dir is left')
+
+  -- A cleared review is still a review
+  local c, file_c = make_repo('psi')
+  cd(c)
+  note(file_c, 'cleared')
+  store.clear()
+  local before = read_bytes(store.dir() .. '/events/000001.jsonl')
+  capture_notify(function()
+    ok, msg = store.adopt(old)
+  end)
+  assert.falsy(ok, 'a cleared review is refused')
+  assert.truthy(msg:find('already has a review', 1, true), 'saying why: ' .. tostring(msg))
+  assert.equals(read_bytes(store.dir() .. '/events/000001.jsonl'), before, 'unchanged')
+end)
+
+storage_test('a checkpoint from before the STATE_VERSION bump is ignored and rebuilt', function()
+  local a, file = make_repo('omg')
+  local old = default_dir(a)
+  write_absolute_review(old, { { id = 'abs1', filename = file, lnum = 2 } })
+  local moved, new, store = move_and_adopt(a, old)
+  local reduce = require('quickfix-review.reduce')
+  local seg = new .. '/events/000001.jsonl'
+  local jid = vim.json.decode(vim.fn.readfile(seg)[1]).journal_id
+  local size = vim.uv.fs_stat(seg).size
+  vim.fn.mkdir(new .. '/checkpoints', 'p')
+  vim.fn.writefile({ vim.json.encode({
+    v = 3, state_v = reduce.STATE_VERSION - 1, journal_id = jid, seg = 1, offset = size, lines = 3,
+    state = { comments = { { id = 'marker', filename = moved .. '/omg.txt', lnum = 1, kind = 'note',
+      body = 'marker' } }, trash = vim.empty_dict(), removed = {} },
+    imports = {},
+  }) }, new .. '/checkpoints/' .. string.format('%06d-%012d.json', 1, size))
+  restart()
+  _, store = mods()
+  local all = store.all()
+  assert.length(all, 1, 'rebuilt from the events')
+  assert.equals(all[1].id, 'abs1', 'the marker is not loaded')
+  assert.equals(all[1].filename, moved .. '/omg.txt', 'remapped')
+  store.save()
+  local current = 0
+  for _, path in ipairs(vim.fn.glob(new .. '/checkpoints/*.json', false, true)) do
+    local doc = vim.json.decode(read_bytes(path))
+    if doc.state_v == reduce.STATE_VERSION then
+      current = current + 1
+      assert.equals(doc.state.rebases[1], a, 'the checkpoint holds the rebase')
+    end
+  end
+  assert.equals(current, 1, 'a checkpoint of the current STATE_VERSION is written')
+end)
+
+storage_test('chained adopts: absolute filenames from the first root follow to the last', function()
+  local a, file = make_repo('kap')
+  local old = default_dir(a)
+  write_absolute_review(old, { { id = 'abs1', filename = file, lnum = 3 } })
+  local b, b_dir, store = move_and_adopt(a, old)
+  note(b .. '/kap.txt', 'in b')
+  store.save()
+  local c, c_dir
+  c, c_dir, store = move_and_adopt(b, b_dir)
+  local all = by_id(store.all())
+  assert.equals(all.abs1.filename, c .. '/kap.txt', 'the first root\'s comment is under the last root')
+  assert.equals(all.abs1.lnum, 3, 'at its line')
+  local rebases = rebases_in(c_dir)
+  assert.length(rebases, 1, 'one rebase event')
+  assert.equals(rebases[1].from_root, a, 'the first root\'s')
+end)
+
 -- Put the test configuration back for the files that run after this one
 cd(original_cwd)
 vim.env.XDG_DATA_HOME = original_data_home

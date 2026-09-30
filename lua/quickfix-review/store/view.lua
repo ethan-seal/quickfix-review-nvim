@@ -100,25 +100,29 @@ end
 
 -- The normalized comment for each logged record, so a record is normalized
 -- once and an unchanged comment keeps its identity across changes: { root,
--- c }, c false for a record that can't be shown (no file or no valid line
--- number). Keyed on the record, and recomputed when asked for with another
--- root (a relative filename resolves against it).
+-- rebases, nreb, c }, c false for a record that can't be shown (no file or
+-- no valid line number). Keyed on the record, and recomputed when asked for
+-- with another root (a relative filename resolves against it) or other
+-- rebases. Rebases only grow (in place, or in a new state table), so their
+-- identity and length are key enough.
 local views = setmetatable({}, { __mode = 'k' })
 
 -- The comment shown for logged record `r` of the review whose project root
 -- is `root` (nil for an explicit storage_file): relative filenames resolve
--- against it (see record.normalize)
-function M.view_of(r, root)
+-- against it, and absolute ones under one of `rebases` (the review's old
+-- roots, journal.rebases()) are moved under it (see record.normalize)
+function M.view_of(r, root, rebases)
   local v = views[r]
-  if v == nil or v.root ~= root then
-    local c = record.normalize(r, root) or false
+  local nreb = rebases and #rebases or 0
+  if v == nil or v.root ~= root or v.rebases ~= rebases or v.nreb ~= nreb then
+    local c = record.normalize(r, root, rebases) or false
     if c then
       -- Derived, never logged: a comment from before anchors is anchored at
       -- its line with no snapshot (the fallback search handles it). Its
       -- position is never stored here: track.pos computes it.
       c.anchor = c.anchor or { lnum = c.lnum, end_lnum = c.end_lnum }
     end
-    v = { root = root, c = c }
+    v = { root = root, rebases = rebases, nreb = nreb, c = c }
     views[r] = v
   end
   return v.c or nil

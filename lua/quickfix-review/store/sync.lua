@@ -48,8 +48,9 @@ function M.sync_data(opts)
   journal.clear_refusal()
   if changed then
     local list = {}
+    local rebases = journal.rebases()
     for _, r in ipairs(journal.comments()) do
-      local c = view.view_of(r, loc.root)
+      local c = view.view_of(r, loc.root, rebases)
       if c then table.insert(list, c) end
     end
     view.set_comments(list)

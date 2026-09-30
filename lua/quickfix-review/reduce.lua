@@ -3,11 +3,14 @@
 -- always gives the same state.
 --
 -- State: { comments = { record... }, trash = { [id] = record },
--- removed = { { id, op, eid, ts }... } }. `comments` are the live comments in
+-- removed = { { id, op, eid, ts }... }, rebases = { from_root... } }. `comments` are the live comments in
 -- the order they were added; `trash` holds every deleted comment, so it can
 -- be restored. `removed` lists the trashed ids in the (file) order they were
 -- removed, with the removing event's op ('delete' or 'clear'), eid and ts:
--- the comments of one clear share its eid. Records are comment records in
+-- the comments of one clear share its eid. `rebases` lists the old project
+-- roots of the review (rebase events, written by store/adopt.lua), in the
+-- order they were logged: an absolute filename under one of them is shown
+-- under the current root (record.resolve_filename). Records are comment records in
 -- the storage format (storage.serialise), as they appear in the log.
 --
 -- `index` = { by_id = { [id] = record } } maps each live comment's id to its
@@ -26,16 +29,20 @@
 -- - checkpoint (the first event of a rotated v2 log) replaces the whole
 --   state with its `state` ({ comments, trash, removed }; any `index` there
 --   is ignored and rebuilt); a malformed one is ignored. Replaying a journal,
---   it applies only in segment 1 (see apply_in_segment).
+--   it applies only in segment 1 (see apply_in_segment). Its `rebases` is
+--   optional (v2 rotation checkpoints have none): when absent, the state's
+--   rebases are kept.
+-- - rebase adds its from_root to `rebases`; one already there is ignored
+--   silently (never 'duplicate': it is not a comment).
 local M = {}
 
 -- The shape of the state a checkpoint (store/checkpoint.lua) holds. Bump it
 -- when that shape changes: checkpoints of another STATE_VERSION are ignored
 -- and rebuilt by replaying the events (docs/journal.md#checkpoints).
-M.STATE_VERSION = 1
+M.STATE_VERSION = 2
 
 function M.new()
-  return { comments = {}, trash = {}, removed = {}, index = { by_id = {} } }
+  return { comments = {}, trash = {}, removed = {}, rebases = {}, index = { by_id = {} } }
 end
 
 -- Rebuild state.index from state.comments (O(n)); returns state. The first
@@ -51,7 +58,7 @@ end
 
 -- The serialisable part of state: everything but the in-memory index
 function M.persisted(state)
-  return { comments = state.comments, trash = state.trash, removed = state.removed }
+  return { comments = state.comments, trash = state.trash, removed = state.removed, rebases = state.rebases }
 end
 
 -- A comment record: a table with a non-empty string id
@@ -188,6 +195,12 @@ function handlers.checkpoint(state, ev)
   for _, e in ipairs(s.removed) do
     if type(e) ~= 'table' or type(e.id) ~= 'string' then return 'invalid' end
   end
+  if s.rebases ~= nil then
+    if type(s.rebases) ~= 'table' then return 'invalid' end
+    for _, root in ipairs(s.rebases) do
+      if type(root) ~= 'string' then return 'invalid' end
+    end
+  end
   local comments, trashed, removed = {}, {}, {}
   for i, record in ipairs(s.comments) do comments[i] = record end
   for id, record in pairs(s.trash) do trashed[id] = record end
@@ -195,7 +208,26 @@ function handlers.checkpoint(state, ev)
     removed[i] = { id = e.id, op = e.op, eid = e.eid, ts = type(e.ts) == 'number' and e.ts or nil }
   end
   state.comments, state.trash, state.removed = comments, trashed, removed
+  if s.rebases ~= nil then
+    local rebases = {}
+    for i, root in ipairs(s.rebases) do rebases[i] = root end
+    state.rebases = rebases
+  end
   M.reindex(state)
+  return nil
+end
+
+-- The review was adopted from a project whose root was `from_root` (an
+-- absolute path, no trailing '/'): its absolute filenames under that root
+-- are shown under the current one. Permanent, so replay is deterministic.
+function handlers.rebase(state, ev)
+  local root = ev.from_root
+  if type(root) ~= 'string' or root:sub(1, 1) ~= '/' or root:sub(-1) == '/' then return 'invalid' end
+  state.rebases = state.rebases or {}
+  for _, r in ipairs(state.rebases) do
+    if r == root then return nil end
+  end
+  table.insert(state.rebases, root)
   return nil
 end
 

@@ -188,7 +188,7 @@ function M.trash()
   local root = location.resolve().root
   local out = {}
   for id, r in pairs(journal.trash()) do
-    out[id] = view.view_of(r, root) or r
+    out[id] = view.view_of(r, root, journal.rebases()) or r
   end
   return out
 end
@@ -204,7 +204,7 @@ function M.trash_list()
     local e = removed[i]
     local r = journal.trashed(e.id)
     if r then
-      table.insert(out, { id = e.id, op = e.op, ts = e.ts, comment = view.view_of(r, root) or r })
+      table.insert(out, { id = e.id, op = e.op, ts = e.ts, comment = view.view_of(r, root, journal.rebases()) or r })
     end
   end
   return out
@@ -293,7 +293,7 @@ function M.edit(id, body)
   if type(body) ~= 'string' or body == '' then return nil end
   return mutate(function()
     local r = journal.get(id)
-    local c = r and view.view_of(r, location.resolve().root)
+    local c = r and view.view_of(r, location.resolve().root, journal.rebases())
     if not c then return {}, 'missing' end
     if c.body == body then return {}, 'unchanged' end
     return { log.event('update', { id = id, set = { body = body }, prev = { body = c.body } }) }, 'edited'
@@ -309,7 +309,7 @@ function M.remove_if(pred)
     local root = location.resolve().root
     local events = {}
     for _, r in ipairs(journal.comments()) do
-      local c = view.view_of(r, root)
+      local c = view.view_of(r, root, journal.rebases())
       if c and pred(c) then
         table.insert(events, log.event('delete', { id = r.id, comment = r }))
       end

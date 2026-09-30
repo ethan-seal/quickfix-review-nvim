@@ -249,10 +249,22 @@ local function import_legacy(loc)
     list, source = file_list, legacy
   end
 
-  local imported, seen, dropped = {}, {}, 0
+  -- Records that can't be imported: `dropped` are this project's (by their
+  -- file name; in a shared dir, all of them), `unplaced` have no file name,
+  -- so they are no project's and are warned about only beside an import
+  local imported, seen, dropped, unplaced = {}, {}, 0, 0
   for _, item in ipairs(list) do
     local c = type(item) == 'table' and record.normalize(item, loc.root) or nil
-    if not c then dropped = dropped + 1 end
+    if not c then
+      local name = type(item) == 'table' and item.filename or nil
+      if loc.shared then
+        dropped = dropped + 1
+      elseif type(name) == 'string' and name ~= '' then
+        if utils.is_under(record.resolve_filename(name, loc.root), loc.root) then dropped = dropped + 1 end
+      else
+        unplaced = unplaced + 1
+      end
+    end
     -- A shared dir is every project's review: import everything
     if c and (loc.shared or utils.is_under(c.filename, loc.root)) then
       if seen[c.id] then c.id = record.new_id() end
@@ -260,12 +272,12 @@ local function import_legacy(loc)
       table.insert(imported, record.relativize(storage.serialise(c), loc))
     end
   end
-  if dropped > 0 then
-    warn_once(loc, string.format('not importing %d comment(s) from %s: invalid line number'
-      .. ' or no file name (the file is unchanged)', dropped, source))
-  end
   -- Nothing for this project: leave the dir empty (see above)
   if #imported == 0 then return done() end
+  if dropped + unplaced > 0 then
+    warn_once(loc, string.format('not importing %d comment(s) from %s: invalid line number'
+      .. ' or no file name (the file is unchanged)', dropped + unplaced, source))
+  end
 
   local got, ok, werr = journal.locked(loc, function()
     if has_journal(loc) then return 'exists' end -- another Neovim did it

@@ -1340,6 +1340,12 @@ assert.run_test('history of one comment shows add, update, delete in order', fun
     { op = 'update', id = 'y', ts = 0, set = { anchor = { lnum = 3, end_lnum = 4 }, lnum = 3, end_lnum = 4 } },
   }, 'y')
   assert.truthy(legacy[1].text:find('anchor: L3-4 (no snapshot)', 1, true), 'no sha: ' .. legacy[1].text)
+  -- A resolver places a logged filename (here one under an old root)
+  local record = require('quickfix-review.store.record')
+  local resolved = require('quickfix-review.history').rows({
+    { op = 'add', comment = { id = 'z', kind = 'note', filename = '/old/a.txt', lnum = 3 }, ts = 0 },
+  }, 'z', nil, function(f) return record.resolve_filename(f, '/new', { '/old' }) end)
+  assert.equals(resolved[1].where, vim.fn.fnamemodify('/new/a.txt', ':.') .. ':3', 'resolved: ' .. resolved[1].where)
   vim.cmd('ReviewHistory ' .. id) -- prints without error
   qf.clear_review()
 end)

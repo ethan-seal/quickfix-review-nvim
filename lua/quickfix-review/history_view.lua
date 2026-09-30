@@ -4,11 +4,14 @@
 local M = {}
 
 local history = require('quickfix-review.history')
+local journal = require('quickfix-review.store.journal')
 local location = require('quickfix-review.store.location')
 local log = require('quickfix-review.log')
 local maintenance = require('quickfix-review.store.maintenance')
+local record = require('quickfix-review.store.record')
 local segment = require('quickfix-review.store.segment')
 local store = require('quickfix-review.store')
+local sync = require('quickfix-review.store.sync')
 
 local uv = vim.uv or vim.loop
 
@@ -29,6 +32,13 @@ function M.history_rows(id)
     return log.read(path, 0, 0, history_seen[path])
   end
   local loc = location.resolve()
+  -- This project's journal, for its rebases (see below): loaded if another
+  -- project's is (e.g. after a :cd with no sync since); a sync otherwise
+  -- would read (and warn about) what is read below
+  if journal.key() ~= loc.events then
+    sync.sync()
+    loc = location.resolve()
+  end
   local segs = segment.list(loc.events)
   -- The files to read, oldest first
   local paths = {}
@@ -65,7 +75,11 @@ function M.history_rows(id)
     local first = r.events[1]
     if id ~= nil and first and first.op == 'checkpoint' and not history.checkpoint_knows(first, id) then break end
   end
-  return history.rows(events, id)
+  -- Logged filenames resolved as the store does: a relative one against the
+  -- project root (not the cwd), an absolute one under an old root (from
+  -- before an adopt) under the current root
+  local root, rebases = loc.root, journal.rebases()
+  return history.rows(events, id, nil, function(f) return record.resolve_filename(f, root, rebases) end)
 end
 
 -- Print the event history of comment `id`, or the last 50 events

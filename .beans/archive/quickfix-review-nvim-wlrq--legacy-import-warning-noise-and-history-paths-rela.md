@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-wlrq
 title: Legacy import warning noise and history paths relative to root
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-09-30T00:23:41Z
-updated_at: 2026-09-30T00:23:41Z
+updated_at: 2026-09-30T01:17:54Z
 ---
 
 **Symptom**: two small fgb6 leftovers.

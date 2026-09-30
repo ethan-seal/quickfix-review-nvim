@@ -54,10 +54,13 @@ local function short(v, max)
   return s
 end
 
-local function where(r)
+-- A record's place as "<file relative to the cwd>:<lnum>", its logged
+-- filename first made absolute by `resolve` when given
+local function where(r, resolve)
   if type(r) ~= 'table' or type(r.filename) ~= 'string' then return '?' end
   local lnum = type(r.anchor) == 'table' and r.anchor.lnum or r.lnum
-  return vim.fn.fnamemodify(r.filename, ':.') .. ':' .. tostring(lnum or '?')
+  local filename = resolve and resolve(r.filename) or r.filename
+  return vim.fn.fnamemodify(filename, ':.') .. ':' .. tostring(lnum or '?')
 end
 
 -- An anchor as "L<lnum>-<end_lnum> (<sha, abbreviated>)"
@@ -125,8 +128,10 @@ end
 -- { ts, op, id, kind, where, changes, text }, `text` being the line shown.
 -- A checkpoint (see reduce.lua) is not a row (nor is a rebase, which is not
 -- about a comment): a checkpoint's records are what later
--- events are shown with.
-function M.rows(events, id, limit)
+-- events are shown with. `resolve` (optional) maps a logged filename to an
+-- absolute path (a relative one is relative to the project root, not the
+-- cwd); without it filenames are shown as logged, relative to the cwd.
+function M.rows(events, id, limit, resolve)
   limit = limit or M.LIMIT
   -- The latest record seen for each id, so an update (which carries no
   -- record) can be shown with its comment's kind and place
@@ -148,7 +153,7 @@ function M.rows(events, id, limit)
         local row = {
           ts = ev.ts, op = tostring(ev.op), id = subject_id,
           kind = type(r) == 'table' and r.kind or nil,
-          where = r and where(r) or (#recs > 1 and (#recs .. ' comments') or '?'),
+          where = r and where(r, resolve) or (#recs > 1 and (#recs .. ' comments') or '?'),
           changes = ev.op == 'update' and changes(ev) or '',
         }
         local time = type(ev.ts) == 'number' and os.date('%Y-%m-%d %H:%M:%S', math.floor(ev.ts / 1000)) or '?'

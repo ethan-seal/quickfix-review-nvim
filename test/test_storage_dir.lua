@@ -916,14 +916,67 @@ storage_test('a legacy record with only a bufnr is not imported onto an open buf
   local content = vim.json.encode({ { bufnr = buf, lnum = 1, col = 1, text = '[NOTE] orphan' } })
   vim.fn.writefile({ content }, legacy)
   cd(a)
-  local calls = capture_notify(function() restart() end)
-  local _, store = mods()
-  assert.length(store.all(), 0, 'not attached to the open buffer\'s file')
-  local warns = mentioning(calls, 'not importing 1 comment')
-  assert.length(warns, 1, 'warned about the dropped record')
-  assert.equals(warns[1].level, vim.log.levels.WARN, 'at WARN level')
+  local store
+  local calls = capture_notify(function()
+    restart()
+    _, store = mods()
+    assert.length(store.all(), 0, 'not attached to the open buffer\'s file')
+  end)
+  -- It names no file, so no project's: warned about only beside an import
+  assert.length(mentioning(calls, 'not importing'), 0, 'nothing imported, nothing warned')
   assert.equals(read_bytes(legacy), content .. '\n', 'legacy file unchanged')
   vim.cmd('bwipeout! ' .. buf)
+end)
+
+storage_test('another project\'s invalid legacy records are not warned about', function()
+  local a = make_repo('omega2')
+  local b = make_repo('omega3')
+  local config = mods()
+  local legacy = config.legacy_storage_file()
+  vim.fn.mkdir(vim.fn.fnamemodify(legacy, ':h'), 'p')
+  vim.fn.writefile({ vim.json.encode({
+    { filename = b .. '/omega3.txt', lnum = 'x', col = 1, text = '[NOTE] bad' },
+    { filename = b .. '/omega3.txt', lnum = 1, col = 1, text = '[NOTE] good' },
+  }) }, legacy)
+  for _ = 1, 2 do
+    local store
+    local calls = capture_notify(function()
+      cd(a) -- a :cd syncs too
+      restart()
+      _, store = mods()
+      assert.length(store.all(), 0, 'nothing for repo a')
+    end)
+    assert.length(mentioning(calls, 'not importing'), 0, 'b\'s record not warned about in a')
+  end
+  local store
+  local calls = capture_notify(function()
+    cd(b) -- a :cd syncs too
+    restart()
+    _, store = mods()
+    assert.length(store.all(), 1, 'b imports its valid record')
+  end)
+  local warns = mentioning(calls, 'not importing 1 comment')
+  assert.length(warns, 1, 'b warned about its dropped record')
+  assert.equals(warns[1].level, vim.log.levels.WARN, 'at WARN level')
+end)
+
+storage_test('an import warns only about its own project\'s invalid records', function()
+  local a, file_a = make_repo('omega4')
+  local b = make_repo('omega5')
+  local config = mods()
+  local legacy = config.legacy_storage_file()
+  vim.fn.mkdir(vim.fn.fnamemodify(legacy, ':h'), 'p')
+  vim.fn.writefile({ vim.json.encode({
+    { filename = file_a, lnum = 1, col = 1, text = '[NOTE] from a' },
+    { filename = b .. '/omega5.txt', lnum = 'x', col = 1, text = '[NOTE] bad' },
+  }) }, legacy)
+  cd(a)
+  local calls = capture_notify(function()
+    restart()
+    local _, store = mods()
+    assert.length(store.all(), 1, 'a imports its record')
+  end)
+  assert.length(mentioning(calls, 'not importing'), 0, 'b\'s record not warned about')
 end)
 
 -- log.append failing for every path under `dir` while fn runs
@@ -1157,6 +1210,25 @@ storage_test('relative filenames resolve against the root, not the cwd', functio
   local all = store.all()
   assert.length(all, 1, 'the comment is there')
   assert.equals(all[1].filename, file, 'resolved against the root, not the cwd')
+end)
+
+storage_test(':ReviewHistory shows filenames relative to the cwd, not the root', function()
+  local a, file = make_repo('rho3')
+  vim.fn.mkdir(a .. '/deep', 'p')
+  local deep_file = a .. '/deep/inner.txt'
+  vim.fn.writefile({ 'x' }, deep_file)
+  cd(a)
+  restart()
+  note(file, 'at root')
+  note(deep_file, 'in deep')
+  cd(a .. '/deep')
+  restart()
+  local rows = require('quickfix-review').history_rows()
+  assert.length(rows, 2, 'two events')
+  assert.equals(rows[2].where, 'inner.txt:1', 'relative to the cwd, not the root')
+  -- Outside the cwd, so shown absolute (as :. does), not as if in the cwd
+  assert.equals(rows[1].where, file .. ':1', 'resolved against the root, not the cwd')
+  assert.truthy(rows[1].text:find(file .. ':1', 1, true), 'shown in the line')
 end)
 
 storage_test('a log written with absolute filenames loads unchanged, its bytes untouched', function()
@@ -1415,6 +1487,8 @@ storage_test(':ReviewAdopt remaps absolute filenames logged before they were rel
   all = store.all()
   assert.length(all, 1, 'loaded from the checkpoint')
   assert.equals(all[1].filename, moved .. '/tau.txt', 'still remapped after a restart')
+  local rows = require('quickfix-review').history_rows('abs1')
+  assert.equals(rows[1].where, 'tau.txt:2', 'history shows it under the new root')
 end)
 
 storage_test('an absolute path outside the old root is unchanged after adopt', function()

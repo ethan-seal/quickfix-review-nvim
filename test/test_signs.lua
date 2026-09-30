@@ -1,6 +1,6 @@
 -- Tests for sign placement
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 local utils = require('quickfix-review.utils')
 
 print('\nRunning sign tests...')

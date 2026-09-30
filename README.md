@@ -75,7 +75,7 @@ To run the test suite:
 scripts/test.sh
 ```
 
-This runs `nvim --headless --clean -c 'lua dofile("test/run.lua")' -c 'qall'`, so your own config and installed plugins are not loaded. See [test/README.md](test/README.md) for details.
+This runs `nvim --headless --clean -c 'lua dofile("test/run.lua")' -c 'qall'` with a throwaway data home and working directory, so your own config, installed plugins and real reviews are never involved. Pass test files to run only those (`scripts/test.sh test/test_migrate.lua`); running a test file directly with `nvim` is refused. See [test/README.md](test/README.md) for details.
 
 The tests will:
 - Verify all comment types work correctly

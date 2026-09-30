@@ -1,7 +1,7 @@
 -- Tests for persistence: the review lives in the plugin, every change is
 -- appended to its event log on disk, and the quickfix list is only a view of it
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 
 print('\nRunning persistence tests...')
 
@@ -691,7 +691,7 @@ assert.run_test('two Neovim processes give their comments different ids', functi
     local file = vim.fn.tempname() .. '-ids-' .. i .. '.json'
     local result = vim.system({
       vim.v.progpath, '--headless', '--clean',
-      '--cmd', 'set rtp^=' .. vim.fn.getcwd(),
+      '--cmd', 'set rtp^=' .. test_helper.root,
       '-c', string.format(
         'lua require("quickfix-review").setup({storage_file=%q}); '
           .. 'require("quickfix-review.store").add({filename=%q,lnum=1,kind="note",body="x"})', file, abs),
@@ -727,7 +727,7 @@ assert.run_test('two Neovims appending at once lose nothing and tear nothing', f
   local function writer(who)
     return vim.system({
       vim.v.progpath, '--headless', '--clean',
-      '--cmd', 'set rtp^=' .. vim.fn.getcwd(),
+      '--cmd', 'set rtp^=' .. test_helper.root,
       '-c', string.format('lua assert(loadfile(%q))(%q)', script, who),
       '-c', 'qall!',
     })

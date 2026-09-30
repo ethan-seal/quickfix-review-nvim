@@ -1,6 +1,6 @@
 -- Tests for the storage lock (store/lock.lua): flock, and the mkdir fallback
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 
 print('\nRunning storage lock tests...')
 
@@ -86,7 +86,7 @@ vim.fn.writefile({
 
 local function hold_in_child(loc)
   local ready = nil
-  local child = vim.system({ vim.v.progpath, '--clean', '-l', holder_script, vim.fn.getcwd(), loc.flock, loc.lock }, {
+  local child = vim.system({ vim.v.progpath, '--clean', '-l', holder_script, test_helper.root, loc.flock, loc.lock }, {
     stdout = function(_, data)
       if data and data:find('ready') then ready = data:match('ready (%a+)') end
     end,

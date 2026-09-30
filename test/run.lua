@@ -1,9 +1,13 @@
 -- Test runner for quickfix-review
--- Usage: scripts/test.sh  (or: nvim --headless --clean -c 'lua dofile("test/run.lua")' -c 'qall')
+-- Usage: scripts/test.sh [test/test_x.lua ...]
+-- (tests refuse to run without the hermetic environment scripts/test.sh sets up)
+
+-- The repo root; test/init.lua moves cwd to a throwaway work dir
+local root = vim.env.QFR_TEST_ROOT or vim.fn.getcwd()
 
 print('Running quickfix-review tests...')
-print('Working directory:', vim.fn.getcwd())
-print('Plugin version check:', vim.fn.readfile('lua/quickfix-review/config.lua', '', 1)[1])
+print('Repo root:', root)
+print('Plugin version check:', vim.fn.readfile(root .. '/lua/quickfix-review/config.lua', '', 1)[1])
 print(string.rep('=', 50))
 
 -- Track totals across all test files
@@ -11,10 +15,13 @@ local total_passed = 0
 local total_failed = 0
 local total_pending = 0
 
--- Run one test file. A file that errors outside assert.run_test (at load time
--- or top level) counts as a failure, so the suite still exits non-zero.
+-- Run one test file (path relative to the repo root). A file that errors
+-- outside assert.run_test (at load time or top level) counts as a failure, so
+-- the suite still exits non-zero. Each file starts from the repo root as cwd:
+-- the files that don't load test/init.lua (test_utils, test_context) assume it.
 local function run_file(path)
-  local ok, result = pcall(dofile, path)
+  vim.cmd.cd(root)
+  local ok, result = pcall(dofile, root .. '/' .. path)
   -- Drain callbacks this file scheduled (e.g. store refreshes), so they don't
   -- fire during a later file's vim.wait and redraw its buffers
   local drained = false
@@ -31,54 +38,50 @@ local function run_file(path)
   result.reset()
 end
 
--- Run utility tests first (no plugin dependency)
-run_file('test/test_utils.lua')
+-- The full suite, in order
+local default_files = {
+  -- Utility tests first (no plugin dependency)
+  'test/test_utils.lua',
+  -- Context capture
+  'test/test_context.lua',
+  -- Configuration
+  'test/test_config.lua',
+  -- Comments
+  'test/test_comments.lua',
+  -- Signs
+  'test/test_signs.lua',
+  -- Event reducer, event log and lock
+  'test/test_reduce.lua',
+  'test/test_log.lua',
+  'test/test_lock.lua',
+  -- Persistence
+  'test/test_persistence.lua',
+  -- Multi-instance sync
+  'test/test_sync.lua',
+  -- Log rotation and legacy migration
+  'test/test_sealing.lua',
+  'test/test_migrate.lua',
+  -- Storage schema and upgrades
+  'test/test_schema.lua',
+  -- Per-project storage directory
+  'test/test_storage_dir.lua',
+  -- Snapshot store
+  'test/test_snapshots.lua',
+  -- Relocation (mapping, then tracking and the outdated state)
+  'test/test_track.lua',
+  'test/test_relocate.lua',
+  -- Setup idempotency
+  'test/test_setup.lua',
+  -- Quickfix window hooks
+  'test/test_qf_window.lua',
+}
 
--- Run context capture tests
-run_file('test/test_context.lua')
-
--- Run configuration tests
-run_file('test/test_config.lua')
-
--- Run comment tests
-run_file('test/test_comments.lua')
-
--- Run sign tests
-run_file('test/test_signs.lua')
-
--- Run event reducer and event log tests
-run_file('test/test_reduce.lua')
-run_file('test/test_log.lua')
-run_file('test/test_lock.lua')
-
--- Run persistence tests
-run_file('test/test_persistence.lua')
-
--- Run multi-instance sync tests
-run_file('test/test_sync.lua')
-
--- Run log rotation tests
-run_file('test/test_sealing.lua')
-run_file('test/test_migrate.lua')
-
--- Run storage schema and upgrade tests
-run_file('test/test_schema.lua')
-
--- Run per-project storage directory tests
-run_file('test/test_storage_dir.lua')
-
--- Run snapshot store tests
-run_file('test/test_snapshots.lua')
-
--- Run relocation tests (mapping, then tracking and the outdated state)
-run_file('test/test_track.lua')
-run_file('test/test_relocate.lua')
-
--- Run setup idempotency tests
-run_file('test/test_setup.lua')
-
--- Run quickfix window hook tests
-run_file('test/test_qf_window.lua')
+-- scripts/test.sh passes any file arguments through QFR_TEST_FILES
+local files = vim.split(vim.env.QFR_TEST_FILES or '', '%s+', { trimempty = true })
+if #files == 0 then files = default_files end
+for _, path in ipairs(files) do
+  run_file(path)
+end
 
 -- Final summary
 print('')

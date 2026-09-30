@@ -1,7 +1,7 @@
 -- Tests for configuration: comment_types validation, the export legend and
 -- the order comment types are listed in
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 local config = require('quickfix-review.config')
 local utils = require('quickfix-review.utils')
 

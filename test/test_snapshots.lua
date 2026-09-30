@@ -1,6 +1,6 @@
 -- Tests for the content-addressed snapshot store (snapshots.lua)
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 
 print('\nRunning snapshot store tests...')
 

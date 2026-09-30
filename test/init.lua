@@ -1,8 +1,26 @@
 -- Test initialization for quickfix-review
 -- This file sets up the testing environment
 
--- Add current directory to runtime path
-vim.opt.runtimepath:prepend(vim.fn.getcwd())
+-- Refuse non-hermetic runs: scripts/test.sh redirects XDG_DATA_HOME and the
+-- working directory to throwaway dirs, so tests never touch real user data or
+-- leave files in the repo. A test file run directly with nvim would not.
+local function refuse(why)
+  error('quickfix-review tests must run hermetically (' .. why
+    .. '): use scripts/test.sh [test/test_x.lua ...]', 0)
+end
+if vim.env.QFR_TEST_HERMETIC ~= '1' then refuse('QFR_TEST_HERMETIC is not set') end
+for _, var in ipairs({ 'QFR_TEST_ROOT', 'QFR_TEST_WORKDIR', 'XDG_DATA_HOME' }) do
+  if (vim.env[var] or '') == '' then refuse(var .. ' is not set') end
+end
+if vim.env.HOME and vim.fs.normalize(vim.env.XDG_DATA_HOME)
+    == vim.fs.normalize(vim.env.HOME .. '/.local/share') then
+  refuse('XDG_DATA_HOME is the real data home')
+end
+
+-- Load this checkout, then work in the throwaway dir so relative writes
+-- (test_file.txt) land there. The dir is fixed, so re-running this is harmless.
+vim.opt.runtimepath:prepend(vim.env.QFR_TEST_ROOT)
+vim.cmd.cd(vim.env.QFR_TEST_WORKDIR)
 
 -- Clear every cached module of the plugin (store/* included), so each test
 -- file starts from fresh module state
@@ -25,6 +43,9 @@ end
 
 -- Test helper functions
 local M = {}
+
+-- The repo root (cwd is the throwaway work dir)
+M.root = vim.env.QFR_TEST_ROOT
 
 -- Never touch the real review in stdpath('data')
 M.storage_file = vim.fn.tempname() .. '-quickfix-review.json'

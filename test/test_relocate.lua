@@ -1,7 +1,7 @@
 -- Tests for relocating comments when their file changes: tracking extmarks,
 -- relocation on reload and from disk, and the outdated state
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 
 print('\nRunning relocation tests...')
 

@@ -10,7 +10,7 @@ This directory contains tests for the quickfix-review plugin.
 scripts/test.sh
 ```
 
-The script runs exactly this command from the repository root and exits with its status (non-zero if any test fails):
+The script sets up a hermetic environment, then runs this command from the repository root and exits with its status (non-zero if any test fails):
 
 ```bash
 nvim --headless --clean -c 'lua dofile("test/run.lua")' -c 'qall'
@@ -21,41 +21,51 @@ Check the exit code to determine pass/fail:
 scripts/test.sh && echo "PASSED" || echo "FAILED"
 ```
 
-**Always pass `--clean`.** Without it Neovim loads your `init.lua` and installed plugins (possibly including an installed copy of this plugin), which changes options, signs and highlights and makes results depend on your personal setup. Every command in this file uses `--clean`.
+**Always go through `scripts/test.sh`.** It creates a throwaway directory and exports:
 
-Note: Use `qall` instead of `qa!` to avoid bash history expansion issues with the `!` character.
+- `XDG_DATA_HOME` pointing into it, so `stdpath('data')` (the default storage dir and the legacy global file) never touches your real reviews;
+- `QFR_TEST_WORKDIR`, a throwaway working directory that `test/init.lua` changes into, so files the tests write by relative path (`test_file.txt`) never land in the repository;
+- `QFR_TEST_ROOT`, the repository root, which `test/init.lua` prepends to the runtime path so this checkout (not an installed copy) is loaded;
+- `QFR_TEST_HERMETIC=1`. `test/init.lua` refuses to run without it, so running a test file directly with `nvim` fails immediately instead of touching real data.
 
-**Important**: The tests add the current directory to the runtime path to ensure the local plugin version is loaded. This is necessary to test changes to the plugin code.
+The script also passes `--clean`, so Neovim does not load your `init.lua` and installed plugins (possibly including an installed copy of this plugin), which would change options, signs and highlights and make results depend on your personal setup.
 
 ### Verifying Plugin Version
 
-The test output includes a "Plugin version check" line that shows the first line of the config file. This confirms that the current directory's plugin is being tested, not an installed version.
+The test output includes a "Plugin version check" line that shows the first line of the config file. This confirms that the checkout's plugin is being tested, not an installed version.
 
 ### Run Individual Test Files
 
+Pass test files (relative to the repository root) to run only those:
+
 ```bash
 # Utility function tests
-nvim --headless --clean -c 'lua dofile("test/test_utils.lua")' -c 'qall'
+scripts/test.sh test/test_utils.lua
 
 # Configuration tests
-nvim --headless --clean -c 'lua dofile("test/test_config.lua")' -c 'qall'
+scripts/test.sh test/test_config.lua
 
 # Comment add/delete tests
-nvim --headless --clean -c 'lua dofile("test/test_comments.lua")' -c 'qall'
+scripts/test.sh test/test_comments.lua
 
 # Sign placement tests
-nvim --headless --clean -c 'lua dofile("test/test_signs.lua")' -c 'qall'
+scripts/test.sh test/test_signs.lua
 
 # Save/load persistence tests
-nvim --headless --clean -c 'lua dofile("test/test_persistence.lua")' -c 'qall'
+scripts/test.sh test/test_persistence.lua
+
+# Several files, in the given order
+scripts/test.sh test/test_migrate.lua test/test_utils.lua
 ```
 
 ### Interactive Debugging
 
-For debugging failing tests:
+For debugging failing tests in a visible Neovim, recreate the environment `scripts/test.sh` sets up (never point `XDG_DATA_HOME` at your real data directory):
 
 ```bash
-nvim --clean -c 'lua dofile("test/test_comments.lua")'
+tmp=$(mktemp -d); mkdir "$tmp/data" "$tmp/work"
+XDG_DATA_HOME="$tmp/data" QFR_TEST_WORKDIR="$tmp/work" QFR_TEST_ROOT="$PWD" QFR_TEST_HERMETIC=1 \
+  nvim --clean -c 'lua dofile("test/test_comments.lua")'
 ```
 
 ## Test Files
@@ -78,8 +88,8 @@ nvim --clean -c 'lua dofile("test/test_comments.lua")'
 ### Basic Structure
 
 ```lua
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 
 print('\nRunning my tests...')
 
@@ -113,13 +123,13 @@ assert.length(tbl, expected, msg)         -- Table length check
 
 ### Adding to Test Runner
 
-Add your test file to `run.lua`:
+Add your test file to the `default_files` list in `run.lua`:
 
 ```lua
-local my_assert = dofile('test/test_myfeature.lua')
-total_passed = total_passed + my_assert.passed
-total_failed = total_failed + my_assert.failed
-my_assert.reset()
+local default_files = {
+  -- ...
+  'test/test_myfeature.lua',
+}
 ```
 
 ## Test Environment
@@ -129,7 +139,7 @@ The test environment:
 - Disables all keymaps to avoid conflicts
 - Uses simple ASCII signs (!, ?, N, +) instead of emoji
 - Clears quickfix list and signs between test files
-- Creates temporary test files that are cleaned up automatically
+- Runs in a throwaway working directory and data home (see above), so test files never land in the repository
 
 ## CI Integration
 

@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-xyos
 title: 'Tests: stop deleting tracked test_file.txt; refuse non-hermetic runs'
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-09-29T23:55:42Z
-updated_at: 2026-09-29T23:55:42Z
+updated_at: 2026-09-30T01:27:12Z
 ---
 
 **Symptom**: (1) every `scripts/test.sh` run deletes the tracked `test_file.txt` in the repo root (test/init.lua:204 `os.remove('test_file.txt')`; create_test_file at :207 writes it in cwd), so every run leaves a dirty tree. (2) Running a test file directly (e.g. `nvim --headless -c 'luafile test/test_migrate.lua'`) is not hermetic: XDG_DATA_HOME is only redirected by scripts/test.sh, so a direct run creates a review in the real `~/.local/share/nvim/quickfix-review/` and imports the real legacy `quickfix-review.json` (happened 2026-09-29 during bean 8arp; cleaned up by hand).

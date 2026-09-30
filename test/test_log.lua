@@ -1,6 +1,6 @@
 -- Tests for the event log file: tolerant reads and appends (the lock: test_lock.lua)
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 
 print('\nRunning event log tests...')
 

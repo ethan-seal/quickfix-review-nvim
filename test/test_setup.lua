@@ -1,6 +1,6 @@
 -- Tests that setup() can be called more than once without duplicating autocmds
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 
 print('\nRunning setup tests...')
 
@@ -682,6 +682,43 @@ assert.run_test('a non-table comment type entry warns and is skipped', function(
   end)
   test_helper.setup_test_environment()
   if not ok2 then error(err2, 0) end
+end)
+
+-- test/init.lua refuses a non-hermetic run before loading the plugin. The
+-- child gets a fake HOME and data home, so a broken guard still can't reach
+-- real data.
+local function guarded_run(env)
+  local home = vim.fn.tempname()
+  vim.fn.mkdir(home, 'p')
+  local full_env = { HOME = home, PATH = vim.env.PATH, XDG_DATA_HOME = home .. '/data' }
+  for k, v in pairs(env(home)) do full_env[k] = v end
+  local result = vim.system({
+    vim.v.progpath, '--headless', '--clean',
+    '-c', string.format('lua dofile(%q)', test_helper.root .. '/test/init.lua'),
+    '-c', 'qall!',
+  }, { env = full_env, clear_env = true, cwd = test_helper.root }):wait(30000)
+  local created = vim.fn.isdirectory(full_env.XDG_DATA_HOME .. '/nvim/quickfix-review') == 1
+  vim.fn.delete(home, 'rf')
+  return result, created
+end
+
+assert.run_test('test/init.lua refuses to run without QFR_TEST_HERMETIC', function()
+  local result, created = guarded_run(function(home)
+    return { QFR_TEST_ROOT = test_helper.root, QFR_TEST_WORKDIR = home }
+  end)
+  assert.matches(result.stderr, 'scripts/test%.sh', 'error points at scripts/test.sh: ' .. result.stderr)
+  assert.falsy(created, 'no review created in the data home')
+end)
+
+assert.run_test('test/init.lua refuses the real data home even with the marker', function()
+  local result, created = guarded_run(function(home)
+    return {
+      QFR_TEST_HERMETIC = '1', QFR_TEST_ROOT = test_helper.root, QFR_TEST_WORKDIR = home,
+      XDG_DATA_HOME = home .. '/.local/share',
+    }
+  end)
+  assert.matches(result.stderr, 'real data home', 'refused: ' .. result.stderr)
+  assert.falsy(created, 'no review created in the data home')
 end)
 
 test_helper.cleanup_test_environment()

@@ -1,8 +1,8 @@
 -- Tests for the v3 journal's segments and checkpoints (docs/journal.md):
 -- sealing a full segment, checkpoint GC, loading from (or without)
 -- checkpoints, history across segments, and snapshot GC over segments
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 
 print('\nRunning journal segment and checkpoint tests...')
 
@@ -297,7 +297,7 @@ assert.run_test('two Neovims appending while sealing lose and duplicate nothing'
   local function writer(who)
     return vim.system({
       vim.v.progpath, '--headless', '--clean',
-      '--cmd', 'set rtp^=' .. vim.fn.getcwd(),
+      '--cmd', 'set rtp^=' .. test_helper.root,
       '-c', string.format('lua assert(loadfile(%q))(%q)', script, who),
       '-c', 'qall!',
     })

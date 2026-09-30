@@ -1,6 +1,6 @@
 -- Tests for track.lua's pure core: mapping a comment's range through a diff
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 
 print('\nRunning relocation mapping tests...')
 

@@ -1,8 +1,8 @@
 -- Tests for the storage schema: version 2 records, and upgrading version 1
 -- files (bare lists of quickfix-shaped items with the kind, range and
 -- response encoded in the text)
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 
 print('\nRunning schema tests...')
 

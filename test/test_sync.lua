@@ -2,8 +2,8 @@
 -- log, and this one picks the change up on FocusGained, BufEnter, CursorHold
 -- and before any change, redrawing the list view and signs only when the
 -- review changed
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 local utils = require('quickfix-review.utils')
 
 print('\nRunning multi-instance sync tests...')
@@ -33,7 +33,7 @@ end
 local function other(code)
   local result = vim.system({
     vim.v.progpath, '--headless', '--clean',
-    '--cmd', 'set rtp^=' .. vim.fn.getcwd(),
+    '--cmd', 'set rtp^=' .. test_helper.root,
     '-c', string.format('lua require("quickfix-review").setup({ storage_file = %q }); '
       .. 'local store = require("quickfix-review.store"); %s', test_helper.storage_file, code),
     '-c', 'qall!',

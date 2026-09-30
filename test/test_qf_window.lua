@@ -1,6 +1,6 @@
 -- Tests for the quickfix window hook: delete keys only act on the review list
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 
 print('\nRunning quickfix window tests...')
 

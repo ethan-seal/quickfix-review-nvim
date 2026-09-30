@@ -1,8 +1,8 @@
 -- Tests for the per-project storage directory: project roots, :cd switching,
 -- the one-time import from the legacy global file, and the deprecated
 -- storage_file option
-local test_helper = dofile('test/init.lua')
-local assert = dofile('test/assertions.lua')
+local test_helper = dofile((vim.env.QFR_TEST_ROOT or '.') .. '/test/init.lua')
+local assert = dofile(test_helper.root .. '/test/assertions.lua')
 
 print('\nRunning storage dir tests...')
 

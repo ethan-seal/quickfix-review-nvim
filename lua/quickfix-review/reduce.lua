@@ -287,6 +287,40 @@ function M.apply_in_segment(state, seg, ev)
   return M.apply(state, ev)
 end
 
+-- Set into[id] = true for every comment id raw event `ev` mentions: added,
+-- imported, restored, updated, deleted or cleared ones, and every id in a
+-- checkpoint event's state (live, trashed or removed), read before any
+-- pruning. Tolerates malformed events (they add nothing).
+-- Returns: into
+function M.event_ids(ev, into)
+  if type(ev) ~= 'table' then return into end
+  local function note(id)
+    if type(id) == 'string' then into[id] = true end
+  end
+  local function note_records(list)
+    if type(list) ~= 'table' then return end
+    for _, r in ipairs(list) do
+      if type(r) == 'table' then note(r.id) end
+    end
+  end
+  local op = ev.op
+  if op == 'add' or op == 'restore' then
+    if type(ev.comment) == 'table' then note(ev.comment.id) end
+  elseif op == 'import' or op == 'clear' then
+    note_records(ev.comments)
+  elseif op == 'delete' or op == 'update' then
+    note(ev.id)
+  elseif op == 'checkpoint' and type(ev.state) == 'table' then
+    local s = ev.state
+    note_records(s.comments)
+    if type(s.trash) == 'table' then
+      for id in pairs(s.trash) do note(id) end
+    end
+    note_records(s.removed)
+  end
+  return into
+end
+
 -- The live record with this id, or nil
 function M.get(state, id)
   return state.index.by_id[id]

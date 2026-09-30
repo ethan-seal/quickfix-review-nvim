@@ -406,7 +406,11 @@ Corrections to the plan above, and where the code differs from it.
 - **The legacy import follows the legacy review's journal**: with
   `storage_file` once set to the legacy global file, its review is read from
   `<legacy>.events/` when that exists, else from `<legacy>.log.jsonl`
-  (unless that is a tombstone).
+  (unless that is a tombstone). When the legacy file changed after that
+  review imported it, its records are re-imported only if their ids appear
+  in none of the review's raw events (every event is replayed, so no
+  checkpoint is used), not merely if its pruned state lacks them: a deletion
+  pruned from the bounded trash is not resurrected.
 - **Step 7 leaves the mkdir lock dir alone**: the migration holds it, and
   its holder removes it on release, as with every v2 write.
 - **A stray `state.json`** beside a v3 journal is ignored and deleted at

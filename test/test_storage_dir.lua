@@ -914,6 +914,40 @@ storage_test('a comment deleted while storage_file pointed at the legacy file is
   assert.length(store.all(), 0, 'the deleted comment stays deleted')
 end)
 
+storage_test('a legacy comment deleted and then pruned from the trash is not re-imported', function()
+  local a = make_repo('kappa')
+  local config = mods()
+  local keep = require('quickfix-review.reduce').TRASH_KEEP
+  local legacy = config.legacy_storage_file()
+  vim.fn.mkdir(vim.fn.fnamemodify(legacy, ':h'), 'p')
+  local comments = { { id = '0000000000000001', filename = a .. '/a.txt', lnum = 1, kind = 'note', body = 'X',
+    created_at = 1 } }
+  for i = 1, keep do
+    comments[#comments + 1] = { id = string.format('1%015d', i), filename = a .. '/a.txt', lnum = i + 1,
+      kind = 'note', body = 'other ' .. i, created_at = i + 1 }
+  end
+  vim.fn.writefile({ vim.json.encode({ version = 2, comments = comments }) }, legacy)
+  cd(a)
+  capture_notify(function()
+    restart({ storage_file = config.legacy_storage_file() })
+    local _, store = mods()
+    assert.length(store.all(), keep + 1, 'the legacy review imports the file')
+    assert.equals(store.remove('0000000000000001'), 1, 'deleted X')
+    -- One clear of TRASH_KEEP comments: the newest removals, kept whole, so
+    -- X's older removal is pruned from the trash
+    store.clear()
+    assert.length(store.all(), 0, 'all cleared')
+  end)
+  -- The file changes after the review imported it
+  comments[#comments + 1] = { id = '2000000000000001', filename = a .. '/a.txt', lnum = 9999, kind = 'note',
+    body = 'added later', created_at = 99999 }
+  vim.fn.writefile({ vim.json.encode({ version = 2, comments = comments }) }, legacy)
+  capture_notify(function() restart() end)
+  local _, store = mods()
+  local bodies = vim.tbl_map(function(c) return c.body end, store.all())
+  assert.equals(table.concat(bodies, '|'), 'added later', 'only the new record is imported; X stays deleted')
+end)
+
 storage_test('a legacy log with no legacy file is imported per project', function()
   local a, file_a = make_repo('iota')
   local config = mods()

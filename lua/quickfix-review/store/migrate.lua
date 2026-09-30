@@ -159,26 +159,28 @@ end
 -- The legacy global file's own review (made while storage_file pointed at
 -- it): its v3 journal (<legacy>.events/), else its v2 log
 -- (<legacy>.log.jsonl, unless that is a tombstone), replayed read-only.
--- Returns: { state, imports, sha (of its bytes), source (a path) }, nil
+-- Returns: { state, imports, ids (every comment id its events ever
+-- mentioned, deleted and pruned ones too), sha (of its bytes), source (a
+-- path) }, nil
 -- when there is none, or false, an error and the path that failed
 local function legacy_review(loc, legacy_path)
   local events = legacy_path .. '.events'
   if #segment.list(events) > 0 then
     if utils.files_match(events, loc.events) then return nil end
-    local r, err = journal.replay(events, nil)
+    local r, err = journal.replay(events, nil, {})
     if not r then return false, err, events end
     local parts = {}
     for i, n in ipairs(segment.list(events)) do parts[i] = location.read_bytes(segment.path(events, n)) or '' end
-    return { state = r.state, imports = r.imports, sha = vim.fn.sha256(table.concat(parts)), source = events }
+    return { state = r.state, imports = r.imports, ids = r.ids, sha = vim.fn.sha256(table.concat(parts)), source = events }
   end
   local legacy_log = legacy_path .. '.log.jsonl'
   local st = uv.fs_stat(legacy_log)
   if not st or st.size == 0 or utils.files_match(legacy_log, loc.log) then return nil end
   if log.is_tombstone(log.read_header(legacy_log)) then return nil end
-  local res, err = journal.replay_v2(legacy_log)
+  local res, err = journal.replay_v2(legacy_log, {})
   if not res then return false, err, legacy_log end
   local bytes = location.read_bytes(legacy_log)
-  return { state = res.state, imports = res.imports, sha = bytes and vim.fn.sha256(bytes) or nil, source = legacy_log }
+  return { state = res.state, imports = res.imports, ids = res.ids, sha = bytes and vim.fn.sha256(bytes) or nil, source = legacy_log }
 end
 
 -- Whether `root` is $HOME or / (symlinks resolved, trailing slashes ignored)
@@ -208,7 +210,9 @@ end
 -- review's state is imported too. It already holds an import of the legacy
 -- file, so while the file is unchanged since (its sha256 is among the
 -- review's imports) the review alone is the source; otherwise the file's
--- records whose ids the review doesn't know are added. That review is only
+-- records whose ids the review never mentioned are added: ids are checked
+-- against every id in the review's raw events, not its reduced state, so a
+-- comment deleted there stays deleted even once pruned from its trash. That review is only
 -- read: never locked, synced or migrated from here.
 local function import_legacy(loc)
   if import_tried[loc.events] then return end
@@ -253,10 +257,8 @@ local function import_legacy(loc)
     list, source = vim.list_extend({}, state.comments), lr.source
     -- The file changed after the review imported it: add what it lacks
     if file_list and not lr.imports[vim.fn.sha256(raw)] then
-      local known = {}
-      for _, c in ipairs(state.comments) do known[c.id] = true end
-      for id, _ in pairs(state.trash) do known[id] = true end
-      for _, r in ipairs(state.removed) do known[r.id] = true end
+      -- Every id the review's events mention (live, deleted, pruned)
+      local known = lr.ids
       -- An id-less record gets a fresh id each time it is normalized, so it
       -- is matched by place and body instead
       local function loc_key(c) return table.concat({ c.filename, tostring(c.lnum), c.body }, '\0') end

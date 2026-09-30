@@ -186,6 +186,16 @@ function M.comments()
   return out
 end
 
+-- Adopt the review in storage dir `dir` (e.g. the project's dir before it
+-- was moved) into the current project, which must have no review yet
+-- (:ReviewAdopt). Reports the outcome.
+-- Returns: ok (boolean), message (string)
+function M.adopt(dir)
+  local ok, message = store.adopt(dir)
+  vim.notify('quickfix-review: ' .. message, ok and vim.log.levels.INFO or vim.log.levels.ERROR)
+  return ok, message
+end
+
 -- Save the review. Every change is already appended to the review's journal as
 -- it is made; this only writes a checkpoint (a cache of the replayed journal).
 function M.save_review()

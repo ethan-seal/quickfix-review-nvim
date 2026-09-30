@@ -49,7 +49,7 @@ function M.sync_data(opts)
   if changed then
     local list = {}
     for _, r in ipairs(journal.comments()) do
-      local c = view.view_of(r)
+      local c = view.view_of(r, loc.root)
       if c then table.insert(list, c) end
     end
     view.set_comments(list)

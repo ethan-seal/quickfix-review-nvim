@@ -19,6 +19,7 @@
 -- those run in for a sync or a change).
 local M = {}
 
+local adopt = require('quickfix-review.store.adopt')
 local journal = require('quickfix-review.store.journal')
 local location = require('quickfix-review.store.location')
 local log = require('quickfix-review.log')
@@ -164,7 +165,10 @@ function M.add(item)
   return mutate(function()
     local c = record.normalize(item)
     if not c then return {}, false end
-    return { log.event('add', { comment = storage.serialise(c) }) }, true
+    -- Written root-relative in a per-project dir (see record.relativize);
+    -- resolve() returns the location the change pinned
+    local stored = record.relativize(storage.serialise(c), location.resolve())
+    return { log.event('add', { comment = stored }) }, true
   end) == true
 end
 
@@ -181,9 +185,10 @@ end
 -- Treat as read-only.
 function M.trash()
   sync.sync()
+  local root = location.resolve().root
   local out = {}
   for id, r in pairs(journal.trash()) do
-    out[id] = view.view_of(r) or r
+    out[id] = view.view_of(r, root) or r
   end
   return out
 end
@@ -192,13 +197,14 @@ end
 -- 'clear'), ts (unix ms, or nil), comment (its view, or the raw record) }
 function M.trash_list()
   sync.sync()
+  local root = location.resolve().root
   local removed = journal.removed()
   local out = {}
   for i = #removed, 1, -1 do
     local e = removed[i]
     local r = journal.trashed(e.id)
     if r then
-      table.insert(out, { id = e.id, op = e.op, ts = e.ts, comment = view.view_of(r) or r })
+      table.insert(out, { id = e.id, op = e.op, ts = e.ts, comment = view.view_of(r, root) or r })
     end
   end
   return out
@@ -287,7 +293,7 @@ function M.edit(id, body)
   if type(body) ~= 'string' or body == '' then return nil end
   return mutate(function()
     local r = journal.get(id)
-    local c = r and view.view_of(r)
+    local c = r and view.view_of(r, location.resolve().root)
     if not c then return {}, 'missing' end
     if c.body == body then return {}, 'unchanged' end
     return { log.event('update', { id = id, set = { body = body }, prev = { body = c.body } }) }, 'edited'
@@ -300,9 +306,10 @@ end
 -- or failed, and then 'partial' when some of the deletes may have landed
 function M.remove_if(pred)
   return mutate(function()
+    local root = location.resolve().root
     local events = {}
     for _, r in ipairs(journal.comments()) do
-      local c = view.view_of(r)
+      local c = view.view_of(r, root)
       if c and pred(c) then
         table.insert(events, log.event('delete', { id = r.id, comment = r }))
       end
@@ -334,6 +341,19 @@ function M.reload()
   local ok, err = sync.sync({ full = true })
   if not ok then return false, err end
   return true, string.format('Review loaded: %d comments', #view.comments())
+end
+
+-- Copy the review in storage dir `dir` (an orphaned one: the dir of the
+-- project before it was moved, see store/adopt.lua) into the current
+-- project's storage dir, which must hold no review, then load it.
+-- Returns: ok (boolean), message (string)
+function M.adopt(dir)
+  local ok, res = adopt.adopt(dir)
+  if not ok then return false, 'Not adopting ' .. tostring(dir) .. ': ' .. tostring(res) end
+  local sok, serr = sync.sync({ full = true })
+  if not sok then return false, 'Adopted ' .. dir .. ', but could not load it: ' .. tostring(serr) end
+  return true, string.format('Adopted the review in %s: %d comments (%d segments copied to %s)', dir,
+    #view.comments(), res, location.resolve().events)
 end
 
 -- Write a checkpoint at the end of the journal now. Every change is

@@ -99,23 +99,29 @@ local function refresh_view_later()
 end
 
 -- The normalized comment for each logged record, so a record is normalized
--- once and an unchanged comment keeps its identity across changes. false for
--- a record that can't be shown (no file or no valid line number).
+-- once and an unchanged comment keeps its identity across changes: { root,
+-- c }, c false for a record that can't be shown (no file or no valid line
+-- number). Keyed on the record, and recomputed when asked for with another
+-- root (a relative filename resolves against it).
 local views = setmetatable({}, { __mode = 'k' })
 
-function M.view_of(r)
-  local c = views[r]
-  if c == nil then
-    c = record.normalize(r) or false
+-- The comment shown for logged record `r` of the review whose project root
+-- is `root` (nil for an explicit storage_file): relative filenames resolve
+-- against it (see record.normalize)
+function M.view_of(r, root)
+  local v = views[r]
+  if v == nil or v.root ~= root then
+    local c = record.normalize(r, root) or false
     if c then
       -- Derived, never logged: a comment from before anchors is anchored at
       -- its line with no snapshot (the fallback search handles it). Its
       -- position is never stored here: track.pos computes it.
       c.anchor = c.anchor or { lnum = c.lnum, end_lnum = c.end_lnum }
     end
-    views[r] = c
+    v = { root = root, c = c }
+    views[r] = v
   end
-  return c or nil
+  return v.c or nil
 end
 
 -- Render the comments: refill the quickfix view (after the current event

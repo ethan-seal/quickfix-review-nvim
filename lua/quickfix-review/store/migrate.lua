@@ -29,14 +29,15 @@ M._test = { crash_after = nil, mismatch = false }
 -- hand-copied duplicate ids split, and records that can't be shown dropped
 -- with a warning. `backup` is where the original is kept (the
 -- comments.json.pre-log.bak of a migration), or nil when it is left in place
--- (loaded read-only).
+-- (loaded read-only). A relative filename resolves against `root` (the
+-- project root; nil for an explicit storage_file).
 -- Returns: records, or nil and an error
-local function load_records(raw, path, backup)
+local function load_records(raw, path, backup, root)
   local list, err = storage.parse(raw, path)
   if not list then return nil, err end
   local loaded, seen, dropped = {}, {}, 0
   for _, item in ipairs(list) do
-    local c = type(item) == 'table' and record.normalize(item) or nil
+    local c = type(item) == 'table' and record.normalize(item, root) or nil
     if not c then
       dropped = dropped + 1
     else
@@ -56,9 +57,10 @@ local function load_records(raw, path, backup)
   return loaded
 end
 
-local function serialise_all(records)
+-- The records as written to the journal at `loc` (see record.relativize)
+local function serialise_all(records, loc)
   local out = {}
-  for i, c in ipairs(records) do out[i] = storage.serialise(c) end
+  for i, c in ipairs(records) do out[i] = record.relativize(storage.serialise(c), loc) end
   return out
 end
 
@@ -97,9 +99,9 @@ local function migrate_json(loc)
     if not src then return true end
     local raw = location.read_bytes(loc.path)
     if not raw then return nil, 'Could not read ' .. loc.path end
-    local records, lerr = load_records(raw, loc.path, loc.path .. location.MIGRATED)
+    local records, lerr = load_records(raw, loc.path, loc.path .. location.MIGRATED, loc.root)
     if not records then return nil, lerr end
-    local import = log.event('import', { source_sha256 = vim.fn.sha256(raw), comments = serialise_all(records) })
+    local import = log.event('import', { source_sha256 = vim.fn.sha256(raw), comments = serialise_all(records, loc) })
     local sok, serr = start_journal(loc, { import }, bit.band(src.mode, 511))
     if not sok then return nil, serr end
     -- The legacy global file stays in place: it is still the per-project
@@ -165,9 +167,12 @@ end
 -- First use of a project with neither a journal nor a comments.json: copy
 -- the comments under the project root out of the legacy global file (old
 -- default storage_file) into a new journal, as an import event. The legacy
--- file is only read, never upgraded, backed up or rewritten. The journal is
--- started even when nothing matches, so the import happens once per
--- project, across restarts: a journal is the "already imported" marker.
+-- file is only read, never upgraded, backed up or rewritten. A journal is
+-- the "already imported" marker, so a non-empty import happens once per
+-- project, across restarts. When nothing matches, no journal is started
+-- (the dir stays empty, so e.g. :ReviewAdopt can still fill it): the scan
+-- is repeated once per session until the project's first change starts
+-- the journal, and then never again.
 -- When the legacy file is missing, its .pre-log.bak is read instead: older
 -- versions renamed the legacy file away when storage_file pointed at it,
 -- leaving only that copy.
@@ -230,11 +235,11 @@ local function import_legacy(loc)
       local function loc_key(c) return table.concat({ c.filename, tostring(c.lnum), c.body }, '\0') end
       local known_loc = {}
       for _, c in ipairs(state.comments) do
-        local n = record.normalize(c)
+        local n = record.normalize(c, loc.root)
         if n then known_loc[loc_key(n)] = true end
       end
       for _, item in ipairs(file_list) do
-        local c = type(item) == 'table' and record.normalize(item) or nil
+        local c = type(item) == 'table' and record.normalize(item, loc.root) or nil
         local dup = c and (known[c.id] or (not record.has_id(item) and known_loc[loc_key(c)]))
         if not dup then table.insert(list, c and storage.serialise(c) or item) end
       end
@@ -246,19 +251,21 @@ local function import_legacy(loc)
 
   local imported, seen, dropped = {}, {}, 0
   for _, item in ipairs(list) do
-    local c = type(item) == 'table' and record.normalize(item) or nil
+    local c = type(item) == 'table' and record.normalize(item, loc.root) or nil
     if not c then dropped = dropped + 1 end
     -- A shared dir is every project's review: import everything
     if c and (loc.shared or utils.is_under(c.filename, loc.root)) then
       if seen[c.id] then c.id = record.new_id() end
       seen[c.id] = true
-      table.insert(imported, storage.serialise(c))
+      table.insert(imported, record.relativize(storage.serialise(c), loc))
     end
   end
   if dropped > 0 then
     warn_once(loc, string.format('not importing %d comment(s) from %s: invalid line number'
       .. ' or no file name (the file is unchanged)', dropped, source))
   end
+  -- Nothing for this project: leave the dir empty (see above)
+  if #imported == 0 then return done() end
 
   local got, ok, werr = journal.locked(loc, function()
     if has_journal(loc) then return 'exists' end -- another Neovim did it
@@ -274,7 +281,7 @@ local function import_legacy(loc)
     return
   end
   done()
-  if ok == true and #imported > 0 then
+  if ok == true then
     vim.notify(string.format('quickfix-review: imported %d comments from %s', #imported, source))
   end
 end
@@ -288,9 +295,9 @@ local function load_readonly(loc, src)
   if journal.key() == loc.events and journal.readonly_key() == key then return true, nil, false end
   local raw = location.read_bytes(loc.path)
   if not raw then return false, 'Could not read ' .. loc.path end
-  local records, err = load_records(raw, loc.path, nil)
+  local records, err = load_records(raw, loc.path, nil, loc.root)
   if not records then return false, err end
-  journal.load_readonly(loc, serialise_all(records), key)
+  journal.load_readonly(loc, serialise_all(records, loc), key)
   return true, nil, true
 end
 

@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-fgb6
 title: Store repo-relative filenames so moved repos and clones keep their review
-status: todo
+status: completed
 type: feature
+priority: normal
 created_at: 2026-09-29T20:45:42Z
-updated_at: 2026-09-29T20:45:42Z
+updated_at: 2026-09-30T00:23:41Z
 blocked_by:
     - quickfix-review-nvim-b8r8
 ---

@@ -345,6 +345,9 @@ assert.run_test('commands work before setup()', function()
       assert.truthy(cok, ':' .. cmd .. ' does not error: ' .. tostring(cerr))
     end
     vim.ui.input = original_input
+    assert.equals(vim.fn.exists(':ReviewAdopt'), 2, ':ReviewAdopt exists before setup')
+    local aok = pcall(vim.cmd, 'ReviewAdopt')
+    assert.falsy(aok, ':ReviewAdopt needs a directory argument')
   end)
   vim.fn.setreg = original_setreg
   os.remove(storage_file)

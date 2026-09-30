@@ -203,6 +203,31 @@ later.
 the directory to use, or a string, used as-is (shared by every project; its import from the
 legacy global file takes every comment, not only one project's).
 
+                                             *quickfix-review-relative-paths*
+In the default per-project storage directory, a comment on a file inside
+the project root is logged with its path relative to the root
+(`src/app.lua`, no `./`, forward slashes), and that path is read back
+against the current project root, never the working directory. A file
+outside the root keeps its absolute path. Comments logged by earlier
+versions keep their absolute paths and are read as before: logged events
+are never rewritten. |quickfix-review.comments()| always gives absolute
+paths. With |quickfix-review-storage_file| or |quickfix-review-storage_dir|
+set, paths stay absolute, since one directory can hold several projects.
+An older version of the plugin reads a relative path against the working
+directory, so after a downgrade such comments are misplaced unless Neovim
+runs at the project root.
+
+The storage directory is named after the root's real path, so a project
+that is moved or renamed (or opened as a clone or another worktree) starts
+with an empty review, and its old review stays in the old directory. Copy
+it over with |:ReviewAdopt|:
+>
+    :ReviewAdopt ~/.local/share/nvim/quickfix-review/app-3f9a1c0b7d2e
+<
+Only comments logged with relative paths follow the move. A comment logged
+before this version still names its old absolute path, so after adopting
+it shows at the old location.
+
                                                   *quickfix-review-snapshots*
 `snapshots/` in the storage directory holds copies of commented files, one
 file per version, named by the SHA-256 of its content, so comments can
@@ -278,9 +303,10 @@ whose path is inside the project are imported ("imported N comments from
 ..."). The global file is only read, never changed. If it is missing but
 `quickfix-review.json.pre-log.bak` exists (left by an older version used
 with `storage_file` pointing at the global file), that copy is read
-instead. The import happens
-once per project: once its journal exists, even with nothing imported, nothing
-is imported again.
+instead. The import happens once per project: once its journal exists,
+nothing is imported again. When nothing in the file is inside the project,
+no journal is started, so the storage dir stays empty (and |:ReviewAdopt|
+can still fill it) until the project's first change.
 
                                                  *quickfix-review-storage_file*
 `storage_file` is deprecated. When set, one review is used for every
@@ -527,6 +553,23 @@ press `dd` to delete the comment under cursor.
                         comment was removed, its kind, the first line of
                         its body and its id.
 
+                                                            *:ReviewAdopt*
+:ReviewAdopt {dir}      Copy the review in the storage directory {dir}
+                        into the current project's (completes over
+                        directories; `~` is expanded). For a project that
+                        was moved, renamed or cloned, whose review is left
+                        in the old directory: see
+                        |quickfix-review-relative-paths|. The event
+                        segments and snapshots are copied, never
+                        hard-linked, checkpoints are rebuilt, and {dir} is
+                        only read. Refused when the current project already
+                        has a review (any segment, `log.jsonl` or
+                        `comments.json` in its directory, so also one that
+                        was cleared), when {dir} holds no v3 journal (open
+                        an older review in its own project first, to
+                        migrate it), and with |quickfix-review-storage_file|
+                        or `storage_dir` set.
+
                                                           *:ReviewRestore*
 :ReviewRestore [id]     Restore the deleted comment {id}, with the same id
                         and content (completes over the ids in the trash).
@@ -670,7 +713,9 @@ require('quickfix-review').load_review()             *quickfix-review.load_revie
 require('quickfix-review').comments()                 *quickfix-review.comments()*
     All review comments, in creation order, as copies. Each is a
     record `{ id, filename, kind, body, response, lnum, end_lnum, context,
-    anchor, pos, created_at }`: `kind` is the lowercase comment type, `body`
+    anchor, pos, created_at }`: `filename` is absolute (a repo-relative
+    path in the journal is resolved against the project root, see
+    |quickfix-review-relative-paths|), `kind` is the lowercase comment type, `body`
     the text without any `[KIND]` prefix, and `response` and `context` (the
     captured commit and snippet) may be nil. `anchor` is
     `{ sha, lnum, end_lnum, lines, before, after }`, written when the
@@ -685,6 +730,10 @@ require('quickfix-review').comments()                 *quickfix-review.comments(
     table of fields from stored records that the plugin does not know
     (written by other tools), preserved and logged at the top level of the
     record.
+
+require('quickfix-review').adopt({dir})                  *quickfix-review.adopt()*
+    Copy the review in storage directory {dir} into the current project,
+    as |:ReviewAdopt| does, and report the outcome. Returns `ok, message`.
 
 require('quickfix-review').summary()                   *quickfix-review.summary()*
     Print a summary of comment counts.

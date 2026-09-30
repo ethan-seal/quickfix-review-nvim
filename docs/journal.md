@@ -274,6 +274,34 @@ cleanup is idempotent.
   invalid and are rebuilt by replay (see Checkpoints).
 - **Legacy `comments.json` import** (store/migrate.lua) is unchanged: it
   appends an `import` event to the active segment.
+- **Repo-relative filenames (bean fgb6).** A comment record's `filename`
+  may be relative to the project root. `add` and `import` events write it
+  that way (record.relativize) when the file is under `loc.root` and the
+  review is in the default per-project dir (`loc.per_project`: one root per
+  dir; never with `storage_file`, a string `storage_dir` or a function
+  `storage_dir`, which may map several roots to one dir). Other files stay
+  absolute. `update`, `restore`, `delete` and `clear` copy the logged
+  record, so they keep whichever form it was written in. The reader
+  (record.normalize via view.view_of) joins a relative name to `loc.root`,
+  never the cwd, and passes an absolute one through, so old segments read
+  exactly as before. **No upcaster and no `STATE_VERSION` bump:** the
+  reducer and checkpoints never interpret `filename` (they key on `id`),
+  so the state shape is unchanged. Resolution on read is the compatibility
+  layer, and existing segments are never rewritten. *Downgrade:* an older
+  plugin makes a relative name absolute against the cwd (`:p`), so it
+  misplaces those comments unless Neovim runs at the project root.
+- **Adopting a review (`:ReviewAdopt`, store/adopt.lua).** The dir key
+  stays the realpath hash of the root. A moved project adopts its old dir:
+  under both locks of the current dir (`with_both`) and the lock of the old
+  one, every `events/NNNNNN.jsonl` is copied (read and write, fsync'ed,
+  never `link`: the active segment is appended to) into
+  `events.adopt-<pid>/`, which is renamed to `events/`. Then `snapshots/`
+  is copied, while `checkpoints/` and `.refs` are skipped (derived and
+  rebuilt). The tombstone `log.jsonl` is written last, with the journal's
+  `journal_id`. It refuses when the current dir already holds a segment, a
+  `log.jsonl` or a `comments.json` (no merge semantics), when the old dir
+  has no v3 journal, and outside the per-project dir. Records logged with
+  absolute names keep naming the old location: they are not remapped.
 
 ### Options
 

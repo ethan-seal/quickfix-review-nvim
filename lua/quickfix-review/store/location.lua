@@ -96,14 +96,19 @@ function M.resolve()
   elseif type(opt) == 'string' and opt ~= '' then
     dir, shared = opt, true
   end
+  -- The default dir is this root's alone (keyed on its realpath), so its
+  -- records may name files relative to the root (see record.relativize)
+  local per_project = nil
   if type(dir) ~= 'string' or dir == '' then
+    per_project = true
     dir = vim.fn.stdpath('data') .. '/quickfix-review/'
       .. vim.fn.fnamemodify(root, ':t') .. '-' .. vim.fn.sha256(root):sub(1, 12)
   end
   -- ~ and $VARS are expanded; the result is absolute, without a trailing slash
   dir = (vim.fn.fnamemodify(vim.fs.normalize(dir), ':p'):gsub('(.)/+$', '%1'))
   resolved = {
-    cwd = cwd, opt = opt, root = root, dir = dir, shared = shared, path = dir .. '/comments.json',
+    cwd = cwd, opt = opt, root = root, dir = dir, shared = shared, per_project = per_project,
+    path = dir .. '/comments.json',
     log = dir .. '/log.jsonl', state = dir .. '/state.json', lock = dir .. '/lock',
     flock = dir .. '/journal.lock',
     events = dir .. '/events', checkpoints = dir .. '/checkpoints',

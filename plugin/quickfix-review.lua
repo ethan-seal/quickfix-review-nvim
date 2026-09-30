@@ -23,6 +23,14 @@ vim.api.nvim_create_user_command('ReviewTrash', function()
   require('quickfix-review').show_trash()
 end, { desc = 'List deleted review comments (newest first) in a quickfix list' })
 
+vim.api.nvim_create_user_command('ReviewAdopt', function(o)
+  require('quickfix-review').adopt(vim.fn.expand(o.args))
+end, {
+  nargs = 1,
+  complete = 'dir',
+  desc = 'Copy an orphaned review (e.g. the project\'s storage dir before a move) into this project',
+})
+
 vim.api.nvim_create_user_command('ReviewRestore', function(o)
   require('quickfix-review').restore_comment(o.args)
 end, {

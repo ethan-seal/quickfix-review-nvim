@@ -103,10 +103,56 @@ function M.parse_anchor(a)
   }
 end
 
+-- `root` joined with the root-relative `rel`
+local function join(root, rel)
+  return (root:gsub('/+$', '')) .. '/' .. rel
+end
+
+-- The absolute path of a stored filename: a relative one (written by
+-- relativize) joined to `root`, the project root of the review it was read
+-- from; an absolute one, or a relative one with no root (never written by
+-- this plugin: only a hand-edited or foreign record), made absolute by
+-- fnamemodify(':p') as before.
+function M.resolve_filename(filename, root)
+  if root and filename:sub(1, 1) ~= '/' then return join(root, filename) end
+  return vim.fn.fnamemodify(filename, ':p')
+end
+
+-- The symlink-resolved form of `path`; for a file that no longer exists,
+-- its resolved directory joined with its name (nil if that is gone too)
+local function resolved_path(path)
+  local p = vim.uv.fs_realpath(path)
+  if p then return p end
+  local dir = vim.uv.fs_realpath(vim.fn.fnamemodify(path, ':h'))
+  return dir and join(dir, vim.fn.fnamemodify(path, ':t')) or nil
+end
+
+-- The record `c` as it is written to the journal at `loc`: in a
+-- per-project dir (loc.per_project, one root per dir), a file under the
+-- project root is named relative to it (no './', forward slashes), so the
+-- review survives the repo being moved (and adopted, see store/adopt.lua);
+-- any other file keeps its absolute name. Returns a shallow copy when it
+-- changes the name; `c` itself is never changed.
+function M.relativize(c, loc)
+  if not (loc and loc.per_project and loc.root) or type(c.filename) ~= 'string' then return c end
+  local abs = vim.fn.fnamemodify(c.filename, ':p')
+  local p = resolved_path(abs)
+  if not p then return c end
+  local root = (loc.root:gsub('/+$', ''))
+  if p:sub(1, #root + 1) ~= root .. '/' or #p == #root + 1 then return c end
+  local out = {}
+  for k, v in pairs(c) do out[k] = v end
+  out.filename = p:sub(#root + 2)
+  return out
+end
+
 -- Keep only the fields of a comment record, giving it an id if it has none
 -- (comments saved before ids existed). Returns nil for a record that has no
 -- file or no valid line number.
-function M.normalize(item)
+-- A relative filename (as record.relativize writes it) is resolved against
+-- `root`, the project root of the review it was read from, never the cwd;
+-- an absolute one is kept as it is (only made canonical by fnamemodify).
+function M.normalize(item, root)
   local filename = item.filename
   if type(filename) ~= 'string' or filename == '' then return nil end
   local lnum = to_line(item.lnum)
@@ -153,7 +199,7 @@ function M.normalize(item)
 
   return {
     id = id,
-    filename = vim.fn.fnamemodify(filename, ':p'),
+    filename = M.resolve_filename(filename, root),
     kind = kind and kind:lower() or 'note',
     body = body or '',
     response = response,

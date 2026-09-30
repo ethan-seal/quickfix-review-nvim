@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-hp7k
 title: 'Lock: fallen-back mkdir holder and flock holder must exclude each other; don''t memoise ENOLCK'
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-09-30T00:48:04Z
-updated_at: 2026-09-30T00:48:04Z
+updated_at: 2026-09-30T00:55:27Z
 ---
 
 **Symptom**: after iv2p, a Neovim whose flock fails with a non-contention errno falls back to the mkdir lock (`loc.lock`) only, while a peer whose flock works takes only `loc.flock` in plain `M.with_lock` (lua/quickfix-review/store/lock.lua, `M.with_lock`). The two do not exclude each other; only `with_both` callers also take `loc.lock`. A single transient ENOLCK also makes the fallback permanent for the session (`flock_unsupported[path] = true`).

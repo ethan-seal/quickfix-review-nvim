@@ -1,8 +1,11 @@
 -- The storage lock of a review: flock(2) on its lock file (loc.flock), which
--- the kernel releases when the holder exits, however it exits. Where LuaJIT's
--- FFI is missing, or on Windows, an mkdir lock (loc.lock) is used instead;
--- so it is, with a warning, for a lock file whose flock fails with anything
--- but contention (a filesystem that refuses flock). See docs/journal.md#locking.
+-- the kernel releases when the holder exits, however it exits, and inside it
+-- the mkdir lock (loc.lock), so a process that took only the mkdir lock (an
+-- older version, or one whose flock failed) is excluded too. Where LuaJIT's
+-- FFI is missing, or on Windows, the mkdir lock alone is used; so it is, with
+-- a warning, for a lock file whose flock fails with anything but contention
+-- (a filesystem that refuses flock): for the session, except for ENOLCK,
+-- which falls back for that call only. See docs/journal.md#locking.
 local uv = vim.uv or vim.loop
 
 local M = {}
@@ -32,6 +35,9 @@ local LOCK_EX_NB, LOCK_UN = 6, 8 -- LOCK_EX | LOCK_NB, LOCK_UN
 -- Linux, 11; 35 on macOS and the BSDs), and EINTR
 local EAGAIN = (has_ffi and ffi.os == 'Linux') and 11 or 35
 local EINTR = 4
+-- ENOLCK (no lock available: 37 on Linux, 77 on macOS and the BSDs) is
+-- transient, so it is never memoised in flock_unsupported
+local ENOLCK = (has_ffi and ffi.os == 'Linux') and 37 or 77
 
 -- The text of errno `e`, or "errno <e>" where strerror can't be called
 local function errno_text(e)
@@ -40,8 +46,10 @@ local function errno_text(e)
   return 'errno ' .. tostring(e)
 end
 
--- The flock paths whose flock failed with anything but contention: their
--- review takes the mkdir lock instead, for the rest of the session
+-- The flock paths whose flock failed with anything but contention or
+-- ENOLCK: their review takes the mkdir lock alone, for the rest of the
+-- session. ENOLCK falls back for that call only; flock is tried again on the
+-- next.
 local flock_unsupported = {}
 
 -- Run fn with `path` flock'ed. The file is opened for appending (never
@@ -96,8 +104,9 @@ end
 -- never stale, however old: its holder may be slow or paused, and breaking
 -- it would let two writers in. Age is only used for a lock with no pid,
 -- whose holder crashed between its mkdir and writing the pid (a fresh one
--- is a holder about to write it). A lock naming this process is stale: it
--- is left by a crash before unlock (with_lock doesn't nest).
+-- is a holder about to write it). A lock naming this process is stale: a
+-- nested call on a held lock never reaches take (held[]), so it is left by a
+-- crash or an earlier process with a reused pid.
 -- Returns: stale (boolean), and the pid it was judged by (nil when there
 -- was none, and it was judged by age)
 local function stale(lockdir)
@@ -193,38 +202,29 @@ end
 -- 'flock', or 'mkdir' where flock can't be called
 M.backend = (has_ffi and vim.fn.has('win32') == 0) and 'flock' or 'mkdir'
 
--- Remove the mkdir lock `lockdir` a Neovim running older code left behind,
--- once it is provably dead: it names a pid, and that process is gone. One
--- naming a live process (which may be mid-write), or no pid, is left alone.
--- Called with the flock held.
-local function clear_dead_v2_lock(lockdir)
-  if not lockdir or held[lockdir] then return end
-  local pid = read_pid(lockdir)
-  if pid and not log.pid_alive(pid) then break_lock(lockdir, pid) end
-end
-
--- Run fn with the lock of the review at `loc` (a store/location) held. A
--- lock another process holds is waited on for up to a second. Nested calls
--- on the same review run under the outer lock; another review's lock is
--- taken as usual. Under the flock, a dead mkdir lock (loc.lock) left by an
--- older version is removed first. Where flock fails with anything but
--- contention, the mkdir lock is taken instead, from then on, with one warning.
+-- Run fn with the lock of the review at `loc` (a store/location) held: the
+-- flock, and inside it the mkdir lock (loc.lock), so a process holding only
+-- the mkdir lock (an older version, or one whose flock failed) and one on the
+-- flock exclude each other. A lock another process holds is waited on for up
+-- to a second each. Nested calls on the same review run under the outer
+-- lock; another review's lock is taken as usual. Where flock fails with
+-- anything but contention, the mkdir lock alone is taken instead, with one
+-- warning: from then on, except after ENOLCK, where flock is tried again on
+-- the next call.
 -- Returns: true and fn's results, or false and an error (fn not run)
 function M.with_lock(loc, fn)
-  local use_flock = M.backend == 'flock' and not flock_unsupported[loc.flock]
-  local path = use_flock and loc.flock or loc.lock
-  if held[path] then return true, fn() end
-  if not use_flock then return with_mkdir(path, fn) end
-  local r = vim.F.pack_len(with_flock(path, function()
-    clear_dead_v2_lock(loc.lock)
-    return fn()
-  end))
+  -- Either lock held means this process holds the review: after a fallback
+  -- (ENOLCK) the flock would be tried again, and the mkdir lock under it
+  -- would judge its own pid stale and break the outer lock
+  if held[loc.lock] or held[loc.flock] then return true, fn() end
+  if M.backend ~= 'flock' or flock_unsupported[loc.flock] then return with_mkdir(loc.lock, fn) end
+  local r = vim.F.pack_len(with_flock(loc.flock, function() return vim.F.pack_len(with_mkdir(loc.lock, fn)) end))
+  if r[1] == true then return unpack(r[2], 1, r[2].n) end
   if r[1] == nil and r[2] == 'unsupported' then
-    -- Set before with_mkdir, so a nested with_lock runs under it
-    flock_unsupported[path] = true
+    if r[3] ~= ENOLCK then flock_unsupported[loc.flock] = true end
     require('quickfix-review.notify').once(
-      'lock-flock:' .. path,
-      'flock on ' .. path .. ' failed (' .. errno_text(r[3]) .. '); using the mkdir lock ' .. tostring(loc.lock) .. ' instead',
+      'lock-flock:' .. loc.flock,
+      'flock on ' .. loc.flock .. ' failed (' .. errno_text(r[3]) .. '); using the mkdir lock ' .. tostring(loc.lock) .. ' instead',
       vim.log.levels.WARN
     )
     return with_mkdir(loc.lock, fn)
@@ -235,8 +235,9 @@ end
 -- Run fn with both locks of the review at `loc` held: the flock, and inside
 -- it the mkdir lock (loc.lock) that Neovims running the v2 code take, so a
 -- v2 -> v3 migration (and every write to a review still in v2) excludes
--- them too (docs/journal.md#migration). Where the mkdir lock is the backend,
--- it is the one lock, taken once.
+-- them too (docs/journal.md#migration). with_lock itself now takes both, so
+-- this is the explicit call for those writes, going through M.with_lock.
+-- Where the mkdir lock is the backend, it is the one lock, taken once.
 -- Returns: as with_lock
 function M.with_both(loc, fn)
   if M.backend ~= 'flock' or held[loc.lock] then return M.with_lock(loc, fn) end

@@ -112,6 +112,7 @@ run_test('the flock runs fn, releases it, re-raises its errors, and nests', func
   write_bytes(loc.flock, 'left alone\n')
   local ok, a, b = lock.with_lock(loc, function()
     assert.truthy(lock.held(loc.flock), 'held during fn')
+    assert.equals(vim.fn.isdirectory(loc.lock), 1, 'the mkdir lock is taken inside the flock')
     -- A nested call on the same lock runs under it
     local nested, x = lock.with_lock(loc, function() return 'inner' end)
     assert.truthy(nested, 'nested call runs')
@@ -128,7 +129,7 @@ run_test('the flock runs fn, releases it, re-raises its errors, and nests', func
   assert.equals(err, 'boom', 'as it was')
   assert.falsy(lock.held(loc.flock), 'released after an error')
   assert.equals(read_bytes(loc.flock), 'left alone\n', 'the lock file is neither truncated nor written')
-  assert.equals(vim.fn.isdirectory(loc.lock), 0, 'no mkdir lock taken')
+  assert.equals(vim.fn.isdirectory(loc.lock), 0, 'the mkdir lock is released')
   remove_lock_files(loc)
 end)
 
@@ -200,22 +201,48 @@ run_test('under the flock, an old mkdir lock with a dead pid is removed', functi
   remove_lock_files(loc)
 end)
 
-run_test('under the flock, an old mkdir lock with a live pid, or none, is left alone', function()
+-- The pid in the lock dir `dir`, or nil
+local function pid_in(dir)
+  local fh = io.open(dir .. '/pid', 'r')
+  if not fh then return nil end
+  local pid = tonumber(fh:read('*l') or '')
+  fh:close()
+  return pid
+end
+
+run_test('under the flock, a mkdir lock with a live pid, or a fresh one with none, is waited on and kept', function()
   local loc = loc_at(vim.fn.tempname())
+  local live = sleeper().pid
   for _, case in ipairs({
-    { 'own pid', uv.os_getpid() },
-    { 'live pid', sleeper().pid },
-    { 'no pid', nil },
+    { 'live pid (with_lock)', live, lock.with_lock },
+    { 'live pid (with_both)', live, lock.with_both },
+    { 'no pid', nil, lock.with_lock },
   }) do
     seed_old_lock(loc.lock, case[2])
-    assert.truthy(lock.with_lock(loc, function() end), case[1] .. ': taken')
-    assert.equals(vim.fn.isdirectory(loc.lock), 1, case[1] .. ': the lock dir is left')
-    local fh = io.open(loc.lock .. '/pid', 'r')
-    local pid = fh and tonumber(fh:read('*l'))
-    if fh then fh:close() end
-    assert.equals(pid, case[2], case[1] .. ': with its pid')
+    local ran = false
+    local start = uv.hrtime()
+    local ok, err = case[3](loc, function() ran = true end)
+    local waited = (uv.hrtime() - start) / 1e6
+    assert.falsy(ok, case[1] .. ': not taken')
+    assert.truthy(tostring(err):find('Timed out', 1, true), case[1] .. ': times out: ' .. tostring(err))
+    assert.falsy(ran, case[1] .. ': fn not run')
+    assert.truthy(waited >= 900, case[1] .. ': waited about a second, got ' .. waited .. 'ms')
+    assert.falsy(lock.held(loc.flock), case[1] .. ': the flock is released')
+    assert.equals(vim.fn.isdirectory(loc.lock), 1, case[1] .. ': the lock dir is kept')
+    assert.equals(pid_in(loc.lock), case[2], case[1] .. ': with its pid')
     vim.fn.delete(loc.lock, 'rf')
   end
+  remove_lock_files(loc)
+end)
+
+run_test('under the flock, a mkdir lock naming this process is broken', function()
+  local loc = loc_at(vim.fn.tempname())
+  seed_old_lock(loc.lock, uv.os_getpid())
+  local ran = false
+  assert.truthy(lock.with_lock(loc, function() ran = true end), 'taken')
+  assert.truthy(ran, 'fn ran')
+  assert.equals(vim.fn.isdirectory(loc.lock), 0, 'the lock dir is gone')
+  assert.length(vim.fn.glob(loc.lock .. '.stale-*', true, true), 0, 'nothing left aside')
   remove_lock_files(loc)
 end)
 
@@ -329,6 +356,58 @@ local errno_ok, errno_err = pcall(function()
     assert.equals(a, 1, 'under the mkdir lock')
     assert.equals(runs, 1, 'fn ran once')
     assert.truthy(waited < 100, 'no wait, got ' .. waited .. 'ms')
+    assert.equals(vim.fn.isdirectory(loc.lock), 0, 'released')
+    remove_lock_files(loc)
+  end)
+
+  run_test('a process that fell back to the mkdir lock excludes a flock with_lock', function()
+    local loc = loc_at(vim.fn.tempname())
+    reset(0, 0) -- flock succeeds
+    -- Process A's flock failed: it holds only the mkdir lock
+    local holder = sleeper()
+    seed_old_lock(loc.lock, holder.pid)
+    local ran = false
+    local start = uv.hrtime()
+    local ok, err = flk.with_lock(loc, function() ran = true end)
+    local waited = (uv.hrtime() - start) / 1e6
+    assert.equals(fake.calls, 1, 'the flock was taken')
+    assert.falsy(ok, 'not taken')
+    assert.truthy(tostring(err):find('Timed out', 1, true), 'times out: ' .. tostring(err))
+    assert.truthy(tostring(err):find(loc.lock, 1, true), 'on the mkdir lock: ' .. tostring(err))
+    assert.truthy(waited >= 900, 'waited about a second, got ' .. waited .. 'ms')
+    assert.falsy(ran, 'fn not run')
+    assert.falsy(flk.held(loc.flock), 'the flock is released')
+    assert.equals(pid_in(loc.lock), holder.pid, 'the live holder\'s lock is left in place')
+    remove_lock_files(loc)
+  end)
+
+  run_test('ENOLCK falls back for that call only; the next call tries flock again', function()
+    local loc = loc_at(vim.fn.tempname())
+    notify.forget('lock-flock:' .. loc.flock)
+    reset(37, 1) -- ENOLCK, once
+    local first, nested_ran, pid_after
+    local calls = capture_notify(function()
+      assert.truthy(flk.with_lock(loc, function()
+        first = { dir = vim.fn.isdirectory(loc.lock), flock = flk.held(loc.flock), calls = fake.calls }
+        -- A nested call runs under the outer mkdir lock, without retrying
+        -- flock nor breaking it
+        nested_ran = flk.with_lock(loc, function() return true end)
+        pid_after = pid_in(loc.lock)
+      end), 'first call taken')
+    end)
+    assert.equals(first.dir, 1, 'first call: under the mkdir lock')
+    assert.falsy(first.flock, 'first call: not under the flock')
+    assert.equals(first.calls, 1, 'first call: flock tried once')
+    assert.truthy(nested_ran, 'the nested call ran')
+    assert.equals(fake.calls, 1, 'the nested call did not try flock')
+    assert.equals(pid_after, uv.os_getpid(), 'the outer lock is still this process\'s')
+    assert.length(vim.fn.glob(loc.lock .. '.stale-*', true, true), 0, 'not broken aside')
+    assert.length(calls, 1, 'one warning')
+    assert.truthy(calls[1].msg:find('errno 37', 1, true), 'naming the errno: ' .. calls[1].msg)
+    local second
+    assert.truthy(flk.with_lock(loc, function() second = flk.held(loc.flock) end), 'second call taken')
+    assert.equals(fake.calls, 2, 'flock tried again')
+    assert.truthy(second, 'second call: under the flock')
     assert.equals(vim.fn.isdirectory(loc.lock), 0, 'released')
     remove_lock_files(loc)
   end)

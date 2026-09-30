@@ -170,9 +170,8 @@ beyond libc.
   the current 1 s budget. Hold it only for appends, sealing, checkpoint write
   and GC, never while rendering. x5ft already moved rendering out.
 - **Release is automatic.** The kernel releases the lock when the process
-  exits or crashes. The pid file, `stale()` and `STALE_SECONDS` are gone
-  from the flock path. `log.pid_alive` and break_lock survive there only to
-  remove a dead mkdir lock left by an older version (below).
+  exits or crashes. The mkdir lock taken inside it (below) still relies on
+  its pid file, `stale()` and `STALE_SECONDS`.
 - **Not reentrant across fds.** flock is per open file description. Keep one
   fd per lock file per process, plus the existing `lock_held` guard, and key
   that guard by lock path. That also fixes the Opus finding that a single
@@ -180,20 +179,31 @@ beyond libc.
 - **Fallback.** Without FFI (PUC Lua build) or on Windows, keep today's
   mkdir lock behind the same `with_lock` interface. Windows could use
   `LockFileEx` later.
-- **Mixed versions do not exclude each other.** A Neovim still running
-  pre-flock code takes the mkdir lock; the new code takes the flock. Until
-  the v3 migration (which takes both), restart every Neovim after updating
-  (README says so). Under the flock, a mkdir lock (`loc.lock`) naming a pid
-  that is provably dead (`log.pid_alive` false) is removed through
-  break_lock; one naming a live pid, this process's own, or no pid is left
-  alone, since an older Neovim may be mid-write under it.
+- **Every mutation takes both locks** (hp7k). Under the flock, `with_lock`
+  also takes the mkdir lock (`loc.lock`), in that order, so a Neovim still
+  running pre-flock code, or a process whose flock failed and fell back
+  (below), is excluded by it. The usual mkdir rules apply to `loc.lock`: one
+  naming a dead pid (`log.pid_alive` false) or this process's own pid, or
+  with no pid and older than `STALE_SECONDS`, is broken through break_lock;
+  one naming a live pid is waited on (up to 1 s, on top of up to 1 s on the
+  flock) and never removed. Trade-off: after a crash under the flock,
+  recovery now also depends on pid liveness for `loc.lock`; if the dead
+  holder's pid is reused by a live process, writes time out until the dir is
+  removed. `with_both` is kept as the explicit call for the v3 migration and
+  v2 writes; it is now the same as `with_lock`. Restarting every Neovim
+  after updating is still advised (README), since older versions' own rules
+  are not changed by this.
 - **flock errors are not contention.** Only EWOULDBLOCK/EAGAIN (11 on Linux,
   35 on macOS/BSD) and EINTR are retried. Any other errno (ENOLCK,
   EOPNOTSUPP on some NFS/FUSE mounts) falls back (iv2p's decision) to the
-  mkdir lock for that review, for the rest of the session, with one warning
-  naming the errno, instead of a 1 s spin then "Timed out". On such a
-  mount a Neovim whose flock works and one that fell back would not exclude
-  each other; both see the same mount, so that is not expected.
+  mkdir lock alone, with one warning naming the errno, instead of a 1 s
+  spin then "Timed out". ENOLCK (37 on Linux, 77 on macOS/BSD) is transient:
+  it falls back for that call only, and flock is tried again on the next.
+  Any other errno falls back for that review for the rest of the session.
+  A holder that fell back and a holder on the flock exclude each other
+  through `loc.lock` (above). A nested call on a review whose flock or
+  mkdir lock is already held runs under the outer lock, so a nested call
+  inside an ENOLCK fallback neither retries flock nor breaks its own lock.
 
 ## Indexes
 

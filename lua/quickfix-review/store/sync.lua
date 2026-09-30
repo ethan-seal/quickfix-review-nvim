@@ -76,7 +76,8 @@ end
 -- lock can't be taken.
 -- build() returns: events (a list, possibly empty), result
 -- Returns: result, or nil if the change was refused or failed, and then
--- 'partial' as a second value when some, but not all, of it was written
+-- 'partial' as a second value when some, but not all, of it was written, and
+-- the reason (a string, when one is known) as a third
 -- opts.defer_view: as for store.all, for every sync the change makes
 function M.mutate_at(loc, build, opts)
   -- Before locking: the lock can't be taken in a dir that is not writable
@@ -84,15 +85,19 @@ function M.mutate_at(loc, build, opts)
   local ro_err = journal.readonly_error(loc)
   if ro_err then
     vim.notify('quickfix-review: ' .. ro_err, vim.log.levels.ERROR)
-    return nil
+    return nil, nil, ro_err
   end
   local partial = false
   -- Only the journal is read and written under the lock: the render any
   -- sync inside it needs happens once, after the lock is released
   local dirty = false
+  -- Why a sync under the lock failed: returned, not notified (sync() reports
+  -- an unusable journal once)
+  local sync_err
   local function data()
-    local ok, _, changed = M.sync_data(opts)
+    local ok, serr, changed = M.sync_data(opts)
     dirty = dirty or changed
+    if not ok then sync_err = serr end
     return ok
   end
   -- A review not known to be v3 yet also takes the v2 lock (a v2 review
@@ -141,7 +146,8 @@ function M.mutate_at(loc, build, opts)
   if err then vim.notify('quickfix-review: ' .. err, vim.log.levels.ERROR) end
   -- Outside the lock: the state is encoded before it is taken
   if journal.checkpoint_due() then journal.write_checkpoint(loc) end
-  if result == nil and partial then return nil, 'partial' end
+  if result == nil and partial then return nil, 'partial', err end
+  if result == nil then return nil, nil, err or sync_err end
   return result
 end
 

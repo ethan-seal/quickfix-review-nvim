@@ -80,6 +80,18 @@ function M.add_comment_cycle()
   M.add_comment(current_type)
 end
 
+-- The reason given for a refused change that names none
+local UNCHANGED = 'the review could not be changed'
+
+-- Keep text the user typed for a change that failed: in the unnamed
+-- register, and (as typed, when that differs) in the input history, so it
+-- can be pasted or recalled with <Up>. A vim.ui.input replacement need not
+-- add its answer to the history itself.
+local function keep_typed(text, typed)
+  vim.fn.setreg('"', text)
+  vim.fn.histadd('input', typed or text)
+end
+
 -- Add comment to quickfix and place sign
 -- Optional range parameter: { start_line, end_line } for multiline comments
 function M.add_comment(comment_type, range)
@@ -128,7 +140,7 @@ function M.add_comment(comment_type, range)
   if text ~= '' then
     local bufnr = vim.api.nvim_get_current_buf()
     -- One location for the anchor's snapshot and the add event naming it
-    local added = store.with_location(function()
+    local added, err = store.with_location(function()
       return store.add({
         filename = file,
         kind = comment_type:lower(),
@@ -141,8 +153,9 @@ function M.add_comment(comment_type, range)
       })
     end)
     if not added then
-      vim.notify('quickfix-review: ' .. comment_type:upper() .. ' comment was not added',
-        vim.log.levels.WARN)
+      keep_typed(text)
+      vim.notify('quickfix-review: ' .. comment_type:upper() .. ' comment was not added ('
+        .. (err or UNCHANGED) .. '); the text is in register "', vim.log.levels.WARN)
       return
     end
 
@@ -428,13 +441,16 @@ local function prompt_edit(id, old)
   end
   vim.ui.input(opts, function(input)
     if input == nil or input == '' then return end
+    local typed = input
     if multiline then
       input = unescape_body(input)
     end
-    local result = store.edit(id, input)
+    local result, err = store.edit(id, input)
     if result == nil then
-      vim.notify('quickfix-review: the review could not be changed; the comment was not edited',
-        vim.log.levels.WARN)
+      -- The body as it would have been saved, and the answer as typed
+      keep_typed(input, typed)
+      vim.notify('quickfix-review: the comment was not edited (' .. (err or UNCHANGED)
+        .. '); the text is in register "', vim.log.levels.WARN)
     elseif result == 'missing' then
       print('Comment no longer exists')
     elseif result == 'edited' then

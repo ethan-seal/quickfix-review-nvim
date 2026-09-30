@@ -160,16 +160,19 @@ function M.in_file(key)
 end
 
 -- Add a comment
--- Returns: true if it was added, false if it has no file or the change was refused
+-- Returns: true if it was added, or false if it has no file or the change was
+-- refused, and then the reason (a string, when one is known)
 function M.add(item)
-  return mutate(function()
+  local res, _, err = mutate(function()
     local c = record.normalize(item)
     if not c then return {}, false end
     -- Written root-relative in a per-project dir (see record.relativize);
     -- resolve() returns the location the change pinned
     local stored = record.relativize(storage.serialise(c), location.resolve())
     return { log.event('add', { comment = stored }) }, true
-  end) == true
+  end)
+  if res == true then return true end
+  return false, err
 end
 
 -- The comment with this id, or nil. Treat as read-only.
@@ -285,16 +288,19 @@ end
 -- previous body (as shown, so a legacy record's `text`) in `prev`. Nothing is
 -- logged when the comment is gone or the body is unchanged.
 -- Returns: 'edited', 'unchanged', 'missing' (no live comment with this id),
--- or nil if the body isn't a non-empty string or the change was refused
+-- or nil if the body isn't a non-empty string or the change was refused, and
+-- then the reason (a string, when one is known)
 function M.edit(id, body)
   if type(body) ~= 'string' or body == '' then return nil end
-  return mutate(function()
+  local res, _, err = mutate(function()
     local r = journal.get(id)
     local c = r and view.view_of(r, location.resolve().root, journal.rebases())
     if not c then return {}, 'missing' end
     if c.body == body then return {}, 'unchanged' end
     return { log.event('update', { id = id, set = { body = body }, prev = { body = c.body } }) }, 'edited'
   end)
+  if res == nil then return nil, err end
+  return res
 end
 
 -- Remove every comment for which pred(comment) is true: one delete event,

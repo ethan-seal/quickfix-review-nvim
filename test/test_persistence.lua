@@ -69,6 +69,20 @@ local function errors_mentioning(calls, text)
   return found
 end
 
+-- The warnings among the recorded calls that mention every one of the texts
+local function warnings_mentioning(calls, ...)
+  local texts = { ... }
+  local found = {}
+  for _, c in ipairs(calls) do
+    local all = c.level == vim.log.levels.WARN
+    for _, text in ipairs(texts) do
+      all = all and c.msg:find(text, 1, true) ~= nil
+    end
+    if all then table.insert(found, c) end
+  end
+  return found
+end
+
 local function read_bytes(path)
   local fh = io.open(path, 'rb')
   assert.truthy(fh, 'can open ' .. path)
@@ -323,6 +337,7 @@ assert.run_test('an add into a read-only storage dir is not reported as added', 
 
     local store = require('quickfix-review.store')
     local added, printed
+    vim.fn.setreg('"', '')
     local calls = capture_notify(function()
       added = store.add({ filename = test_file, kind = 'note', body = 'direct', lnum = 2, end_lnum = 2 })
       vim.fn.cursor(3, 1)
@@ -333,6 +348,9 @@ assert.run_test('an add into a read-only storage dir is not reported as added', 
     assert.falsy(any_mentions(printed, 'added'), 'no "added" message: ' .. vim.inspect(printed))
     assert.truthy(#errors_mentioning(calls, dir) >= 1, 'error notified with the path')
     assert.truthy(any_mentions(calls, 'ISSUE comment was not added'), 'add_comment warns instead')
+    assert.truthy(#warnings_mentioning(calls, 'ISSUE comment was not added', dir) >= 1,
+      'the warning names the reason: ' .. vim.inspect(calls))
+    assert.equals(vim.fn.getreg('"'), 'Test comment', 'the typed body is kept in the unnamed register')
     assert.length(qf.comments(), 1, 'count unchanged')
     assert.length(saved(path), 1, 'nothing written')
   end)
@@ -541,6 +559,88 @@ assert.run_test('a failed log append is reported as a failure by every change', 
   end)
 
   log.append = original_append
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('a failed add keeps the typed body in the unnamed register and names the reason', function()
+  reset()
+  vim.fn.cursor(2, 1)
+  local store = require('quickfix-review.store')
+  local original_add, original_input = store.add, vim.fn.input
+  store.add = function() return false, 'Timed out waiting for the lock /x' end
+  vim.fn.input = function() return 'a body worth keeping' end
+  vim.fn.setreg('"', '')
+
+  local ok, err = pcall(function()
+    local printed
+    local calls = capture_notify(function()
+      printed = capture_print(function() qf.add_comment('ISSUE') end)
+    end)
+    assert.equals(vim.fn.getreg('"'), 'a body worth keeping', 'body in the unnamed register')
+    assert.equals(vim.fn.histget('input', -1), 'a body worth keeping', 'body in the input history')
+    assert.truthy(#warnings_mentioning(calls, 'ISSUE comment was not added', 'Timed out waiting for the lock /x',
+      'the text is in register "') >= 1, 'the warning names the reason: ' .. vim.inspect(calls))
+    assert.falsy(any_mentions(printed, 'added'), 'no "added" message: ' .. vim.inspect(printed))
+    assert.length(qf.comments(), 0, 'nothing added')
+  end)
+
+  store.add, vim.fn.input = original_add, original_input
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('a failed edit keeps the typed body in the unnamed register and names the reason', function()
+  reset()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('ISSUE')
+  assert.length(qf.comments(), 1, 'seeded')
+
+  local log = require('quickfix-review.log')
+  local original_append, original_input = log.append, vim.ui.input
+  log.append = function() return false, 'short write (0 of 10 bytes)' end
+  vim.ui.input = function(_, on_confirm) on_confirm('edited body') end
+  vim.fn.setreg('"', '')
+
+  local ok, err = pcall(function()
+    local calls = capture_notify(function()
+      vim.fn.cursor(2, 1)
+      qf.edit_comment()
+    end)
+    assert.equals(vim.fn.getreg('"'), 'edited body', 'body in the unnamed register')
+    assert.equals(vim.fn.histget('input', -1), 'edited body', 'body in the input history')
+    assert.truthy(#warnings_mentioning(calls, 'the comment was not edited', 'short write') >= 1,
+      'the warning names the reason: ' .. vim.inspect(calls))
+    assert.equals(qf.comments()[1].body, 'Test comment', 'body unchanged')
+  end)
+
+  log.append, vim.ui.input = original_append, original_input
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('a failed edit of a multi-line body keeps it unescaped, and as typed in the history', function()
+  reset()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('ISSUE')
+  local store = require('quickfix-review.store')
+  local id = qf.comments()[1].id
+  assert.equals(store.edit(id, 'line one\nline two'), 'edited', 'made multi-line')
+
+  local original_edit, original_input = store.edit, vim.ui.input
+  store.edit = function() return nil, 'Timed out waiting for the lock /y' end
+  vim.ui.input = function(_, on_confirm) on_confirm('first\\nsecond') end
+  vim.fn.setreg('"', '')
+
+  local ok, err = pcall(function()
+    local calls = capture_notify(function()
+      vim.fn.cursor(2, 1)
+      qf.edit_comment()
+    end)
+    assert.equals(vim.fn.getreg('"'), 'first\nsecond', 'the unescaped body in the unnamed register')
+    assert.equals(vim.fn.histget('input', -1), 'first\\nsecond', 'the answer as typed in the input history')
+    assert.truthy(#warnings_mentioning(calls, 'the comment was not edited', 'Timed out waiting for the lock /y') >= 1,
+      'the warning names the reason: ' .. vim.inspect(calls))
+  end)
+
+  store.edit, vim.ui.input = original_edit, original_input
   if not ok then error(err, 0) end
 end)
 

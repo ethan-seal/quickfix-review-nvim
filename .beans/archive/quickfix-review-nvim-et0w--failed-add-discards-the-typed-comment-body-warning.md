@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-et0w
 title: Failed add discards the typed comment body; warning omits the reason
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-09-30T01:29:01Z
-updated_at: 2026-09-30T01:29:01Z
+updated_at: 2026-09-30T03:50:54Z
 ---
 
 **Symptom**: `add_comment` (lua/quickfix-review/edit.lua ~:126-145) reads the body with `vim.fn.input`; when `store.add` returns false (lock timeout after lock.lua's 1 s wait, read-only dir, failed import) it warns "comment was not added" and the typed text is lost. The warning omits the error reason.
@@ -14,11 +15,17 @@ updated_at: 2026-09-30T01:29:01Z
 
 ## Checklist
 
-- [ ] Test: stub `store.add` (or the lock) to fail → `vim.fn.getreg('"')` equals the typed body; the warning contains the error string.
-- [ ] Same for every other typed-text path whose store call can fail (list them in the summary).
-- [ ] `scripts/test.sh` passes.
+- [x] Test: stub `store.add` (or the lock) to fail → `vim.fn.getreg('"')` equals the typed body; the warning contains the error string.
+- [x] Same for every other typed-text path whose store call can fail (list them in the summary).
+- [x] `scripts/test.sh` passes.
 
 ## Do not
 
 - Do not run test files directly with nvim; only `scripts/test.sh` is hermetic.
 - Do not retry the add in a loop on the main thread.
+
+## Outcome
+
+Both typed-text paths are covered: `add_comment` (`vim.fn.input` → `store.add`) and `prompt_edit` (`vim.ui.input` → `store.edit`). No response path exists. `sync.mutate_at` returns the reason as a third value. The history slot is Vim's `input` history, because plugins cannot name their own.
+
+Known limit: if `with_location` raises instead of returning false (an exception in context.anchor or context.capture), the body is still lost, since there is no pcall around it. Every cause this bean names returns a value.

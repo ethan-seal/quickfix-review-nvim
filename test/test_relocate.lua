@@ -506,6 +506,81 @@ check_eol('a file with a NUL on the commented line is current loaded and from di
 check_eol('a CRLF file with a CR CR LF line is not outdated', 'a\r\nb\r\r\nc\r\n', 'edit')
 check_eol('a CRLF file with a CR CR LF line read as unix is not outdated', 'a\r\nb\r\r\nc\r\n', 'edit ++ff=unix')
 
+-- A latin1 file (not valid UTF-8), opened with `edit_cmd`: the buffer holds
+-- it converted to UTF-8, and so does the content read from disk once the
+-- buffer is wiped. `content` defaults to 'a\ncaf\xe9\nc\n'
+local function check_latin1(name, edit_cmd, content)
+  assert.run_test(name, function()
+    local path = vim.fn.tempname() .. '-latin1.txt'
+    local fh = io.open(path, 'wb')
+    fh:write(content or 'a\ncaf\xe9\nc\n')
+    fh:close()
+    local ok, err = pcall(function()
+      qf.clear_review()
+      vim.cmd(edit_cmd .. ' ' .. vim.fn.fnameescape(path))
+      local buf = vim.api.nvim_get_current_buf()
+      assert.equals(vim.bo[buf].fileencoding, 'latin1', 'read as latin1')
+      vim.fn.cursor(2, 1)
+      qf.add_comment('NOTE')
+      local c = qf.comments()[1]
+      local snapshots = require('quickfix-review.snapshots')
+      local snap = snapshots.get(c.anchor.sha)
+      assert.equals(snap and snap[2], 'café', 'snapshot holds UTF-8 lines')
+      assert.equals(store.pos(c).state, 'current', 'current while loaded')
+      vim.api.nvim_set_current_buf(file_buf)
+      vim.cmd('bwipeout! ' .. buf)
+      assert.equals(store.pos(c).state, 'current', 'current read from disk')
+      assert.equals((store.range(c)), 2, 'line 2')
+      assert.equals(track.positions(path)[c.id].state, 'current', 'positions from disk')
+    end)
+    os.remove(path)
+    vim.api.nvim_set_current_buf(file_buf)
+    qf.clear_review()
+    if not ok then error(err, 0) end
+  end)
+end
+
+check_latin1('a latin1 file opened with ++enc=latin1 is current loaded and from disk', 'edit ++enc=latin1')
+check_latin1('a latin1 file detected through fileencodings is current loaded and from disk', 'edit')
+-- A cut-off sequence followed by the final newline is not UTF-8 either
+check_latin1('a latin1 file ending in a lead byte and a newline is current loaded and from disk',
+  'edit', 'a\ncaf\xe9\n')
+
+-- A file (`content`, commented on line 2) that is not strict UTF-8 but
+-- that Neovim reads as UTF-8, keeping the bytes as they are; so must the
+-- content read from disk
+local function check_utf8(name, content)
+  assert.run_test(name, function()
+    local path = vim.fn.tempname() .. '-utf8.txt'
+    local fh = io.open(path, 'wb')
+    fh:write(content)
+    fh:close()
+    local ok, err = pcall(function()
+      qf.clear_review()
+      vim.cmd('edit ' .. vim.fn.fnameescape(path))
+      local buf = vim.api.nvim_get_current_buf()
+      assert.equals(vim.bo[buf].fileencoding, 'utf-8', 'read as utf-8')
+      vim.fn.cursor(2, 1)
+      qf.add_comment('NOTE')
+      local c = qf.comments()[1]
+      assert.equals(store.pos(c).state, 'current', 'current while loaded')
+      vim.api.nvim_set_current_buf(file_buf)
+      vim.cmd('bwipeout! ' .. buf)
+      assert.equals(store.pos(c).state, 'current', 'current read from disk')
+      assert.equals(track.positions(path)[c.id].state, 'current', 'positions from disk')
+    end)
+    os.remove(path)
+    vim.api.nvim_set_current_buf(file_buf)
+    qf.clear_review()
+    if not ok then error(err, 0) end
+  end)
+end
+
+-- A surrogate (ED A0 80)
+check_utf8('a file with a UTF-8 surrogate is current loaded and from disk', 'a\nx\xed\xa0\x80\nc\n')
+-- A lead byte cut off by the end of the file, with no final newline
+check_utf8('a file ending in a cut-off UTF-8 sequence is current loaded and from disk', 'a\ncaf\xe9')
+
 assert.run_test('opening a diff buffer with other lines never moves the comment', function()
   fresh()
   vim.fn.cursor(5, 1)

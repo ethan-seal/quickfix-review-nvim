@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-02fl
 title: 'latin1 files: current while loaded, outdated after bwipeout'
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-09-30T01:29:01Z
-updated_at: 2026-09-30T01:29:01Z
+updated_at: 2026-09-30T01:45:02Z
 ---
 
 **Symptom**: a comment in a latin1 (non-UTF-8) file shows 'current' while the buffer is loaded, then 'outdated' after `:bwipeout`.

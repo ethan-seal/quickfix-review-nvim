@@ -527,6 +527,84 @@ local function from_mark(c)
   return make_pos(base.sha, lnum, end_lnum, state)
 end
 
+-- Whether `s` passes the UTF-8 test Neovim runs when it reads a file: each
+-- lead byte gives a sequence length (0xC0-0xDF 2, 0xE0-0xEF 3, 0xF0-0xF7 4,
+-- 0xF8-0xFB 5, 0xFC-0xFD 6; a stray continuation byte or 0xFE/0xFF fails)
+-- and that many bytes must follow as continuation bytes. Overlong forms,
+-- surrogates and code points past U+10FFFF pass, as they do for Neovim, and
+-- so does a sequence cut off by the end of `s`, so `s` must end where the
+-- file does. Returns nil when `s` fails, else the number of bytes of such a
+-- cut-off sequence (0 when there is none), which Neovim reads as illegal
+-- bytes and replaces each with '?'.
+local function utf8_tail(s)
+  local i = 1
+  while true do
+    local p = s:find('[\128-\255]', i)
+    if not p then return 0 end
+    local b, len = s:byte(p), nil
+    if b >= 0xC0 and b <= 0xDF then len = 2
+    elseif b >= 0xE0 and b <= 0xEF then len = 3
+    elseif b >= 0xF0 and b <= 0xF7 then len = 4
+    elseif b >= 0xF8 and b <= 0xFB then len = 5
+    elseif b >= 0xFC and b <= 0xFD then len = 6
+    else return nil end
+    for k = 1, len - 1 do
+      local cb = s:byte(p + k)
+      if not cb then return k end
+      if cb < 0x80 or cb > 0xBF then return nil end
+    end
+    i = p + len
+  end
+end
+
+-- `lines` as readfile() gives them, converted to UTF-8 the way reading the
+-- file into a buffer does: the first encoding of 'fileencodings' that
+-- takes them (utf-8, and 'default', which is 'encoding', when they are
+-- valid UTF-8, with a sequence cut off by the end of the file replaced by
+-- '?'s; any other through iconv). So a file read as latin1 hashes
+-- alike loaded and from disk. When none takes them they are kept as they
+-- are, as a buffer keeps them. ('ucs-bom' is skipped: readfile() drops a
+-- UTF-8 BOM and a UTF-16/32 file is not handled.) `ends_nl`: whether the
+-- file ends in a newline, which readfile() drops.
+local function decode(lines, ends_nl)
+  local checked, tail = false, nil
+  for enc in vim.gsplit(vim.o.fileencodings, ',', { plain = true, trimempty = true }) do
+    enc = enc:lower()
+    if enc == 'utf-8' or enc == 'utf8' or enc == 'default' then
+      if not checked then
+        checked = true
+        tail = utf8_tail(table.concat(lines, '\n') .. (ends_nl and '\n' or ''))
+      end
+      if tail == 0 then return lines end
+      if tail then
+        -- Not followed by a newline, so the cut-off bytes end the last line
+        local out, n = vim.list_slice(lines), #lines
+        out[n] = out[n]:sub(1, -tail - 1) .. ('?'):rep(tail)
+        return out
+      end
+    elseif enc ~= 'ucs-bom' then
+      local out = {}
+      for i, l in ipairs(lines) do
+        local u = vim.iconv(l, enc, 'utf-8')
+        if not u then out = nil; break end
+        out[i] = u
+      end
+      if out then return out end
+    end
+  end
+  return lines
+end
+
+-- Whether the file at `path`, `size` bytes long, ends in a newline.
+local function ends_in_newline(path, size)
+  if size == 0 then return false end
+  local fd = uv.fs_open(path, 'r', 0)
+  if not fd then return false end
+  local last = uv.fs_read(fd, 1, size - 1)
+  uv.fs_close(fd)
+  return last == '\n'
+end
+
 -- The pos of `c` in its file on disk (`st`, its fs_stat, or nil when it
 -- is missing), whose content is cached by (path, size, mtime, inode).
 -- A missing file makes a comment with a snapshot outdated.
@@ -541,7 +619,7 @@ local function from_disk(c, st)
   if not f or f.size ~= st.size or f.sec ~= st.mtime.sec or f.nsec ~= st.mtime.nsec
       or f.ino ~= st.ino then
     local ok, lines = pcall(vim.fn.readfile, path)
-    if not ok then lines = {} end
+    lines = ok and decode(lines, ends_in_newline(path, st.size)) or {}
     f = {
       size = st.size, sec = st.mtime.sec, nsec = st.mtime.nsec, ino = st.ino,
       lines = lines, sha = snapshots.hash(lines),

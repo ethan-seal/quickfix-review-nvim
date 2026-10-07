@@ -74,6 +74,8 @@ local default_files = {
   'test/test_setup.lua',
   -- Quickfix window hooks
   'test/test_qf_window.lua',
+  -- Headless entry point for external tools
+  'test/test_cli.lua',
 }
 
 -- scripts/test.sh passes any file arguments through QFR_TEST_FILES

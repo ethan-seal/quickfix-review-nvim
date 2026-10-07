@@ -340,6 +340,27 @@ function M.edit(id, body)
   return res
 end
 
+-- Set a comment's response (a reply from whoever reviewed it, e.g. an agent
+-- answering the review): one update event setting `response`, with the
+-- previous response in `prev`, so a replaced response stays in the journal.
+-- Nothing is logged when the comment is gone or the response is unchanged.
+-- Returns: 'responded', 'unchanged', 'missing' (no live comment with this
+-- id), or nil if the text isn't a non-empty string or the change was
+-- refused, and then the reason (a string, when one is known)
+function M.respond(id, text)
+  if type(text) ~= 'string' or text == '' then return nil end
+  local res, _, err = mutate(function()
+    local r = journal.get(id)
+    local c = r and view.view_of(r, location.resolve().root, journal.rebases())
+    if not c then return {}, 'missing' end
+    if c.response == text then return {}, 'unchanged' end
+    return { log.event('update', { id = id, set = { response = text }, prev = { response = c.response } }) },
+      'responded'
+  end)
+  if res == nil then return nil, err end
+  return res
+end
+
 -- Remove every comment for which pred(comment) is true: one delete event,
 -- holding the comment, per match
 -- Returns: number removed, or nil if the change was refused (unreadable file)

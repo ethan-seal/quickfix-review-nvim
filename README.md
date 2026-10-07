@@ -188,6 +188,22 @@ e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/events/000001.json
 
 **`storage_file` (deprecated).** If you set `storage_file`, one review is used for every project, as before: no storage directory, no switching on `:cd`, and no import from the global file. Its journal and checkpoints sit next to the path you give: `<storage_file>.events/` and `<storage_file>.checkpoints/` (plus a `<storage_file>.journal.lock` lock file; a v2 `<storage_file>.log.jsonl` is migrated as above); an existing file at that path is migrated to the journal and renamed to `<storage_file>.pre-log.bak`, except the global file `stdpath('data')/quickfix-review.json` itself, which is left in place so per-project reviews can still import from it once you remove `storage_file`. If you copied the old "full configuration" example, remove its `storage_file` line to get per-project reviews.
 
+### Using a review from outside Neovim
+
+Tools outside Neovim (a review exporter, an agent answering the comments) should not read or write the journal themselves. They run the plugin headless instead, from inside the project:
+
+```bash
+nvim --clean -l /path/to/quickfix-review-nvim/scripts/qfr.lua export
+nvim --clean -l /path/to/quickfix-review-nvim/scripts/qfr.lua respond <id> '<text>'
+nvim --clean -l /path/to/quickfix-review-nvim/scripts/qfr.lua clear
+```
+
+- `export` prints the review's comments to stdout as one JSON array: `id`, `filename` (absolute), `kind`, `body`, `response` (absent until there is one) and the lines it is displayed at now, `lnum` and `end_lnum` (followed through edits to the file, as in the quickfix list).
+- `respond <id> <text>` sets the comment's response, replacing any earlier one. The earlier one stays in the journal (`:ReviewHistory`).
+- `clear` removes every comment, as `:ReviewClear` does.
+
+The review is the one for the working directory's project, found and locked as an interactive Neovim finds and locks it. A running Neovim shows a change on its next sync (focus or `CursorHold`). Only results go to stdout; messages (such as the one-time import notice) go to stderr. Exit codes: 0 on success, 1 on failure (such as an unknown id), 2 on a usage error. `--clean` keeps your config out, so `setup()` is never called and the default `storage_dir` is used: with a custom `storage_dir` or `storage_file`, these commands see a different review than your Neovim does.
+
 ### When the code changes
 
 Each comment remembers the version of the file it was written against (a snapshot in `snapshots/` in the storage directory). When the file changes, the snapshot is diffed against the file as it is now and the comment moves with its lines. This happens when a file is read or reloaded after changing on disk, as you edit it, and, for a file that isn't open, when it is read for the quickfix list, export or a jump. The new position is kept in memory only until you save the file: on `:w`, every comment in it that is current or shifted is re-anchored to the saved content (one `update` event per comment whose anchor changed), so it reopens where it is now. Unsaved edits (`:q!`, `:e!`) never change a stored anchor, and outdated comments keep theirs. Diff buffers (fugitive, diffview, gitsigns, codediff) show an old revision and never move a comment. A diff buffer shows a comment's signs at its original lines when the buffer holds exactly the revision the comment was written against, and none otherwise. Saving the working file re-anchors the comment, so after that a buffer holding the older revision no longer shows it.

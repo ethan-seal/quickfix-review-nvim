@@ -985,6 +985,62 @@ assert.run_test('edit with overlapping comments edits only the chosen one', func
   assert.equals(by_kind.issue, 'Test comment', 'other comment unchanged')
 end)
 
+assert.run_test('respond sets the response; replacing it keeps the old one in prev', function()
+  qf.clear_review()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local before = vim.deepcopy(qf.comments()[1])
+  local n = #updates()
+
+  assert.equals(store.respond(before.id, 'Will fix'), 'responded', 'first response')
+  local c = store.get(before.id)
+  assert.equals(c.response, 'Will fix', 'response set')
+  assert.equals(c.body, before.body, 'body unchanged')
+  assert.equals(c.kind, before.kind, 'kind unchanged')
+  assert.equals(c.lnum, before.lnum, 'lnum unchanged')
+  assert.equals(c.anchor.sha, before.anchor.sha, 'anchor unchanged')
+  local ups = updates()
+  assert.equals(#ups, n + 1, 'one update logged')
+  assert.equals(ups[#ups].id, before.id, 'update names the comment')
+  assert.equals(ups[#ups].set.response, 'Will fix', 'update sets the response')
+  assert.equals(vim.tbl_count(ups[#ups].set), 1, 'update sets only the response')
+  assert.equals(ups[#ups].prev and ups[#ups].prev.response, nil, 'no previous response')
+
+  assert.equals(store.respond(before.id, 'Fixed'), 'responded', 'second response')
+  assert.equals(store.get(before.id).response, 'Fixed', 'response replaced')
+  ups = updates()
+  assert.equals(#ups, n + 2, 'second update logged')
+  assert.equals(ups[#ups].prev.response, 'Will fix', 'update keeps the old response')
+end)
+
+assert.run_test('respond: same text, unknown id or bad text logs nothing', function()
+  qf.clear_review()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local id = qf.comments()[1].id
+  assert.equals(store.respond(id, 'ok'), 'responded', 'first response')
+  local n = #updates()
+  assert.equals(store.respond(id, 'ok'), 'unchanged', 'same response')
+  assert.equals(store.respond('ffffffffffffffff', 'ok'), 'missing', 'unknown id')
+  assert.equals(store.respond(id, ''), nil, 'empty text refused')
+  assert.equals(store.respond(id, 42), nil, 'non-string text refused')
+  assert.equals(store.respond(id, nil), nil, 'nil text refused')
+  assert.equals(#updates(), n, 'no update logged')
+  assert.equals(store.get(id).response, 'ok', 'response unchanged')
+end)
+
+assert.run_test('respond: a multi-line response round-trips', function()
+  qf.clear_review()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local id = qf.comments()[1].id
+  local text = 'first line\nsecond | Response: line\n'
+  assert.equals(store.respond(id, text), 'responded', 'responded')
+  assert.equals(store.get(id).response, text, 'response as given')
+  assert.equals(store.reload(), true, 'journal replays')
+  assert.equals(store.get(id).response, text, 'response survives a full replay')
+end)
+
 test_helper.cleanup_test_environment()
 
 return assert

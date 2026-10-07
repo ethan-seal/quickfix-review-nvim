@@ -82,6 +82,7 @@ XDG_DATA_HOME="$tmp/data" QFR_TEST_WORKDIR="$tmp/work" QFR_TEST_ROOT="$PWD" QFR_
 | `test_persistence.lua` | Tests for save/load functionality |
 | `test_track.lua` | Tests for mapping a comment's range through a diff (pure relocation core) |
 | `test_relocate.lua` | Tests for comments following file changes and the outdated state |
+| `test_cli.lua` | Tests for the headless entry point (`scripts/qfr.lua`): export, respond and clear run as separate `nvim --clean -l` processes |
 
 ## Writing New Tests
 

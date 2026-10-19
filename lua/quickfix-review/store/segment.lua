@@ -1,7 +1,7 @@
 -- The files of a v3 journal (docs/journal.md#layout): the numbered event
 -- segments in `events/` (000001.jsonl, ...), their `.refs` sidecars, and the
--- durable writes the journal's derived files (refs, checkpoints, the v2
--- tombstone) are made with. No state: every function takes paths.
+-- durable writes the journal's derived files (refs, checkpoints) are made
+-- with. No state: every function takes paths.
 --
 -- A segment file is never renamed, rewritten or truncated once it exists:
 -- it is created complete (a temp file outside `events/`, hard-linked into

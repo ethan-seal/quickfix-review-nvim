@@ -60,7 +60,6 @@ local default_files = {
   'test/test_sync.lua',
   -- Log rotation and legacy migration
   'test/test_sealing.lua',
-  'test/test_migrate.lua',
   -- Storage schema and upgrades
   'test/test_schema.lua',
   -- Per-project storage directory

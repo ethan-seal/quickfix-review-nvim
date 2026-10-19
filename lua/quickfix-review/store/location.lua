@@ -11,17 +11,15 @@ local uv = vim.uv or vim.loop
 -- Where the review lives. Per project, in the project's storage dir (next
 -- to where comments.json used to be): the journal's event segments in
 -- `events/`, its checkpoints in `checkpoints/`, the flock'ed `journal.lock`
--- (and the mkdir lock dir `lock` where flock is unavailable), and the v2
--- files a migration reads: log.jsonl (a tombstone once migrated) and
--- state.json. See docs/journal.md. The project root is the git toplevel of
+-- (and the mkdir lock dir `lock` where flock is unavailable). See
+-- docs/journal.md. The project root is the git toplevel of
 -- the global cwd, else the cwd itself (symlinks resolved). Memoized on the
 -- cwd and the storage_dir option, so it is a string compare on every store
 -- call.
 --
 -- With the explicit (deprecated, global) storage_file, the same files sit
 -- next to that file, named after it (<file>.events, <file>.checkpoints,
--- <file>.journal.lock, <file>.snapshots, and the v2 <file>.log.jsonl and
--- <file>.state.json; <file>.lock is the mkdir lock), so several storage_file
+-- <file>.journal.lock, <file>.snapshots; <file>.lock is the mkdir lock), so several storage_file
 -- values in one directory never share a journal. The path is used as given,
 -- not resolved: migrating renames the file, which would change a resolved
 -- path.
@@ -73,7 +71,7 @@ function M.resolve()
   if explicit ~= nil then
     return {
       path = explicit, dir = vim.fn.fnamemodify(explicit, ':h'), explicit = true,
-      log = explicit .. '.log.jsonl', state = explicit .. '.state.json', lock = explicit .. '.lock',
+      lock = explicit .. '.lock',
       flock = explicit .. '.journal.lock',
       events = explicit .. '.events', checkpoints = explicit .. '.checkpoints',
       snapshots = explicit .. '.snapshots',
@@ -109,7 +107,7 @@ function M.resolve()
   resolved = {
     cwd = cwd, opt = opt, root = root, dir = dir, shared = shared, per_project = per_project,
     path = dir .. '/comments.json',
-    log = dir .. '/log.jsonl', state = dir .. '/state.json', lock = dir .. '/lock',
+    lock = dir .. '/lock',
     flock = dir .. '/journal.lock',
     events = dir .. '/events', checkpoints = dir .. '/checkpoints',
     snapshots = dir .. '/snapshots',

@@ -4,8 +4,7 @@
 -- current project's dir. The event segments and snapshots are copied
 -- (never hard-linked: the active segment is appended to, and a shared inode
 -- would make both reviews share every write); checkpoints and `.refs` are
--- derived and rebuilt; the tombstone log.jsonl is written last, as
--- journal.create does. The old dir is only read.
+-- derived and rebuilt. The old dir is only read.
 --
 -- The one event adopt appends (to the copied active segment, before the
 -- journal is put in place: segments are never rewritten) is a rebase
@@ -31,28 +30,27 @@ local uv = vim.uv or vim.loop
 -- lays out a per-project dir
 local function location_of(dir)
   return {
-    dir = dir, path = dir .. '/comments.json', log = dir .. '/log.jsonl', state = dir .. '/state.json',
+    dir = dir, path = dir .. '/comments.json',
     lock = dir .. '/lock', flock = dir .. '/journal.lock',
     events = dir .. '/events', checkpoints = dir .. '/checkpoints', snapshots = dir .. '/snapshots',
   }
 end
 
--- Whether the dir at `loc` already holds a review: any event segment, a
--- log.jsonl (a v2 log or a tombstone) or a comments.json. Structural, not
+-- Whether the dir at `loc` already holds a review: any event segment or a
+-- comments.json. Structural, not
 -- "has comments": a review that was written to and then cleared still
 -- counts, so adopting never has to merge two journals.
 local function has_review(loc)
-  return #segment.list(loc.events) > 0 or uv.fs_stat(loc.log) ~= nil or uv.fs_stat(loc.path) ~= nil
+  return #segment.list(loc.events) > 0 or uv.fs_stat(loc.path) ~= nil
 end
 
--- Whether the review at `loc` is a v3 journal that never held a comment: no
--- comments.json, log.jsonl a tombstone or absent, and nothing live, trashed
+-- Whether the review at `loc` is a journal that never held a comment: no
+-- comments.json, and nothing live, trashed
 -- or removed (e.g. a journal holding only the empty import of a review
 -- created before empty imports were skipped). A cleared review has
 -- removals, so it is not empty.
 local function empty_journal(loc)
   if uv.fs_stat(loc.path) then return false end
-  if uv.fs_stat(loc.log) and not log.is_tombstone(log.read_header(loc.log)) then return false end
   local r = journal.replay(loc.events, nil)
   if not r then return false end
   local st = r.state
@@ -223,27 +221,17 @@ function M.adopt(old_dir)
         return false, 'Could not move ' .. staging .. ' to ' .. loc.events .. ': ' .. tostring(rerr)
       end
       segment.fsync_dir(loc.dir)
-      if aside then
-        vim.fn.delete(aside, 'rf')
-        -- The empty journal's tombstone: write_tombstone never replaces one
-        os.remove(loc.log)
-      end
+      if aside then vim.fn.delete(aside, 'rf') end
       local sok, serr = copy_snapshots(old.snapshots, loc.snapshots)
       if not sok then
         vim.notify('quickfix-review: adopted the review, but not all of its snapshots: ' .. tostring(serr),
           vim.log.levels.WARN)
       end
-      local mode = bit.band((uv.fs_stat(segment.path(loc.events, 1)) or { mode = 420 }).mode, 511)
-      local tres, terr = journal.write_tombstone(loc, info.journal_id, mode)
-      if not tres then
-        vim.notify('quickfix-review: could not write the tombstone ' .. loc.log .. ': ' .. tostring(terr)
-          .. '; a Neovim running an older version could write to the review', vim.log.levels.WARN)
-      end
       return true, #info.segs
     end)
     if not lok then return false, cok end
     return cok, cres
-  end, true)
+  end)
   if not got then return false, ok end
   return ok, res
 end

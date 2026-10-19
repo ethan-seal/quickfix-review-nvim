@@ -80,7 +80,7 @@ local function add_at(lnum, kind)
   qf.add_comment(kind or 'NOTE')
 end
 
-local function segs() return test_helper.segments_of(test_helper.log_path()) end
+local function segs() return test_helper.segments_of(test_helper.events_path()) end
 
 local function inodes()
   local out = {}
@@ -96,16 +96,7 @@ assert.run_test('defaults: 4 MiB segments, a checkpoint every 500 events, 2 kept
   reset()
   for l = 1, 3 do add_at(l) end
   assert.length(segs(), 1, 'one segment')
-  assert.equals(test_helper.log_records(test_helper.log_path())[1].op, 'header', 'it starts with its header')
-  -- A new review writes the v3 tombstone log.jsonl, so a pre-v3 Neovim
-  -- refuses it (log_id is what old code keys its header check on)
-  local lines = vim.fn.readfile(test_helper.log_path())
-  assert.length(lines, 1, 'a new review\'s log.jsonl is one line')
-  local tomb = vim.json.decode(lines[1])
-  assert.equals(tomb.op, 'header', 'a header')
-  assert.equals(tomb.v, 3, 'v3')
-  assert.equals(tomb.moved_to, 'events/', 'the tombstone')
-  assert.truthy(type(tomb.log_id) == 'string' and tomb.log_id ~= '', 'with a non-empty log_id')
+  assert.equals(test_helper.log_records(test_helper.events_path())[1].op, 'header', 'it starts with its header')
 end)
 
 assert.run_test('log_max_bytes is an alias of segment_max_bytes; log_retention_days is ignored, each noted once', function()
@@ -307,7 +298,7 @@ assert.run_test('two Neovims appending while sealing lose and duplicate nothing'
   local ok, err = pcall(function()
     assert.equals(r1.code, 0, 'writer one exits cleanly: ' .. tostring(r1.stderr))
     assert.equals(r2.code, 0, 'writer two exits cleanly: ' .. tostring(r2.stderr))
-    local list = test_helper.segments_of(test_helper.log_path(file))
+    local list = test_helper.segments_of(test_helper.events_path(file))
     assert.truthy(#list >= 3, 'sealed several times: ' .. #list)
     local eids, adds, journal_id = {}, { one = 0, two = 0 }, nil
     for i, s in ipairs(list) do
@@ -326,7 +317,7 @@ assert.run_test('two Neovims appending while sealing lose and duplicate nothing'
     end
     assert.equals(adds.one, 50, 'every add of writer one, once')
     assert.equals(adds.two, 50, 'every add of writer two, once')
-    assert.length(test_helper.saved(test_helper.log_path(file)), 100, '100 live comments')
+    assert.length(test_helper.saved(test_helper.events_path(file)), 100, '100 live comments')
     local cps = test_helper.checkpoint_files(file)
     assert.truthy(#cps >= 1 and #cps <= 2, 'at most 2 checkpoints: ' .. #cps)
     assert.length(vim.fn.glob(test_helper.checkpoints_path(file) .. '/*.tmp.*', true, true), 0, 'no temp file')

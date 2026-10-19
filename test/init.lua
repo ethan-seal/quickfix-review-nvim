@@ -56,11 +56,8 @@ M.root = vim.env.QFR_TEST_ROOT
 -- Never touch the real review in stdpath('data')
 M.storage_file = vim.fn.tempname() .. '-quickfix-review.json'
 
--- The v2 log (the tombstone once migrated), the v2 cache, the v3 journal
--- (events), its checkpoints and the lock of a review kept in the explicit
--- storage file `file` (see store/location.lua)
-function M.log_path(file) return (file or M.storage_file) .. '.log.jsonl' end
-function M.state_path(file) return (file or M.storage_file) .. '.state.json' end
+-- The journal (events), its checkpoints and the lock of a review kept in
+-- the explicit storage file `file` (see store/location.lua)
 function M.events_path(file) return (file or M.storage_file) .. '.events' end
 function M.checkpoints_path(file) return (file or M.storage_file) .. '.checkpoints' end
 -- Segment `n` (default 1) of the journal of `file`
@@ -78,19 +75,13 @@ function M.lock_path(file) return (file or M.storage_file) .. '.lock' end
 function M.flock_path(file) return (file or M.storage_file) .. '.journal.lock' end
 
 -- Every file a review in `file` (default: the test storage file) may leave:
--- comments.json and its backups, the log, the cache, the lock
+-- comments.json and its backup, the journal, the lock
 function M.remove_storage(file)
   file = file or M.storage_file
-  for _, suffix in ipairs({ '', '.pre-log.bak', '.pre-v2.bak', '.log.jsonl', '.state.json' }) do
+  for _, suffix in ipairs({ '', '.pre-log.bak' }) do
     os.remove(file .. suffix)
   end
-  -- Torn logs moved aside, and stale locks broken by renaming them aside
-  for _, p in ipairs(vim.fn.glob(M.log_path(file) .. '.torn-*', true, true)) do os.remove(p) end
-  -- Rotated logs (<file>.log.<ms>.jsonl), and a rotation's leftover temp file
-  for _, p in ipairs(vim.fn.glob(file .. '.log.*.jsonl', true, true)) do
-    if p:match('%.log%.%d+%.jsonl$') then os.remove(p) end
-  end
-  for _, p in ipairs(vim.fn.glob(M.log_path(file) .. '.rotating-*', true, true)) do os.remove(p) end
+  -- Stale locks broken by renaming them aside
   for _, p in ipairs(vim.fn.glob(M.lock_path(file) .. '.stale-*', true, true)) do vim.fn.delete(p, 'rf') end
   vim.fn.delete(M.lock_path(file), 'rf')
   os.remove(M.flock_path(file))
@@ -100,24 +91,14 @@ function M.remove_storage(file)
   for _, p in ipairs(vim.fn.glob(M.events_path(file) .. '.tmp.*', true, true)) do os.remove(p) end
 end
 
--- The journal dir beside the v2 log path `log_path` (<file>.log.jsonl ->
--- <file>.events, <dir>/log.jsonl -> <dir>/events), or nil
-local function events_of(log_path)
-  local base = log_path:match('^(.*)%.log%.jsonl$')
-  if base then return base .. '.events' end
-  local dir = log_path:match('^(.*)/log%.jsonl$')
-  return dir and (dir .. '/events') or nil
-end
-
--- The segment paths of the journal beside `log_path` (see events_of), in
--- order, as { n, path }...; empty when there is none
-function M.segments_of(log_path)
-  local dir = events_of(log_path)
+-- The segment paths of the journal `events` (an events dir), in order, as
+-- { n, path }...; empty when there is none
+function M.segments_of(events)
   local out = {}
-  if not dir then return out end
-  for _, name in ipairs(vim.fn.readdir(dir) or {}) do
+  if vim.fn.isdirectory(events) == 0 then return out end
+  for _, name in ipairs(vim.fn.readdir(events) or {}) do
     local n = name:match('^(%d+)%.jsonl$')
-    if n then table.insert(out, { n = tonumber(n), path = dir .. '/' .. name }) end
+    if n then table.insert(out, { n = tonumber(n), path = events .. '/' .. name }) end
   end
   table.sort(out, function(a, b) return a.n < b.n end)
   return out
@@ -130,42 +111,31 @@ local function decode_lines(path, seg, out)
   end
 end
 
--- The records of the log at `log_path` (header first). When the review
--- has a v3 journal (log_path a v2 log path, see events_of, with segments
--- beside it), the records of its segments in order, each header included.
-function M.log_records(log_path)
+-- The records of the journal `events` (an events dir, or one segment
+-- file), in order, each segment's header included
+function M.log_records(events)
   local records = {}
-  local segs = M.segments_of(log_path)
-  if #segs == 0 then
-    decode_lines(log_path, nil, records)
-  else
-    for _, s in ipairs(segs) do decode_lines(s.path, nil, records) end
-  end
+  local segs = M.segments_of(events)
+  if #segs == 0 then segs = { { path = events } } end
+  for _, s in ipairs(segs) do decode_lines(s.path, nil, records) end
   return records
 end
 
--- The records of `log_path` whose op is `op`
-function M.log_ops(log_path, op)
+-- The records of the journal `events` whose op is `op`
+function M.log_ops(events, op)
   local found = {}
-  for _, r in ipairs(M.log_records(log_path)) do
+  for _, r in ipairs(M.log_records(events)) do
     if r.op == op then table.insert(found, r) end
   end
   return found
 end
 
--- The live comments on disk: the log at `log_path` (default: the test
+-- The live comments on disk: the journal `events` (default: the test
 -- storage file's) replayed, as logged records
-function M.saved(log_path)
+function M.saved(events)
   local reduce = require('quickfix-review.reduce')
   local state = reduce.new()
-  log_path = log_path or M.log_path()
-  local segs = M.segments_of(log_path)
-  if #segs == 0 then segs = { { n = 1, path = log_path } } end
-  for _, s in ipairs(segs) do
-    local recs = {}
-    decode_lines(s.path, nil, recs)
-    for _, r in ipairs(recs) do reduce.apply_in_segment(state, s.n, r) end
-  end
+  for _, r in ipairs(M.log_records(events or M.events_path())) do reduce.apply(state, r) end
   return state.comments
 end
 

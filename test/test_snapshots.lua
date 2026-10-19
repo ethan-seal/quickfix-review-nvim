@@ -287,8 +287,8 @@ assert.run_test('gc: a sha in a torn log line still counts; a newer log stops it
   use_dir()
   local sha = snapshots.put({ 'future' })
   backdate(sha)
-  vim.fn.mkdir(vim.fn.fnamemodify(store.log_path(), ':h'), 'p')
-  write_bytes(store.log_path(), '{"op":"header","log_id":"abc","v":99}\n')
+  vim.fn.mkdir(store.events_dir(), 'p')
+  write_bytes(store.events_dir() .. '/000001.jsonl', '{"op":"header","v":99,"journal_id":"abc","seg":1}\n')
   assert.equals(store.gc_snapshots(), 0, 'nothing deleted')
   assert.truthy(exists(sha), 'kept')
 
@@ -379,7 +379,7 @@ assert.run_test('gc: a snapshot named by the newest checkpoint\'s refs is kept',
   assert.truthy(exists(only), 'named by the checkpoint\'s refs: kept')
   assert.falsy(exists(other), 'the unreferenced one deleted')
 end)
-assert.run_test('gc: no segments and no log.jsonl (events/ unlisted) collects nothing', function()
+assert.run_test('gc: no segments (events/ unlisted) collects nothing', function()
   use_dir()
   local _, live = anchored({ 'live' })
   local orphan = snapshots.put({ 'orphan' })
@@ -388,9 +388,6 @@ assert.run_test('gc: no segments and no log.jsonl (events/ unlisted) collects no
   local events = store.events_dir()
   local aside = events .. '.aside'
   assert.truthy(os.rename(events, aside), 'events/ moved aside')
-  -- and the tombstone a born-v3 review has, so this is the no-log branch
-  local log_file = store.log_path()
-  assert.truthy(os.rename(log_file, log_file .. '.aside'), 'log.jsonl moved aside')
   local stamp = store.snapshots_dir() .. '/gc.stamp'
   assert.falsy(vim.uv.fs_stat(stamp), 'no gc.stamp yet')
   assert.equals(store.gc_snapshots({ force = true }), 0, 'nothing deleted')
@@ -398,7 +395,6 @@ assert.run_test('gc: no segments and no log.jsonl (events/ unlisted) collects no
   assert.truthy(exists(orphan), 'the orphan kept too')
   assert.falsy(vim.uv.fs_stat(stamp), 'gc.stamp not written')
   os.rename(aside, events)
-  os.rename(log_file .. '.aside', log_file)
 end)
 
 assert.run_test('gc: a checkpoint with empty refs past the header is not trusted', function()

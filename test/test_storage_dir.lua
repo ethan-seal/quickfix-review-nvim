@@ -127,7 +127,6 @@ storage_test('the default dir is stdpath(data)/quickfix-review/<basename>-<sha25
     .. vim.fn.sha256(a):sub(1, 12)
   assert.equals(store.dir(), expected, 'storage dir')
   assert.equals(store.path(), expected .. '/comments.json', 'storage file')
-  assert.equals(store.log_path(), expected .. '/log.jsonl', 'event log')
   assert.equals(store.events_dir(), expected .. '/events', 'journal')
   assert.equals(store.checkpoints_dir(), expected .. '/checkpoints', 'checkpoints')
   assert.equals(store.root(), a, 'project root')
@@ -140,10 +139,10 @@ storage_test('two repos get different dirs and their comments stay apart', funct
   restart()
   local _, store = mods()
   note(file_a, 'in alpha')
-  local path_a = store.log_path()
+  local path_a = store.events_dir()
 
   cd(b)
-  local path_b = store.log_path()
+  local path_b = store.events_dir()
   assert.not_equals(path_b, path_a, 'different storage files')
   assert.length(store.all(), 0, 'alpha comment not visible in beta')
   note(file_b, 'in beta')
@@ -227,7 +226,8 @@ for _, case in ipairs({ 'log', 'comments.json' }) do
     vim.fn.mkdir(dir_b, 'p')
     local bad_log = '{"op":"add","not":"a header"}\n'
     if case == 'log' then
-      local fh = io.open(dir_b .. '/log.jsonl', 'wb')
+      vim.fn.mkdir(dir_b .. '/events', 'p')
+      local fh = io.open(dir_b .. '/events/000001.jsonl', 'wb')
       assert.truthy(fh, 'bad log opened')
       fh:write(bad_log)
       fh:close()
@@ -259,9 +259,9 @@ for _, case in ipairs({ 'log', 'comments.json' }) do
     end)
     assert.length(mentioning(calls, 'will not be modified'), 0, 'not reported again')
     if case == 'log' then
-      assert.equals(read_bytes(dir_b .. '/log.jsonl'), bad_log, 'bad log untouched')
+      assert.equals(read_bytes(dir_b .. '/events/000001.jsonl'), bad_log, 'bad log untouched')
     else
-      assert.equals(vim.fn.filereadable(dir_b .. '/log.jsonl'), 0, 'no log created')
+      assert.falsy(vim.uv.fs_stat(dir_b .. '/events'), 'no journal created')
     end
 
     cd(a)
@@ -308,7 +308,7 @@ storage_test('storage_dir as a string is used as-is, created on first write', fu
   local _, store = mods()
   assert.equals(store.path(), target .. '/comments.json', 'string dir used')
   note(file_a, 'theta note')
-  assert.length(saved(target .. '/log.jsonl'), 1, 'written into the new dir')
+  assert.length(saved(target .. '/events'), 1, 'written into the new dir')
 end)
 
 storage_test('outside git the root is the cwd', function()
@@ -373,9 +373,9 @@ for _, v1 in ipairs({ true, false }) do
     assert.equals(list[1].kind, 'issue', 'kind kept')
     local imported = mentioning(calls, 'imported 1 comments from ' .. legacy)
     assert.length(imported, 1, 'one import notice')
-    local on_disk = saved(store.log_path())
+    local on_disk = saved(store.events_dir())
     assert.length(on_disk, 1, 'one comment in the log')
-    assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'as one import event')
+    assert.length(test_helper.log_ops(store.events_dir(), 'import'), 1, 'as one import event')
     assert.equals(on_disk[1].text, nil, 'no legacy text field written')
     if not v1 then
       assert.equals(on_disk[1].id, '0000000000000001', 'id kept')
@@ -410,12 +410,12 @@ for _, v1 in ipairs({ true, false }) do
     local _, store = mods()
     assert.length(store.all(), 3, 'every comment imported')
     assert.length(mentioning(calls, 'imported 3 comments from ' .. legacy), 1, 'one import notice')
-    assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'one import event')
+    assert.length(test_helper.log_ops(store.events_dir(), 'import'), 1, 'one import event')
 
     calls = capture_notify(function() cd(b) end)
     assert.length(store.all(), 3, 'same shared review in b')
     assert.length(mentioning(calls, 'imported'), 0, 'no second import notice')
-    assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'still one import event')
+    assert.length(test_helper.log_ops(store.events_dir(), 'import'), 1, 'still one import event')
     assert.equals(read_bytes(legacy), bytes, 'legacy bytes unchanged')
   end)
 end
@@ -507,7 +507,7 @@ storage_test('import happens once: a cleared review is not re-imported', functio
   _, store = mods()
   assert.length(store.all(), 0, 'nothing re-imported after restart')
   assert.length(mentioning(calls, 'imported'), 0, 'no import notice')
-  assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'one import event in the log')
+  assert.length(test_helper.log_ops(store.events_dir(), 'import'), 1, 'one import event in the log')
 
   calls = capture_notify(function() cd(c) end)
   assert.length(store.all(), 0, 'no comments for an unrelated project')
@@ -515,7 +515,6 @@ storage_test('import happens once: a cleared review is not re-imported', functio
   -- An empty import starts no journal: the dir stays empty (so :ReviewAdopt
   -- can fill it)
   assert.equals(vim.fn.glob(store.events_dir() .. '/*.jsonl'), '', 'no journal for an empty import')
-  assert.equals(vim.fn.filereadable(store.log_path()), 0, 'no tombstone for an empty import')
 end)
 
 storage_test('a failed legacy import is retried, not marked done by the next change', function()
@@ -553,36 +552,14 @@ storage_test('a failed legacy import is retried, not marked done by the next cha
   for _, cm in ipairs(store.all()) do bodies[cm.body] = true end
   assert.truthy(bodies['from a'], 'legacy comment imported')
   assert.truthy(bodies['after'], 'the change kept')
-  local records = test_helper.log_records(store.log_path())
+  local records = test_helper.log_records(store.events_dir())
   assert.equals(records[2] and records[2].op, 'import', 'the import is the first event')
-  assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'one import event')
+  assert.length(test_helper.log_ops(store.events_dir(), 'import'), 1, 'one import event')
 
   capture_notify(function() restart() end)
   _, store = mods()
   assert.length(store.all(), 2, 'both after a restart')
-  assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'still one import event')
-end)
-
-storage_test('a torn legacy import is moved aside and imported again', function()
-  local a = make_repo('alef')
-  local b = make_repo('bet')
-  seed_legacy(a, b, false)
-  local dir_a = default_dir(a)
-  vim.fn.mkdir(dir_a, 'p')
-  local log = require('quickfix-review.log')
-  local fh = io.open(dir_a .. '/log.jsonl', 'wb')
-  fh:write(vim.json.encode(log.v2_header()) .. '\n{"op":"imp')
-  fh:close()
-  cd(a)
-  local calls = capture_notify(function() restart() end)
-  local _, store = mods()
-  assert.equals(store.dir(), dir_a, 'a\'s dir')
-  local list = store.all()
-  assert.length(list, 1, 'imported')
-  assert.equals(list[1].body, 'from a', 'the legacy comment')
-  assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'one import event')
-  assert.length(vim.fn.glob(dir_a .. '/log.jsonl.torn-*', true, true), 1, 'torn log moved aside')
-  assert.truthy(#mentioning(calls, 'was incomplete') > 0, 'warned about the torn log')
+  assert.length(test_helper.log_ops(store.events_dir(), 'import'), 1, 'still one import event')
 end)
 
 storage_test('an import interrupted in this session leaves no journal and is imported again', function()
@@ -619,11 +596,11 @@ storage_test('an import interrupted in this session leaves no journal and is imp
   if not ok then error(err, 0) end
   assert.equals(torn, 1, 'the import was interrupted')
   capture_notify(function() store.all() end)
-  assert.length(test_helper.segments_of(store.log_path()), 1, 'one segment')
+  assert.length(test_helper.segments_of(store.events_dir()), 1, 'one segment')
   local list = store.all()
   assert.length(list, 1, 'imported')
   assert.equals(list[1].body, 'from a', 'the legacy comment')
-  assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'one import event')
+  assert.length(test_helper.log_ops(store.events_dir(), 'import'), 1, 'one import event')
 end)
 
 storage_test('a symlinked checkout imports comments saved under the real path', function()
@@ -651,7 +628,7 @@ storage_test('an invalid legacy file writes nothing and stays untouched', functi
   local _, store = mods()
   assert.length(store.all(), 0, 'nothing imported')
   assert.equals(vim.fn.filereadable(store.path()), 0, 'no comments.json')
-  assert.equals(vim.fn.filereadable(store.log_path()), 0, 'no log.jsonl')
+  assert.falsy(vim.uv.fs_stat(store.events_dir()), 'no journal')
   assert.length(mentioning(calls, 'not importing'), 1, 'warned once')
   store.all()
   assert.equals(read_bytes(legacy), bytes, 'legacy untouched')
@@ -760,8 +737,8 @@ storage_test('a retry window expiring mid-change still writes to the project res
     local list = store.all()
     assert.length(list, 1, 'the add is visible')
     assert.equals(list[1].body, 'mid', 'the comment added')
-    assert.length(test_helper.log_ops(fallback .. '/log.jsonl', 'add'), 1, 'add event in the fallback log')
-    assert.equals(vim.fn.filereadable(default_dir(a) .. '/log.jsonl'), 0, 'nothing written to the root\'s dir')
+    assert.length(test_helper.log_ops(fallback .. '/events', 'add'), 1, 'add event in the fallback log')
+    assert.falsy(vim.uv.fs_stat(default_dir(a) .. '/events'), 'nothing written to the root\'s dir')
   end)
 end)
 
@@ -1124,7 +1101,8 @@ storage_test('an unreadable legacy log is warned about once while the import kee
   local b = make_repo('nu')
   local c = make_repo('xi')
   local legacy = seed_legacy(a, b, false)
-  vim.fn.writefile({ '{"op":"header","v":99}' }, legacy .. '.log.jsonl')
+  vim.fn.mkdir(legacy .. '.events', 'p')
+  vim.fn.writefile({ '{"op":"header","v":99,"journal_id":"00000000000000aa","seg":1}' }, legacy .. '.events/000001.jsonl')
   cd(c)
   capture_notify(function() restart() end)
   local _, store = mods()
@@ -1133,7 +1111,7 @@ storage_test('an unreadable legacy log is warned about once while the import kee
       cd(a)
       for _ = 1, 3 do store.all() end
     end)
-    assert.length(mentioning(calls, 'not importing from ' .. legacy .. '.log.jsonl'), 1, 'warned once')
+    assert.length(mentioning(calls, 'not importing from ' .. legacy .. '.events'), 1, 'warned once')
   end)
 end)
 
@@ -1159,7 +1137,6 @@ storage_test('a failed import retried by a change does not start the log without
       assert.falsy(store.add({ filename = file_a, lnum = 2, kind = 'note', body = 'first' }), 'the add refused')
     end)
     assert.falsy(vim.uv.fs_stat(store.events_dir()), 'no journal started without the import')
-    assert.falsy(vim.uv.fs_stat(store.log_path()), 'no log.jsonl either')
   end)
   segment.create = original_create
   if not ok then error(err, 0) end
@@ -1174,7 +1151,7 @@ storage_test('a failed import retried by a change does not start the log without
   bodies = {}
   for _, cm in ipairs(store.all()) do bodies[cm.body] = true end
   assert.truthy(bodies['from a'], 'still there after a restart')
-  assert.length(test_helper.log_ops(store.log_path(), 'import'), 1, 'one import event')
+  assert.length(test_helper.log_ops(store.events_dir(), 'import'), 1, 'one import event')
 end)
 
 storage_test('a retry window expiring between the snapshot and the add keeps both in one dir', function()
@@ -1208,7 +1185,7 @@ storage_test('a retry window expiring between the snapshot and the add keeps bot
     if buf then vim.cmd('bwipeout! ' .. buf) end
     if not ok then error(err, 0) end
 
-    local adds = test_helper.log_records(fallback .. '/log.jsonl')
+    local adds = test_helper.log_records(fallback .. '/events')
     local sha
     for _, r in ipairs(adds) do
       if r.op == 'add' then sha = r.comment.anchor and r.comment.anchor.sha end
@@ -1216,7 +1193,7 @@ storage_test('a retry window expiring between the snapshot and the add keeps bot
     assert.truthy(sha, 'the add event, with its anchor, in the fallback log')
     assert.truthy(vim.uv.fs_stat(fallback .. '/snapshots/' .. sha), 'its snapshot in the same dir')
     local other = default_dir(a)
-    assert.equals(vim.fn.filereadable(other .. '/log.jsonl'), 0, 'no log in the root\'s dir')
+    assert.falsy(vim.uv.fs_stat(other .. '/events'), 'no journal in the root\'s dir')
     assert.falsy(vim.uv.fs_stat(other .. '/snapshots/' .. sha), 'no snapshot in the root\'s dir')
   end)
 end)
@@ -1248,7 +1225,7 @@ storage_test('a file under the root is logged repo-relative, and shown absolute'
   local _, store = mods()
   note(file, 'top')
   note(nested, 'nested')
-  local raw = saved(store.log_path())
+  local raw = saved(store.events_dir())
   assert.equals(raw[1].filename, 'rel.txt', 'logged relative to the root')
   assert.equals(raw[2].filename, 'sub/nested.txt', 'with forward slashes and no ./')
   local all = store.all()
@@ -1291,7 +1268,7 @@ storage_test('a file outside the root (or in a sibling sharing its prefix) stays
   local _, store = mods()
   note(sfile, 'sibling')
   note(outside, 'outside')
-  local raw = saved(store.log_path())
+  local raw = saved(store.events_dir())
   assert.equals(raw[1].filename, sfile, 'sibling with the root as a prefix stays absolute')
   assert.equals(raw[2].filename, outside, 'file outside the root stays absolute')
   local all = store.all()
@@ -1362,7 +1339,7 @@ storage_test('a log written with absolute filenames loads unchanged, its bytes u
   assert.equals(all[1].lnum, 2, 'at its line')
   note(file, 'new')
   assert.equals(read_bytes(seg):sub(1, #before), before, 'the existing events are not rewritten')
-  local raw = saved(store.log_path())
+  local raw = saved(store.events_dir())
   assert.equals(raw[1].filename, file, 'the old record stays absolute')
   assert.equals(raw[2].filename, 'sigma.txt', 'the new one is relative')
 end)
@@ -1398,7 +1375,7 @@ storage_test(':ReviewAdopt after moving the project: the comment is at the same 
   assert.length(all, 1, 'the comment is adopted')
   assert.equals(all[1].filename, moved .. '/mu.txt', 'at the same file, in its new place')
   assert.equals(all[1].lnum, 2, 'at the same line')
-  assert.equals(saved(store.log_path())[1].filename, 'mu.txt', 'logged relative')
+  assert.equals(saved(store.events_dir())[1].filename, 'mu.txt', 'logged relative')
   -- Copies, never links: the adopted segments are new inodes
   local names = segment_files(old)
   assert.truthy(#names > 0, 'the old review has segments')
@@ -1408,14 +1385,12 @@ storage_test(':ReviewAdopt after moving the project: the comment is at the same 
     assert.not_equals(ino(new .. '/events/' .. name), ino(old .. '/events/' .. name), name .. ' is a copy')
   end
   assert.truthy(vim.uv.fs_stat(new .. '/snapshots/' .. sha), 'snapshots copied')
-  local tomb = vim.json.decode(vim.fn.readfile(new .. '/log.jsonl')[1])
-  assert.equals(tomb.moved_to, 'events/', 'the tombstone is written')
   -- Writes go to the adopted copy only
   local before = read_bytes(old .. '/events/' .. names[#names])
   note(moved .. '/mu.txt', 'after adopt')
   assert.length(store.all(), 2, 'added to the adopted review')
   assert.equals(read_bytes(old .. '/events/' .. names[#names]), before, 'the old review is unchanged')
-  assert.length(saved(old .. '/log.jsonl'), 1, 'the old review still holds one comment')
+  assert.length(saved(old .. '/events'), 1, 'the old review still holds one comment')
 end)
 
 storage_test(':ReviewAdopt after moving the project, with a legacy global file to import from', function()
@@ -1443,7 +1418,6 @@ storage_test(':ReviewAdopt after moving the project, with a legacy global file t
   assert.not_equals(new, old, 'in another dir')
   -- The legacy import ran and found nothing: the dir holds no journal
   assert.length(segment_files(new), 0, 'no journal started by an empty import')
-  assert.equals(vim.fn.filereadable(new .. '/log.jsonl'), 0, 'no tombstone written by an empty import')
   local calls = capture_notify(function() vim.cmd('ReviewAdopt ' .. vim.fn.fnameescape(old)) end)
   assert.length(mentioning(calls, 'Adopted'), 1, 'adopted')
   local all = store.all()
@@ -1506,7 +1480,7 @@ end)
 
 -- Write, by hand, a review as it was logged before filenames were relative
 -- into the storage dir `dir`: segment 1 with an add of each record (absolute
--- filenames) and the tombstone log.jsonl. Returns the journal id.
+-- filenames). Returns the journal id.
 local function write_absolute_review(dir, records)
   local log = require('quickfix-review.log')
   local jid = log.new_journal_id()
@@ -1517,7 +1491,6 @@ local function write_absolute_review(dir, records)
   end
   vim.fn.mkdir(dir .. '/events', 'p')
   vim.fn.writefile(lines, dir .. '/events/000001.jsonl')
-  vim.fn.writefile({ vim.json.encode(log.tombstone(jid)) }, dir .. '/log.jsonl')
   return jid
 end
 
@@ -1578,7 +1551,7 @@ storage_test(':ReviewAdopt remaps absolute filenames logged before they were rel
   local seg = read_bytes(new .. '/events/000001.jsonl')
   assert.equals(seg:sub(1, #old_seg), old_seg, 'the copied events are not rewritten')
   assert.equals(read_bytes(old .. '/events/000001.jsonl'), old_seg, 'the old review is unchanged')
-  assert.equals(saved(store.log_path())[1].filename, file, 'the record still names the old path')
+  assert.equals(saved(store.events_dir())[1].filename, file, 'the record still names the old path')
   local evs = lines_of(new .. '/events/000001.jsonl')
   assert.equals(evs[#evs].op, 'rebase', 'a rebase event is appended')
   assert.equals(evs[#evs].from_root, a, 'from the old root')
@@ -1649,7 +1622,6 @@ storage_test('a dir whose journal holds only an empty import is accepted by adop
     vim.json.encode(log.segment_header(jid, 1)),
     vim.json.encode(log.event('import', { comments = {}, source_sha256 = ('0'):rep(64) })),
   }, new .. '/events/000001.jsonl')
-  vim.fn.writefile({ vim.json.encode(log.tombstone(jid)) }, new .. '/log.jsonl')
   cd(moved)
   restart()
   _, store = mods()
@@ -1662,8 +1634,6 @@ storage_test('a dir whose journal holds only an empty import is accepted by adop
   assert.equals(all[1].body, 'to adopt', 'the comment')
   assert.equals(vim.json.decode(vim.fn.readfile(new .. '/events/000001.jsonl')[1]).journal_id, old_jid,
     'segment 1 is the old journal\'s')
-  assert.equals(vim.json.decode(vim.fn.readfile(new .. '/log.jsonl')[1]).log_id, old_jid,
-    'the tombstone names the adopted journal')
   assert.equals(vim.fn.glob(new .. '/events.replaced-*'), '', 'the empty journal is gone')
   assert.equals(vim.fn.glob(new .. '/events.adopt-*'), '', 'no staging dir is left')
 

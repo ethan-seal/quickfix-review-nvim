@@ -5,15 +5,7 @@
 -- (unix ms, informational only): the order of events is the order of the
 -- lines, segment after segment.
 --
--- Headers:
--- - v3 segment: {"op":"header","v":3,"journal_id":"<16 hex>","seg":N}, the
---   first v3 segment of a migrated journal also with
---   "migrated_from":{"segments":M}
--- - v2 log (a migrated v2 segment, or an unmigrated log.jsonl):
---   {"op":"header","log_id":"<16 hex>","v":2}
--- - the v2 tombstone left in log.jsonl by the migration:
---   {"op":"header","v":3,"log_id":"<old id>","moved_to":"events/"}; a
---   born-v3 review's is the same with its journal_id as log_id
+-- Header: {"op":"header","v":3,"journal_id":"<16 hex>","seg":N}
 --
 -- Nothing in a segment is ever rewritten, so no change can lose data.
 -- Readers are tolerant: a line that fails to decode is skipped (with a
@@ -23,9 +15,9 @@ local M = {}
 
 local uv = vim.uv or vim.loop
 
--- The log format. 2: logs may hold a checkpoint event (rotation). 3:
--- numbered segments with a journal_id (docs/journal.md). A log whose header
--- has a higher v is refused (never shown empty, nor appended to).
+-- The log format: numbered segments with a journal_id (docs/journal.md).
+-- A segment whose header has a higher v is refused (never shown empty, nor
+-- appended to).
 M.VERSION = 3
 
 local function hex(bytes)
@@ -56,36 +48,13 @@ function M.new_journal_id()
   return hex(assert(uv.random(8)))
 end
 
--- The header of v3 segment `seg` of the journal `journal_id`; `extra`
--- fields (migrated_from) are added
-function M.segment_header(journal_id, seg, extra)
-  local h = { op = 'header', v = M.VERSION, journal_id = journal_id, seg = seg }
-  for k, v in pairs(extra or {}) do h[k] = v end
-  return h
+-- The header of segment `seg` of the journal `journal_id`
+function M.segment_header(journal_id, seg)
+  return { op = 'header', v = M.VERSION, journal_id = journal_id, seg = seg }
 end
-
--- The tombstone log.jsonl holds once the review is a v3 journal (migrated
--- or born v3), so a pre-v3 Neovim refuses it as too new. `log_id` must be a
--- non-empty string: pre-v3 code takes a line for a header (and so refuses
--- a too-new one) only when it has one
-function M.tombstone(log_id)
-  return { op = 'header', v = M.VERSION, log_id = log_id, moved_to = 'events/' }
-end
-
--- A v2 log header, as log.jsonl started with before v3 (test fixtures)
-function M.v2_header()
-  return { op = 'header', log_id = hex(assert(uv.random(8))), v = 2 }
-end
-
-local function nonempty(s) return type(s) == 'string' and s ~= '' end
 
 local function is_header(ev)
-  return type(ev) == 'table' and ev.op == 'header' and (nonempty(ev.log_id) or nonempty(ev.journal_id))
-end
-
--- Whether header `h` is the tombstone a v2 -> v3 migration leaves in log.jsonl
-function M.is_tombstone(h)
-  return type(h) == 'table' and h.moved_to ~= nil
+  return type(ev) == 'table' and ev.op == 'header' and type(ev.journal_id) == 'string' and ev.journal_id ~= ''
 end
 
 -- A header written by a newer version of the plugin, in a format this one
@@ -164,8 +133,8 @@ end
 -- number. Bytes after the last \n are not consumed. Reading from 0, the
 -- first line must be a header. `seen`, a table the caller keeps, makes the
 -- warning once per line number: lines warned about are recorded in it.
--- Returns: { events, offset, lines, log_id (its header's log_id or
--- journal_id, from 0 only), header (from 0 only), ino (of the file read) }, or nil and an error when the file can't be read, is shorter than
+-- Returns: { events, offset, lines, header (from 0 only), ino (of the file
+-- read) }, or nil and an error when the file can't be read, is shorter than
 -- `from`, or has no header
 function M.read(path, from, lines, seen)
   from, lines = from or 0, lines or 0
@@ -200,10 +169,9 @@ function M.read(path, from, lines, seen)
           .. ' Neovim: comments.json beside it, if any, is migrated again'
       end
       if too_new(ev) then
-        return nil, string.format('%s was written by a newer version of quickfix-review (log format v%s, this'
+        return nil, string.format('%s was written by a newer version of quickfix-review (format v%s, this'
           .. ' version reads up to v%d); upgrade the plugin to read or change it', path, tostring(ev.v), M.VERSION)
       end
-      result.log_id = ev.log_id or ev.journal_id
       result.header = ev
     elseif ev then
       table.insert(result.events, ev)
@@ -228,12 +196,6 @@ function M.read_header(path)
   if not line then return nil end
   local ok, ev = pcall(vim.json.decode, line, { luanil = { object = true, array = true } })
   return ok and is_header(ev) and ev or nil
-end
-
--- The log_id (or journal_id) in the header of the log at `path`, or nil
-function M.read_id(path)
-  local ev = M.read_header(path)
-  return ev and not too_new(ev) and (ev.log_id or ev.journal_id) or nil
 end
 
 -- Whether `data` (a log's bytes) starts with a header this version reads

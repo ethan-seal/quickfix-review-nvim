@@ -712,7 +712,7 @@ assert.run_test('cnext with autowrite out of a modified buffer: no E925, anchors
     qf.show_list()
     navigate('cc 1')
     assert.equals(vim.api.nvim_get_current_buf(), home, 'in the home file')
-    local before = #test_helper.log_ops(test_helper.log_path(), 'update')
+    local before = #test_helper.log_ops(test_helper.events_path(), 'update')
     vim.api.nvim_buf_set_lines(home, 0, 0, false, { 'zero' })
     vim.o.autowrite, vim.o.hidden = true, false
     local jumped, jump_err = pcall(navigate, 'cnext')
@@ -721,7 +721,7 @@ assert.run_test('cnext with autowrite out of a modified buffer: no E925, anchors
     assert.equals(vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':p'),
       vim.fn.fnamemodify(path, ':p'), 'in the other file')
     assert.falsy(vim.api.nvim_buf_is_loaded(home) and vim.bo[home].modified, 'home file written')
-    local updates = test_helper.log_ops(test_helper.log_path(), 'update')
+    local updates = test_helper.log_ops(test_helper.events_path(), 'update')
     assert.equals(#updates, before + 1, 'one anchor update logged')
     assert.equals(updates[#updates].set.anchor.lnum, 3, 'anchor shifted by the inserted line')
     vim.wait(100, function() return vim.fn.getqflist()[1].lnum == 3 end)

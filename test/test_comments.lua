@@ -235,14 +235,14 @@ assert.run_test('diff-plugin buffers that show no file are refused', function()
   }
   for _, name in ipairs(names) do
     qf.clear_review()
-    local adds = #test_helper.log_ops(test_helper.log_path(), 'add')
+    local adds = #test_helper.log_ops(test_helper.events_path(), 'add')
     in_scratch(name, 'nofile', function()
       vim.fn.cursor(1, 1)
       local calls = capture_notify(function() qf.add_comment('NOTE') end)
       assert.equals(count_level(calls, vim.log.levels.WARN), 1, 'one warning for ' .. name)
     end)
     assert.length(qf.comments(), 0, 'no comment added for ' .. name)
-    assert.equals(#test_helper.log_ops(test_helper.log_path(), 'add'), adds, 'nothing logged for ' .. name)
+    assert.equals(#test_helper.log_ops(test_helper.events_path(), 'add'), adds, 'nothing logged for ' .. name)
   end
 end)
 
@@ -522,7 +522,7 @@ local function capture_print(fn)
 end
 
 local function restores()
-  return #test_helper.log_ops(test_helper.log_path(), 'restore')
+  return #test_helper.log_ops(test_helper.events_path(), 'restore')
 end
 
 assert.run_test(':ReviewRestore brings back the last deleted comment', function()
@@ -814,7 +814,7 @@ local function with_input(answer, fn)
 end
 
 local function updates()
-  return test_helper.log_ops(test_helper.log_path(), 'update')
+  return test_helper.log_ops(test_helper.events_path(), 'update')
 end
 
 assert.run_test('edit saves the new body; id and anchor unchanged', function()

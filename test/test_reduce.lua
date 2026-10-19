@@ -13,10 +13,17 @@ local function rec(id, body)
 end
 
 -- Replay `events` from a fresh state; returns the state and the ignore reasons
+-- reduce.apply, but a { op = 'checkpoint', state = ... } (as a checkpoint
+-- file holds it) is loaded with reduce.load_state
+local function apply(state, ev)
+  if ev.op == 'checkpoint' then return state, reduce.load_state(state, ev.state) end
+  return reduce.apply(state, ev)
+end
+
 local function replay(events)
   local state, reasons = reduce.new(), {}
   for i, ev in ipairs(events) do
-    local _, reason = reduce.apply(state, ev)
+    local _, reason = apply(state, ev)
     reasons[i] = reason or false
   end
   return state, reasons
@@ -39,7 +46,7 @@ end
 
 assert.run_test('add appends; a duplicate add is ignored', function()
   local state, why = replay({
-    { op = 'header', log_id = 'x', v = 1 },
+    { op = 'header', v = 3, journal_id = 'x', seg = 1 },
     { op = 'add', comment = rec('a') },
     { op = 'add', comment = rec('b') },
     { op = 'add', comment = rec('a', 'again') },
@@ -230,7 +237,7 @@ end
 
 assert.run_test('a checkpoint of a replay replays to the same state', function()
   local events = {
-    { op = 'header', log_id = 'x', v = 1 },
+    { op = 'header', v = 3, journal_id = 'x', seg = 1 },
     { op = 'add', comment = rec('a') },
     { op = 'add', comment = rec('b') },
     { op = 'add', comment = rec('c') },
@@ -241,7 +248,7 @@ assert.run_test('a checkpoint of a replay replays to the same state', function()
     { op = 'update', id = 'a', set = { body = 'new' } },
   }
   local state = replay(events)
-  local again, why = replay({ { op = 'header', log_id = 'y', v = 1 }, as_checkpoint(state) })
+  local again, why = replay({ { op = 'header', v = 3, journal_id = 'y', seg = 1 }, as_checkpoint(state) })
   assert.equals(why[2], false, 'applied')
   assert.truthy(vim.deep_equal(again.comments, state.comments), 'same comments')
   assert.truthy(vim.deep_equal(again.trash, state.trash), 'same trash')
@@ -249,7 +256,7 @@ assert.run_test('a checkpoint of a replay replays to the same state', function()
 
   -- Later events apply on top
   local later = replay({
-    { op = 'header', log_id = 'y', v = 1 }, as_checkpoint(state),
+    { op = 'header', v = 3, journal_id = 'y', seg = 1 }, as_checkpoint(state),
     { op = 'update', id = 'e', set = { body = 'E' } },
     { op = 'delete', id = 'a', eid = 'e3' },
     { op = 'restore', id = 'c', comment = rec('c') },
@@ -371,7 +378,7 @@ end)
 assert.run_test('by_id stays equal to a rebuild after every op', function()
   local state = reduce.new()
   local events = {
-    { op = 'header', log_id = 'x', v = 1 },
+    { op = 'header', v = 3, journal_id = 'x', seg = 1 },
     { op = 'add', comment = rec('a') },
     { op = 'add', comment = rec('a', 'dup') },
     { op = 'import', comments = { rec('b'), rec('c'), rec('b', 'dup in import'), rec('d') } },
@@ -392,7 +399,7 @@ assert.run_test('by_id stays equal to a rebuild after every op', function()
   assert.equals(reduce.get(state, 'b').body, 'B', 'get sees the updated record')
   assert.equals(reduce.get(state, 'a'), nil, 'deleted id not live')
 
-  reduce.apply(state, as_checkpoint(state))
+  apply(state, as_checkpoint(state))
   check_index(state, 'checkpoint')
   reduce.apply(state, { op = 'update', id = 'e', set = { body = 'E' } })
   check_index(state, 'update after checkpoint')
@@ -462,7 +469,7 @@ assert.run_test('a checkpoint keeps the rebases; one without them keeps the stat
   assert.equals(why[1], false, 'applied')
   assert.equals(table.concat(again.rebases, ','), '/old', 'rebases restored')
   assert.truthy(again.rebases ~= state.rebases, 'copied')
-  -- A v2 rotation checkpoint has no rebases: they are left as they are
+  -- A checkpoint without rebases: they are left as they are
   local kept, kwhy = replay({
     { op = 'rebase', from_root = '/old' },
     { op = 'checkpoint', state = { comments = { rec('b') }, trash = {}, removed = {} } },

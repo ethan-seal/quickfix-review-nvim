@@ -73,10 +73,10 @@ function M.load(path, j)
   local st = uv.fs_stat(segment.path(j.events, doc.seg))
   if not st or doc.offset > st.size then return nil, 'past the end of the journal' end
   if not log.at_line_start(segment.path(j.events, doc.seg), doc.offset) then return nil, 'mid-line' end
-  -- The reducer's own checks of a state (the checkpoint event's handler):
-  -- the records are copied, and the index rebuilt
+  -- The reducer's own checks of a state: the records are copied, and the
+  -- index rebuilt
   local state = reduce.new()
-  local _, ignored = reduce.apply(state, { op = 'checkpoint', state = doc.state })
+  local ignored = reduce.load_state(state, doc.state)
   if ignored or not is_list(doc.state.comments) or not is_list(doc.state.removed) then return nil, 'bad state' end
   local imports = {}
   for _, sha in ipairs(is_list(doc.imports) and doc.imports or {}) do

@@ -55,7 +55,7 @@ scripts/test.sh test/test_signs.lua
 scripts/test.sh test/test_persistence.lua
 
 # Several files, in the given order
-scripts/test.sh test/test_migrate.lua test/test_utils.lua
+scripts/test.sh test/test_persistence.lua test/test_utils.lua
 ```
 
 ### Interactive Debugging

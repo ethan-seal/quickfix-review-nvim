@@ -66,7 +66,7 @@ function M.sync_data(opts)
   if changed or stale then
     -- comments.json is looked at again only once the journal changed: a
     -- sync with nothing new costs no stat for it
-    if journal.mode() == 'v3' or journal.mode() == 'v2' then migrate.check_reappeared(loc) end
+    if journal.mode() == 'v3' then migrate.check_reappeared(loc) end
   end
   journal.clear_refusal()
   if changed then
@@ -131,9 +131,6 @@ function M.mutate_at(loc, build, opts)
     if not ok then sync_err = serr end
     return ok
   end
-  -- A review not known to be v3 yet also takes the v2 lock (a v2 review
-  -- that could not be migrated is written under it, excluding v2 code)
-  local both = journal.key() ~= loc.events or journal.mode() ~= 'v3'
   -- An error inside the lock still renders what was synced before it (its
   -- sync already advanced, so no later one would), then is re-raised
   local pok, got, result, err = pcall(journal.locked, loc, function()
@@ -170,7 +167,7 @@ function M.mutate_at(loc, build, opts)
         where, tostring(werr))
     end
     return nil, 'Could not write ' .. tostring(where) .. ': ' .. tostring(werr)
-  end, both)
+  end)
   if dirty then view.render(opts and opts.defer_view) end
   if not pok then error(got, 0) end
   if not got then result, err = nil, result end

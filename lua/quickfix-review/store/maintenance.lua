@@ -1,7 +1,5 @@
--- Keeping the review's storage bounded: snapshot garbage collection, and
--- listing the rotated logs of a v2 review (which its migration to v3 moves
--- into the journal, see store/migrate.lua). Checkpoint GC is in
--- store/checkpoint.lua.
+-- Keeping the review's storage bounded: snapshot garbage collection.
+-- Checkpoint GC is in store/checkpoint.lua.
 local M = {}
 
 local checkpoint = require('quickfix-review.store.checkpoint')
@@ -11,26 +9,6 @@ local log = require('quickfix-review.log')
 local segment = require('quickfix-review.store.segment')
 
 local uv = vim.uv or vim.loop
-
--- The rotated logs of the v2 review at `loc` (log.<unix ms>.jsonl, or
--- <file>.log.<ms>.jsonl), oldest first: { path, ms }... Only this review's:
--- anchored on the log's own name, as several reviews (storage_file) may
--- share a directory
-function M.list_rotated(loc)
-  local dir = vim.fn.fnamemodify(loc.log, ':h')
-  local base = vim.fn.fnamemodify(loc.log, ':t'):gsub('%.jsonl$', '')
-  local pattern = '^' .. vim.pesc(base) .. '%.(%d+)%.jsonl$'
-  local out = {}
-  local handle = uv.fs_scandir(dir)
-  while handle do
-    local name = uv.fs_scandir_next(handle)
-    if not name then break end
-    local ms = name:match(pattern)
-    if ms then table.insert(out, { path = dir .. '/' .. name, ms = tonumber(ms) }) end
-  end
-  table.sort(out, function(a, b) return a.ms < b.ms end)
-  return out
-end
 
 -- Snapshot garbage collection (docs/journal.md#snapshots). Every event is
 -- kept forever, so every snapshot an event names is kept forever: GC only
@@ -43,17 +21,13 @@ end
 --   first;
 -- - the active segment's: the newest valid checkpoint's `refs` plus the
 --   hashes in the tail after it, when that checkpoint is in the active
---   segment; else the hashes of the whole active segment;
--- - while log.jsonl is not a tombstone (a review still in v2 after a failed
---   migration, a half-built migration, or a stray v2 log beside a journal),
---   the hashes in it and its rotated logs.
+--   segment; else the hashes of the whole active segment.
 -- Hashes are every 64-hex run in the bytes (segment.refs_of), not decoded
 -- events, as the seal-time `.refs` are: a torn record stays an undecodable
 -- line forever, and an event shape this version doesn't know may still
 -- name snapshots, so neither may let its snapshots go. A file that can't be
 -- read, or whose header isn't one this version reads, stops the GC; so does
--- a log.jsonl tombstone with no journal beside it, and so does finding no
--- segments and no log.jsonl (events/ missing, or its listing failed). A
+-- finding no segments (events/ missing, or its listing failed). A
 -- checkpoint with empty `refs` past the header line is not trusted (its
 -- writer may have failed to read the segment): the whole segment is scanned.
 --
@@ -73,7 +47,7 @@ local SHA_RUN = segment.SHA_RUN
 
 -- Temp files (<name>.tmp.<pid>) a crashed writer left behind: those of
 -- storage.atomic_write in snapshots/, of segment.durable_write in events/,
--- and the segment.create and v2 tombstone temps beside events/ (checkpoints/
+-- and the segment.create temps beside events/ (checkpoints/
 -- is checkpoint.gc's). Swept with the GC
 -- (outside the lock: a dead pid has no writer), when the writer's pid is
 -- dead and the file is older than TMP_MAX_AGE; a live (or reused) pid's
@@ -102,13 +76,10 @@ local function sweep_tmp(loc)
   local function any(name) return name:match('^.+%.tmp%.(%d+)$') end
   sweep(loc.snapshots, any)
   sweep(loc.events, any)
-  local owned = {}
-  for _, p in ipairs({ loc.events, loc.log }) do
-    owned[vim.fn.fnamemodify(p, ':t')] = true
-  end
+  local events_name = vim.fn.fnamemodify(loc.events, ':t')
   sweep(vim.fn.fnamemodify(loc.events, ':h'), function(name)
     local base, pid = name:match('^(.+)%.tmp%.(%d+)$')
-    return base and owned[base] and pid or nil
+    return base == events_name and pid or nil
   end)
 end
 
@@ -159,17 +130,9 @@ function M.gc(loc, opts)
   -- The sealed segments whose .refs were read, outside the lock
   local done = {}
   local first = segment.list(loc.events)
-  if #first == 0 and not uv.fs_stat(loc.log) then return 0 end
+  if #first == 0 then return 0 end
   for i = 1, #first - 1 do
     if read_refs(loc.events, first[i], refs) then done[first[i]] = true end
-  end
-
-  -- Returns: an error message, or nil once the hashes in `path` are in refs
-  local function scan(path)
-    local data = location.read_bytes(path)
-    if not data then return 'could not read ' .. path end
-    if not log.readable_header(data) then return path .. ' has no header this version reads' end
-    for sha in data:gmatch(SHA_RUN) do refs[sha:lower()] = true end
   end
 
   -- Rebuild the missing .refs of sealed segment `n` from its bytes
@@ -222,7 +185,7 @@ function M.gc(loc, opts)
     if not due() then return 0 end
     local segs = segment.list(loc.events)
     -- A listing failure also reads as no segments: never collect then
-    if #segs == 0 and not uv.fs_stat(loc.log) then return abort('no events found in ' .. loc.events) end
+    if #segs == 0 then return abort('no events found in ' .. loc.events) end
     for i = 1, #segs - 1 do
       local n = segs[i]
       if not done[n] and not read_refs(loc.events, n, refs) then
@@ -230,24 +193,8 @@ function M.gc(loc, opts)
         if err then return abort(err) end
       end
     end
-    if #segs > 0 then
-      local err = active(segs[#segs])
-      if err then return abort(err) end
-    end
-    -- log.jsonl and its rotated logs, unless it is a tombstone
-    if uv.fs_stat(loc.log) then
-      local h = log.read_header(loc.log)
-      if h and log.is_tombstone(h) then
-        if #segs == 0 then return abort(loc.log .. ' was moved to ' .. loc.events .. ', which is missing') end
-      else
-        for _, r in ipairs(M.list_rotated(loc)) do
-          local err = scan(r.path)
-          if err then return abort(err) end
-        end
-        local err = scan(loc.log)
-        if err then return abort(err) end
-      end
-    end
+    local err = active(segs[#segs])
+    if err then return abort(err) end
 
     local count = 0
     local handle = uv.fs_scandir(loc.snapshots)

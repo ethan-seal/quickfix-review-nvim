@@ -16,9 +16,8 @@ line 5
 
 local storage_file = test_helper.storage_file
 -- Segment 1 of the review's journal (the only one: nothing here is large
--- enough to seal it), and the v2 log path (the tombstone once migrated)
+-- enough to seal it)
 local log_file = test_helper.segment_path(1)
-local v2_log = test_helper.log_path()
 
 local function reset()
   vim.fn.setqflist({}, 'f')
@@ -28,7 +27,7 @@ end
 
 -- The live comments in the log of `path` (default: the test storage file)
 local function saved(path)
-  return test_helper.saved(test_helper.log_path(path))
+  return test_helper.saved(test_helper.events_path(path))
 end
 
 -- A version 2 file holding these comments
@@ -402,8 +401,8 @@ assert.run_test('comments.json in a read-only storage dir is listed, and changes
 
     qf = restart(path) -- flushes on the way out
     assert.length(qf.comments(), 2, 'listed after a restart')
-    for _, suffix in ipairs({ '.log.jsonl', '.pre-log.bak', '.state.json' }) do
-      assert.equals(vim.fn.filereadable(path .. suffix), 0, 'no ' .. suffix .. ' written')
+    for _, suffix in ipairs({ '.events', '.pre-log.bak' }) do
+      assert.falsy(vim.uv.fs_stat(path .. suffix), 'no ' .. suffix .. ' written')
     end
 
     -- Writable again: migrated on the next read
@@ -931,50 +930,6 @@ assert.run_test('a migration that crashed before its rename is finished without 
   assert.length(qf.comments(), 2, 'still two after another restart')
 end)
 
--- A migration torn by a short write: `torn(header, import)` gives the bytes
--- that reached the log
-for _, case in ipairs({
-  { what = 'header', torn = function(header) return header:sub(1, 20) end },
-  { what = 'import', torn = function(header, import) return header .. '\n' .. import:sub(1, 30) end },
-}) do
-  assert.run_test('a migration torn in its ' .. case.what .. ' is moved aside and retried', function()
-    reset()
-    local abs = vim.fn.fnamemodify(test_file, ':p')
-    local records = {
-      { id = '00000000000000b1', filename = abs, lnum = 1, end_lnum = 1, kind = 'issue', body = 'one',
-        created_at = 1700000000 },
-      { id = '00000000000000b2', filename = abs, lnum = 3, end_lnum = 3, kind = 'note', body = 'two',
-        created_at = 1700000000 },
-    }
-    local raw = envelope(records)
-    local fh = io.open(storage_file, 'wb')
-    fh:write(raw)
-    fh:close()
-    local log = require('quickfix-review.log')
-    local bytes = case.torn(vim.json.encode(log.v2_header()),
-      vim.json.encode(log.event('import', { source_sha256 = vim.fn.sha256(raw), comments = records })))
-    fh = io.open(v2_log, 'wb')
-    fh:write(bytes)
-    fh:close()
-
-    local calls = capture_notify(function() qf = restart(nil, { no_flush = true }) end)
-    local list = qf.comments()
-    assert.length(list, 2, 'the comments of comments.json')
-    assert.equals(list[1].body, 'one', 'first comment')
-    local aside = vim.fn.glob(v2_log .. '.torn-*', true, true)
-    assert.length(aside, 1, 'the torn log kept aside')
-    assert.equals(read_bytes(aside[1]), bytes, 'with the torn bytes')
-    assert.equals(read_bytes(storage_file .. '.pre-log.bak'), raw, 'comments.json migrated')
-    assert.length(test_helper.log_ops(log_file, 'import'), 1, 'imported once')
-    assert.length(errors_mentioning(calls, ''), 0, 'no error: ' .. vim.inspect(calls))
-    assert.falsy(any_mentions(calls, 'reappeared'), 'no reappeared warning')
-
-    vim.fn.cursor(2, 1)
-    qf.add_comment('NOTE')
-    assert.length(saved(), 3, 'changes are logged')
-  end)
-end
-
 assert.run_test('an unreadable line is warned about once on the first sync, with comments.json beside the log', function()
   reset()
   vim.fn.cursor(1, 1)
@@ -1001,23 +956,24 @@ assert.run_test('an unreadable line is warned about once on the first sync, with
   os.remove(storage_file)
 end)
 
-assert.run_test('a log whose first line is torn, with events after it, is refused naming the manual fix', function()
+assert.run_test('a segment whose header is torn, with events after it, is refused and left alone', function()
   reset()
   local log = require('quickfix-review.log')
-  local bytes = vim.json.encode(log.v2_header()):sub(1, 20) .. '\n'
+  local bytes = vim.json.encode(log.segment_header(log.new_journal_id(), 1)):sub(1, 20) .. '\n'
     .. vim.json.encode(log.event('add', { comment = { id = '00000000000000db' } })) .. '\n'
-  local fh = io.open(v2_log, 'wb')
+  vim.fn.mkdir(test_helper.events_path(), 'p')
+  local fh = io.open(log_file, 'wb')
   fh:write(bytes)
   fh:close()
   local calls = capture_notify(function()
     qf = restart(nil, { no_flush = true })
     qf.comments()
   end)
-  local errs = errors_mentioning(calls, v2_log)
+  local errs = errors_mentioning(calls, log_file)
   assert.length(errs, 1, 'one error naming the log: ' .. vim.inspect(calls))
-  assert.truthy(errs[1].msg:find('move', 1, true), 'says to move it aside: ' .. errs[1].msg)
-  assert.equals(read_bytes(v2_log), bytes, 'the log is left alone')
-  os.remove(v2_log)
+  assert.truthy(errs[1].msg:find('will not be modified', 1, true), 'says it is refused: ' .. errs[1].msg)
+  assert.equals(read_bytes(log_file), bytes, 'the log is left alone')
+  os.remove(log_file)
   qf = restart()
 end)
 

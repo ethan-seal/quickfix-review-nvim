@@ -31,12 +31,6 @@
 -- - delete and clear move comments to the trash; restore makes a trashed (or
 --   unknown) comment live again with the logged content, and is ignored for a
 --   live one.
--- - checkpoint (the first event of a rotated v2 log) replaces the whole
---   state with its `state` ({ comments, trash, removed }; any `index` there
---   is ignored and rebuilt); a malformed one is ignored. Replaying a journal,
---   it applies only in segment 1 (see apply_in_segment). Its `rebases` is
---   optional (v2 rotation checkpoints have none): when absent, the state's
---   rebases are kept.
 -- - rebase adds its from_root to `rebases`; one already there is ignored
 --   silently (never 'duplicate': it is not a comment).
 local M = {}
@@ -213,10 +207,11 @@ function handlers.restore(state, ev)
   return nil
 end
 
--- The state of a v2 log up to a rotation, which the rotated-to log started
--- with: replaces the whole state. Records are kept as logged.
-function handlers.checkpoint(state, ev)
-  local s = ev.state
+-- Replace the whole of `state` with `s`, a checkpoint's state ({ comments,
+-- trash, removed, rebases? }; any `index` there is ignored and rebuilt).
+-- Records are kept as logged; when `s` has no rebases, the state's are kept.
+-- Returns: nil, or 'invalid' (and `state` unchanged) for a malformed `s`
+function M.load_state(state, s)
   if type(s) ~= 'table' or type(s.comments) ~= 'table' or type(s.trash) ~= 'table'
       or type(s.removed) ~= 'table' then
     return 'invalid'
@@ -276,23 +271,11 @@ function M.apply(state, ev)
   return state, handler(state, ev)
 end
 
--- Apply event `ev` read from journal segment `seg` (1 = the first). A
--- checkpoint event (only migrated v2 segments hold them) replaces the state
--- only in segment 1, where it is the base the events after it build on (the
--- logs before it were deleted by v2 retention). In a later segment it is
--- skipped: the segments before it hold every event it summarises.
--- Returns: as apply
-function M.apply_in_segment(state, seg, ev)
-  if type(ev) == 'table' and ev.op == 'checkpoint' and seg ~= 1 then return state, 'superseded' end
-  return M.apply(state, ev)
-end
-
 -- Set into[id] = true for every comment id raw event `ev` mentions: added,
--- imported, restored, updated, deleted or cleared ones, and every id in a
--- checkpoint event's state (live, trashed or removed), read before any
+-- imported, restored, updated, deleted or cleared ones, read before any
 -- pruning. When `records` is a list, every comment record the event
--- carries whole (an add, restore or import event's, and a checkpoint's live
--- and trashed ones) is appended to it, raw and unvalidated. Tolerates
+-- carries whole (an add, restore or import event's) is appended to it, raw
+-- and unvalidated. Tolerates
 -- malformed events (they add nothing).
 -- Returns: into
 function M.event_ids(ev, into, records)
@@ -322,16 +305,6 @@ function M.event_ids(ev, into, records)
     note_records(ev.comments, op == 'import')
   elseif op == 'delete' or op == 'update' then
     note(ev.id)
-  elseif op == 'checkpoint' and type(ev.state) == 'table' then
-    local s = ev.state
-    note_records(s.comments, true)
-    if type(s.trash) == 'table' then
-      for id, r in pairs(s.trash) do
-        note(id)
-        keep(r)
-      end
-    end
-    note_records(s.removed)
   end
   return into
 end

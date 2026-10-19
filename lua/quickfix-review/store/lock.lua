@@ -1,7 +1,7 @@
 -- The storage lock of a review: flock(2) on its lock file (loc.flock), which
 -- the kernel releases when the holder exits, however it exits, and inside it
--- the mkdir lock (loc.lock), so a process that took only the mkdir lock (an
--- older version, or one whose flock failed) is excluded too. Where LuaJIT's
+-- the mkdir lock (loc.lock), so a process that took only the mkdir lock (one
+-- whose flock failed) is excluded too. Where LuaJIT's
 -- FFI is missing, or on Windows, the mkdir lock alone is used; so it is, with
 -- a warning, for a lock file whose flock fails with anything but contention
 -- (a filesystem that refuses flock): for the session, except for ENOLCK,
@@ -204,7 +204,7 @@ M.backend = (has_ffi and vim.fn.has('win32') == 0) and 'flock' or 'mkdir'
 
 -- Run fn with the lock of the review at `loc` (a store/location) held: the
 -- flock, and inside it the mkdir lock (loc.lock), so a process holding only
--- the mkdir lock (an older version, or one whose flock failed) and one on the
+-- the mkdir lock (one whose flock failed) and one on the
 -- flock exclude each other. A lock another process holds is waited on for up
 -- to a second each. Nested calls on the same review run under the outer
 -- lock; another review's lock is taken as usual. Where flock fails with
@@ -230,27 +230,6 @@ function M.with_lock(loc, fn)
     return with_mkdir(loc.lock, fn)
   end
   return unpack(r, 1, r.n)
-end
-
--- Run fn with both locks of the review at `loc` held: the flock, and inside
--- it the mkdir lock (loc.lock) that Neovims running the v2 code take, so a
--- v2 -> v3 migration (and every write to a review still in v2) excludes
--- them too (docs/journal.md#migration). with_lock itself now takes both, so
--- this is the explicit call for those writes, going through M.with_lock.
--- Where the mkdir lock is the backend, it is the one lock, taken once.
--- Returns: as with_lock
-function M.with_both(loc, fn)
-  if M.backend ~= 'flock' or held[loc.lock] then return M.with_lock(loc, fn) end
-  local inner
-  local ok, err = M.with_lock(loc, function()
-    if held[loc.lock] then
-      inner = vim.F.pack_len(true, fn())
-    else
-      inner = vim.F.pack_len(with_mkdir(loc.lock, fn))
-    end
-  end)
-  if not ok then return false, err end
-  return unpack(inner, 1, inner.n)
 end
 
 return M

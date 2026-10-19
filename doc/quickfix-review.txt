@@ -171,19 +171,9 @@ delete them and the review is rebuilt from the journal. |:ReviewLoad|
 ignores them.
 
                                                   *quickfix-review-v2*
-A review kept by an earlier version (`log.jsonl`, rotated
-`log.<unix ms>.jsonl`, `state.json`) is migrated when it is first opened:
-each log is hard-linked into `events/` unchanged, the result is checked
-against the old log, and `log.jsonl` is replaced by a one-line marker
-pointing at `events/`, so an older version refuses the review instead of
-showing it empty. The rotated names and `state.json` are then removed. If
-the check fails, the review stays in `log.jsonl`, you get one warning, and
-the migration is tried again next session. To go back to the earlier
-version by hand, put the last migrated log back (the segment before the
-first one whose header has `migrated_from`): >
-    ln -f events/<its number>.jsonl log.jsonl
-<
-Changes made since the upgrade are not in it.
+A review kept in `log.jsonl` (with rotated `log.<unix ms>.jsonl` and
+`state.json`) by a version before the journal is no longer read: open it
+once with a version that still migrates it (up to commit 2b05db0) first.
 
 The project root is the git toplevel of Neovim's global working directory,
 or that directory itself outside git, with symlinks resolved. Each git
@@ -321,8 +311,7 @@ Neovim is started.
 project, as before: no storage directory, no switching on |:cd|, and no
 import from the global file. Its journal and checkpoints sit next to the
 path given: `<storage_file>.events/` and `<storage_file>.checkpoints/` (and
-a `<storage_file>.journal.lock` lock file; a v2 `<storage_file>.log.jsonl`
-is migrated, see |quickfix-review-v2|). An existing file at that
+a `<storage_file>.journal.lock` lock file). An existing file at that
 path is migrated to the journal and renamed to `<storage_file>.pre-log.bak`,
 except the global file `stdpath('data')/quickfix-review.json` itself: it is
 left in place, so per-project reviews can still import from it once
@@ -575,9 +564,9 @@ press `dd` to delete the comment under cursor.
                         segments and snapshots are copied, never
                         hard-linked, checkpoints are rebuilt, and {dir} is
                         only read. Refused when the current project already
-                        has a review (any segment, `log.jsonl` or
+                        has a review (any segment or
                         `comments.json` in its directory, so also one that
-                        was cleared), when {dir} holds no v3 journal (open
+                        was cleared), when {dir} holds no journal (open
                         an older review in its own project first, to
                         migrate it), and with |quickfix-review-storage_file|
                         or `storage_dir` set.

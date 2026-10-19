@@ -35,7 +35,7 @@ local function fresh()
 end
 
 local function log_size()
-  return #test_helper.log_records(test_helper.log_path())
+  return #test_helper.log_records(test_helper.events_path())
 end
 
 -- The review signs on 1-based `line` of `buf`
@@ -772,7 +772,7 @@ local function restart()
 end
 
 local function updates()
-  return test_helper.log_ops(test_helper.log_path(), 'update')
+  return test_helper.log_ops(test_helper.events_path(), 'update')
 end
 
 -- Save the test file's buffer

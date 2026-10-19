@@ -27,12 +27,12 @@ end
 
 -- The live records in the event log of the review at `path`
 local function logged(path)
-  return test_helper.saved(test_helper.log_path(path))
+  return test_helper.saved(test_helper.events_path(path))
 end
 
 -- The import events in the log of the review at `path`
 local function imports(path)
-  return test_helper.log_ops(test_helper.log_path(path), 'import')
+  return test_helper.log_ops(test_helper.events_path(path), 'import')
 end
 
 -- Run fn with vim.notify replaced by a recorder; returns the recorded calls
@@ -292,8 +292,7 @@ assert.run_test('a second migration keeps the earlier .pre-log.bak', function()
 
     -- The journal is gone (e.g. deleted by hand) and a new comments.json
     -- appears: it is migrated again, beside the earlier backup
-    for _, p in ipairs({ test_helper.events_path(path), test_helper.checkpoints_path(path),
-      test_helper.log_path(path), test_helper.state_path(path), path .. '.snapshots' }) do
+    for _, p in ipairs({ test_helper.events_path(path), test_helper.checkpoints_path(path), path .. '.snapshots' }) do
       vim.fn.delete(p, 'rf')
     end
     local other = string.format('[{"filename":%q,"lnum":1,"text":"[NOTE] later"}]', abs)

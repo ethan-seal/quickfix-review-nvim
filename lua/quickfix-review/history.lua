@@ -4,28 +4,9 @@ local M = {}
 
 M.LIMIT = 50
 
--- The records of a checkpoint (the state a rotated log starts with): its
--- live comments and its trash
-local function checkpoint_records(ev)
-  local out, s = {}, type(ev.state) == 'table' and ev.state or {}
-  for _, r in ipairs(type(s.comments) == 'table' and s.comments or {}) do table.insert(out, r) end
-  for _, r in pairs(type(s.trash) == 'table' and s.trash or {}) do table.insert(out, r) end
-  return out
-end
-
--- Whether the checkpoint `ev` knows of comment `id` (live or trashed), so
--- the comment has history before it
-function M.checkpoint_knows(ev, id)
-  for _, r in ipairs(checkpoint_records(ev)) do
-    if type(r) == 'table' and r.id == id then return true end
-  end
-  return false
-end
-
 -- The comment records an event touches: its `comment`, or the `comments`
 -- of a clear or an import
 local function records_of(ev)
-  if ev.op == 'checkpoint' then return {} end
   if type(ev.comment) == 'table' then return { ev.comment } end
   if type(ev.comments) == 'table' then return ev.comments end
   return {}
@@ -126,9 +107,7 @@ end
 -- The rows for `events` (in log order): every event about comment `id`, or,
 -- without an id, the last `limit` (default M.LIMIT) events. Each row is
 -- { ts, op, id, kind, where, changes, text }, `text` being the line shown.
--- A checkpoint (see reduce.lua) is not a row (nor is a rebase, which is not
--- about a comment): a checkpoint's records are what later
--- events are shown with. `resolve` (optional) maps a logged filename to an
+-- A rebase is not a row: it is not about a comment. `resolve` (optional) maps a logged filename to an
 -- absolute path (a relative one is relative to the project root, not the
 -- cwd); without it filenames are shown as logged, relative to the cwd.
 function M.rows(events, id, limit, resolve)
@@ -138,11 +117,7 @@ function M.rows(events, id, limit, resolve)
   local known = {}
   local rows = {}
   for _, ev in ipairs(events) do
-    if type(ev) == 'table' and ev.op == 'checkpoint' then
-      for _, r in ipairs(checkpoint_records(ev)) do
-        if type(r) == 'table' and type(r.id) == 'string' then known[r.id] = r end
-      end
-    elseif type(ev) == 'table' and ev.op ~= 'header' and ev.op ~= 'rebase' then
+    if type(ev) == 'table' and ev.op ~= 'header' and ev.op ~= 'rebase' then
       for _, r in ipairs(records_of(ev)) do
         if type(r) == 'table' and type(r.id) == 'string' then known[r.id] = r end
       end

@@ -1,29 +1,20 @@
--- Getting a review into its journal (docs/journal.md) and opening it: which
--- storage the review is in (open), migrating a v2 log and its rotated logs
--- into a v3 journal (migrate_v2), starting a journal from the project's
--- comments.json (or loading it read-only when its dir is not writable) or
--- from the legacy global file, recovering a v2 log whose first write was
--- torn, and noticing a comments.json that reappears next to a journal.
+-- Getting a review into its journal (docs/journal.md) and opening it (open):
+-- starting a journal from the project's comments.json (or loading it
+-- read-only when its dir is not writable) or from the legacy global file,
+-- and noticing a comments.json that reappears next to a journal.
 local M = {}
 
 local config = require('quickfix-review.config')
 local journal = require('quickfix-review.store.journal')
 local location = require('quickfix-review.store.location')
 local log = require('quickfix-review.log')
-local maintenance = require('quickfix-review.store.maintenance')
 local notify = require('quickfix-review.notify')
 local record = require('quickfix-review.store.record')
-local reduce = require('quickfix-review.reduce')
 local segment = require('quickfix-review.store.segment')
-local checkpoint = require('quickfix-review.store.checkpoint')
 local storage = require('quickfix-review.storage')
 local utils = require('quickfix-review.utils')
 
 local uv = vim.uv or vim.loop
-
--- Test hooks: crash_after = n stops migrate_v2 right after step n (as a
--- crash would, nothing cleaned up); mismatch = true fails its verification
-M._test = { crash_after = nil, mismatch = false }
 
 -- Load the records of a comments.json (its raw bytes): upgraded, normalized,
 -- hand-copied duplicate ids split, and records that can't be shown dropped
@@ -157,30 +148,19 @@ local function warn_once(loc, msg)
 end
 
 -- The legacy global file's own review (made while storage_file pointed at
--- it): its v3 journal (<legacy>.events/), else its v2 log
--- (<legacy>.log.jsonl, unless that is a tombstone), replayed read-only.
+-- it): its journal (<legacy>.events/), replayed read-only.
 -- Returns: { state, imports, ids (every comment id its events ever
 -- mentioned, deleted and pruned ones too), records (every comment record
 -- its events carried, raw), sha (of its bytes), source (a path) }, nil
 -- when there is none, or false, an error and the path that failed
 local function legacy_review(loc, legacy_path)
   local events = legacy_path .. '.events'
-  if #segment.list(events) > 0 then
-    if utils.files_match(events, loc.events) then return nil end
-    local r, err = journal.replay(events, nil, {}, {})
-    if not r then return false, err, events end
-    local parts = {}
-    for i, n in ipairs(segment.list(events)) do parts[i] = location.read_bytes(segment.path(events, n)) or '' end
-    return { state = r.state, imports = r.imports, ids = r.ids, records = r.records, sha = vim.fn.sha256(table.concat(parts)), source = events }
-  end
-  local legacy_log = legacy_path .. '.log.jsonl'
-  local st = uv.fs_stat(legacy_log)
-  if not st or st.size == 0 or utils.files_match(legacy_log, loc.log) then return nil end
-  if log.is_tombstone(log.read_header(legacy_log)) then return nil end
-  local res, err = journal.replay_v2(legacy_log, {}, {})
-  if not res then return false, err, legacy_log end
-  local bytes = location.read_bytes(legacy_log)
-  return { state = res.state, imports = res.imports, ids = res.ids, records = res.records, sha = bytes and vim.fn.sha256(bytes) or nil, source = legacy_log }
+  if #segment.list(events) == 0 or utils.files_match(events, loc.events) then return nil end
+  local r, err = journal.replay(events, nil, {}, {})
+  if not r then return false, err, events end
+  local parts = {}
+  for i, n in ipairs(segment.list(events)) do parts[i] = location.read_bytes(segment.path(events, n)) or '' end
+  return { state = r.state, imports = r.imports, ids = r.ids, records = r.records, sha = vim.fn.sha256(table.concat(parts)), source = events }
 end
 
 -- Whether `root` is $HOME or / (symlinks resolved, trailing slashes ignored)
@@ -206,7 +186,7 @@ end
 -- versions renamed the legacy file away when storage_file pointed at it,
 -- leaving only that copy.
 -- Comments made while storage_file pointed at the legacy file live in its
--- own review (<legacy>.events/, or the v2 <legacy>.log.jsonl); that
+-- own review (<legacy>.events/); that
 -- review's state is imported too. It already holds an import of the legacy
 -- file, so while the file is unchanged since (its sha256 is among the
 -- review's imports) the review alone is the source; otherwise the file's
@@ -357,7 +337,7 @@ local function load_readonly(loc, src)
   return true, nil, true
 end
 
--- There is no journal (nor a v2 log): migrate comments.json into a new one
+-- There is no journal: migrate comments.json into a new one
 -- (or load it read-only if its dir is not writable), or import from the
 -- legacy global file, or leave it to the first change to start
 -- Returns: ok (boolean), err (string or nil), changed (boolean: what is
@@ -376,316 +356,24 @@ function M.init_storage(loc)
   end
   return ok, err, was_readonly
 end
-
--- Defined below, with the migration
-local half_built, remove_half_built
-
--- The first line of the v2 log is incomplete (no \n at all), or the log is
--- only a header: the header and import of a migration or legacy import (or
--- the header and first event of a change) were torn by a short write, so
--- nothing but a partial header or event is lost. v2 wrote the header with
--- an event in one append, and rotation linked or renamed a complete log
--- into place, so a header-only v2 log is never a finished one.
-local function is_torn(loc)
-  local fd = uv.fs_open(loc.log, 'r', 0)
-  if not fd then return false end
-  local head = uv.fs_read(fd, 4096, 0)
-  uv.fs_close(fd)
-  if not head then return false end
-  if not head:find('\n', 1, true) then return #head > 0 end
-  local res = log.read(loc.log, 0, 0, {})
-  return res ~= nil and #res.events == 0 and not log.is_tombstone(res.header)
-end
-
--- A torn v2 log (see is_torn) is moved aside, to log.jsonl.torn-<unix
--- time> (never migrated), and the review started again (init_storage)
--- Returns: ok (boolean), err (string or nil), moved (boolean)
-local function recover_torn(loc)
-  local got, moved = journal.locked(loc, function()
-    if not is_torn(loc) then return nil end
-    if has_journal(loc) and half_built(loc) then remove_half_built(loc) end
-    local aside, n = loc.log .. '.torn-' .. os.time(), 1
-    while uv.fs_stat(aside) do
-      aside, n = loc.log .. '.torn-' .. os.time() .. '-' .. n, n + 1
-    end
-    local renamed, rerr = uv.fs_rename(loc.log, aside)
-    if not renamed then
-      vim.notify(string.format('quickfix-review: %s is incomplete, but could not be moved aside: %s',
-        loc.log, tostring(rerr)), vim.log.levels.WARN)
-      return nil
-    end
-    vim.notify(string.format('quickfix-review: %s was incomplete (an interrupted write); moved it to %s',
-      loc.log, aside), vim.log.levels.WARN)
-    return aside
-  end, true)
-  return true, nil, got and moved ~= nil
-end
-
--- Whether `events/` is a migration that never finished: v2 logs linked in
--- (1..N), and at most segment N+1 with a header naming migrated_from and
--- nothing after it. A journal holding anything else (a native one, a v3
--- event, a segment of a newer version) is never taken for one.
-half_built = function(loc)
-  local segs = segment.list(loc.events)
-  for i, n in ipairs(segs) do
-    local path = segment.path(loc.events, n)
-    local h = log.read_header(path)
-    if h and log.too_new(h) then return false end
-    if h and h.v == 3 then
-      if type(h.migrated_from) ~= 'table' or i ~= #segs then return false end
-      local res = log.read(path, 0, 0, {})
-      return res ~= nil and #res.events == 0
-    end
-  end
-  return true
-end
-
--- Remove a half-built migration: `events/` and `checkpoints/`. Only while
--- log.jsonl is a v2 log (so the journal is not the review yet), under both
--- locks. The v2 files were only linked into `events/`, so nothing is lost.
-remove_half_built = function(loc)
-  for _, n in ipairs(segment.list(loc.events)) do
-    os.remove(segment.path(loc.events, n))
-    os.remove(segment.refs_path(loc.events, n))
-  end
-  vim.fn.delete(loc.events, 'rf')
-  vim.fn.delete(loc.checkpoints, 'rf')
-end
-
--- The v2 files of the review, oldest first: its rotated logs by their ms,
--- then log.jsonl; a name hard-linked to the same inode as a later one (a v2
--- rotation that crashed after its link) only once, at its latest position.
--- `.torn-*` logs are never included: they hold no finished event.
--- Returns: { { path, ino }... }
-local function v2_files(loc)
-  local out, at = {}, {}
-  local all = maintenance.list_rotated(loc)
-  table.insert(all, { path = loc.log })
-  for _, f in ipairs(all) do
-    local st = uv.fs_stat(f.path)
-    if st then
-      if at[st.ino] then table.remove(out, at[st.ino]) end
-      table.insert(out, { path = f.path, ino = st.ino })
-      at = {}
-      for i, g in ipairs(out) do at[g.ino] = i end
-    end
-  end
-  return out
-end
-
--- Delete what a finished migration leaves behind (step 7): the rotated
--- names (their inodes live on in `events/`), state.json, and .rotating-*
--- strays. Idempotent. Run only beside a migrated tombstone, never a born-v3
--- one: there the rotated names were never imported (M.open)
-local function cleanup(loc)
-  for _, r in ipairs(maintenance.list_rotated(loc)) do os.remove(r.path) end
-  os.remove(loc.state)
-  local dir = vim.fn.fnamemodify(loc.log, ':h')
-  local pattern = '^' .. vim.pesc(vim.fn.fnamemodify(loc.log, ':t')) .. '%.rotating%-%d+'
-  local handle = uv.fs_scandir(dir)
-  while handle do
-    local name = uv.fs_scandir_next(handle)
-    if not name then break end
-    if name:match(pattern) then os.remove(dir .. '/' .. name) end
-  end
-end
-
--- Reviews whose v2 migration was tried (and did not finish) this session:
--- it is retried at the next session, the review read as v2 meanwhile
-local v2_tried = {}
--- Reviews whose step-7 cleanup ran this session
-local cleaned = {}
--- Per `loc.events`: the missing tombstone of a born-v3 review has been
--- written (or tried) this session
-local tombstoned = {}
-
--- A journal born before log.jsonl was written with it has none: write it
--- (once a session, under both locks, so a pre-v3 Neovim holding the v2 lock
--- cannot append to log.jsonl around it), so a pre-v3 Neovim refuses the
--- review. Any failure (a read-only dir) is ignored: the review loads as before
-local function backfill_tombstone(loc)
-  if tombstoned[loc.events] then return end
-  tombstoned[loc.events] = true
-  local first = segment.path(loc.events, 1)
-  local st = uv.fs_stat(first)
-  if not st then return end
-  local h = log.read_header(first)
-  local jid = h and type(h.journal_id) == 'string' and h.journal_id ~= '' and h.journal_id or log.new_journal_id()
-  pcall(journal.locked, loc, function()
-    if not uv.fs_stat(loc.log) then journal.write_tombstone(loc, jid, bit.band(st.mode, 511)) end
-  end, true)
-end
-
--- Migrate the v2 review at `loc` (log.jsonl and its rotated logs) into a v3
--- journal, under both locks (docs/journal.md#migration):
--- 1. list the v2 files, oldest first (v2_files)
--- 2. hard-link each into `events/` as segment 1..N (bytes unchanged)
--- 3. create segment N+1, a v3 header with a new journal_id and
---    migrated_from = { segments = N }
--- 4. verify: the journal replayed equals log.jsonl replayed; if not, remove
---    `events/` and `checkpoints/` and stay on v2 (warned once)
--- 5. write the .refs of segments 1..N and the first checkpoint
--- 6. rename the tombstone over log.jsonl: from here the journal is the
---    review, and v2 code refuses the log
--- 7. cleanup
--- A crash before 6 leaves v2 authoritative: the next load removes the
--- half-built journal and migrates again. After 6, only cleanup is left.
--- Returns: 'migrated', 'v2' (not migrated: read log.jsonl as v2), or nil
--- and an error
-local function migrate_v2(loc)
-  local got, res, err = journal.locked(loc, function()
-    local h = log.read_header(loc.log)
-    if log.is_tombstone(h) then return 'migrated' end -- another Neovim did it
-    if not h then return 'v2' end
-    if has_journal(loc) then
-      if not half_built(loc) then return 'migrated' end -- a journal appeared: open it
-      remove_half_built(loc)
-    end
-    local hooks = M._test
-    local function abort(msg)
-      remove_half_built(loc)
-      notify.once('v2-migration:' .. loc.events, string.format('could not migrate %s to a v3 journal (%s); it'
-        .. ' is still read and written as it was, and the migration is tried again next session',
-        loc.log, msg), vim.log.levels.WARN)
-      return 'v2'
-    end
-
-    -- 1.
-    local files = v2_files(loc)
-    for _, f in ipairs(files) do
-      local fh = log.read_header(f.path)
-      if not fh or log.too_new(fh) or log.is_tombstone(fh) then return abort(f.path .. ' has no v2 header') end
-    end
-    local st = uv.fs_stat(loc.log)
-    local mode = bit.band(st.mode, 511)
-    -- 2.
-    local ok = pcall(vim.fn.mkdir, loc.events, 'p')
-    if not ok or vim.fn.isdirectory(loc.events) == 0 then return abort('could not create ' .. loc.events) end
-    for i, f in ipairs(files) do
-      local linked, lerr = uv.fs_link(f.path, segment.path(loc.events, i))
-      if not linked then return abort('could not link ' .. f.path .. ': ' .. tostring(lerr)) end
-    end
-    segment.fsync_dir(loc.events)
-    if hooks.crash_after == 2 then return nil, 'crashed (test)' end
-    -- 3.
-    local n = #files
-    local jid = log.new_journal_id()
-    local created, cerr = segment.create(loc.events, n + 1,
-      { log.segment_header(jid, n + 1, { migrated_from = { segments = n } }) }, mode)
-    if created ~= 'created' then return abort(tostring(cerr or 'segment ' .. (n + 1) .. ' exists')) end
-    if hooks.crash_after == 3 then return nil, 'crashed (test)' end
-    -- 4.
-    local v2, verr = journal.replay_v2(loc.log)
-    if not v2 then return abort(verr) end
-    local v3, rerr = journal.replay(loc.events, nil)
-    if not v3 then return abort(rerr) end
-    if hooks.mismatch or not vim.deep_equal(reduce.persisted(v2.state), reduce.persisted(v3.state)) then
-      return abort('the migrated journal does not replay to the same comments')
-    end
-    if hooks.crash_after == 4 then return nil, 'crashed (test)' end
-    -- 5.
-    for i = 1, n do segment.write_refs(loc.events, i, mode) end
-    local v3_data = location.read_bytes(v3.path)
-    local encoded = checkpoint.encode(jid, v3.seg, v3.offset, v3.lines, v3.state, v3.imports,
-      v3_data and segment.refs_of(v3_data, v3.offset) or nil)
-    if encoded then
-      checkpoint.write(loc.checkpoints, { events = loc.events, journal_id = jid }, v3.seg, v3.offset, encoded,
-        mode, math.max(1, tonumber(config.options.checkpoint_keep) or 2))
-    end
-    if hooks.crash_after == 5 then return nil, 'crashed (test)' end
-    -- 6.
-    local tomb = vim.json.encode(log.tombstone(h.log_id))
-    local wrote, werr = segment.durable_write(loc.log, tomb .. '\n', mode)
-    if not wrote then return abort('could not write the tombstone: ' .. tostring(werr)) end
-    if hooks.crash_after == 6 then return nil, 'crashed (test)' end
-    -- 7.
-    cleanup(loc)
-    cleaned[loc.events] = true
-    return 'migrated'
-  end, true)
-  if not got then return nil, res end
-  return res, err
-end
-
--- Open the review at `loc`: work out which storage it is in, migrating or
--- starting it first where that is due, and load it into the journal
--- (opts.full: replay every event, ignoring checkpoints):
--- - log.jsonl is the tombstone: the v3 journal (cleaned up once a session);
---   with no journal beside it, refused
--- - a v2 log.jsonl: migrated (a torn one moved aside first); one that could
---   not be migrated is read as v2. Beside a native v3 journal (not a
---   migration's), it is ignored with a warning
--- - a journal: loaded; any state.json beside it is deleted
--- - neither: init_storage (comments.json, the legacy import, or nothing)
+-- Open the review at `loc`: load its journal (opts.full: replay every
+-- event, ignoring checkpoints), or, with none yet, init_storage
+-- (comments.json, the legacy import, or nothing) and then load it
 -- Returns: ok, err, changed (what is shown was replaced)
 function M.open(loc, opts)
   local was = journal.mode()
-  local h = log.read_header(loc.log)
-  local lst = uv.fs_stat(loc.log)
-  local segs = segment.list(loc.events)
-
-  -- `migrated`: log.jsonl is a migration's tombstone, so the step-7 cleanup
-  -- is due (idempotent: once a session); otherwise (a born-v3 review, with
-  -- or without its tombstone) only a stray state.json goes: rotated logs and
-  -- .rotating-* strays beside it were never imported, so they are kept
-  local function load_v3(migrated)
+  local function load()
     local ok, err = journal.load(loc, opts)
     if not ok then return false, err, was ~= nil end
-    if migrated and not cleaned[loc.events] then
-      cleaned[loc.events] = true
-      journal.locked(loc, function() cleanup(loc) end)
-    elseif uv.fs_stat(loc.state) then
-      journal.locked(loc, function() os.remove(loc.state) end)
-    end
     return true, nil, true
   end
 
-  if log.is_tombstone(h) then
-    if #segs == 0 then
-      return false, string.format('%s says the review was moved to %s, which is missing', loc.log, loc.events), false
-    end
-    -- A born-v3 tombstone's log_id is segment 1's journal_id; a migrated
-    -- one's is the v2 log's id (segment 1 is that v2 log, with no journal_id)
-    local first = log.read_header(segment.path(loc.events, 1))
-    local born = type(h.log_id) == 'string' and h.log_id ~= '' and first ~= nil and first.journal_id == h.log_id
-    return load_v3(not born)
-  end
+  if has_journal(loc) then return load() end
 
-  if lst and lst.size > 0 then
-    if #segs > 0 and not half_built(loc) then
-      notify.once('stray-v2:' .. loc.log, string.format('%s is a v2 log beside the v3 journal %s; it is not read'
-        .. ' (the journal is the review) and is left alone', loc.log, loc.events), vim.log.levels.WARN)
-      return load_v3(false)
-    end
-    if is_torn(loc) then
-      local _, _, moved = recover_torn(loc)
-      if moved then return M.open(loc, opts) end
-    end
-    if not v2_tried[loc.events] then
-      local res, err = migrate_v2(loc)
-      if res == 'migrated' then return M.open(loc, opts) end
-      v2_tried[loc.events] = true
-      if not res then
-        vim.notify('quickfix-review: migrating ' .. loc.log .. ' stopped: ' .. tostring(err), vim.log.levels.WARN)
-      end
-    end
-    local ok, err = journal.load_v2(loc)
-    if not ok then return false, err, was ~= nil end
-    return true, nil, true
-  end
-
-  if #segs > 0 then
-    if not lst then backfill_tombstone(loc) end
-    return load_v3(false)
-  end
-
-  -- Neither: nothing is shown until something starts the journal
+  -- None yet: nothing is shown until something starts the journal
   local ok, err, replaced = M.init_storage(loc)
   if not ok then return false, err, replaced or (was ~= nil and was ~= 'readonly') end
-  if has_journal(loc) then
-    local lok, lerr = load_v3(false)
-    return lok, lerr, true
-  end
+  if has_journal(loc) then return load() end
   if journal.mode() ~= 'readonly' and was ~= nil then
     journal.switch(loc)
     return true, nil, true

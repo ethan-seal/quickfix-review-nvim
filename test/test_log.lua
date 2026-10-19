@@ -7,7 +7,7 @@ print('\nRunning event log tests...')
 test_helper.setup_test_environment()
 local log = require('quickfix-review.log')
 
-local HEADER = '{"op":"header","log_id":"00000000000000aa","v":1}\n'
+local HEADER = '{"op":"header","v":3,"journal_id":"00000000000000aa","seg":1}\n'
 
 local function line(id)
   return vim.json.encode({ op = 'add', eid = 'e-' .. id, ts = 1,
@@ -43,7 +43,7 @@ assert.run_test('a torn line in the middle is skipped with a warning naming its 
   local result
   local calls = capture_notify(function() result = log.read(path) end)
   assert.truthy(result, 'read succeeds')
-  assert.equals(result.log_id, '00000000000000aa', 'header read')
+  assert.equals(result.header.journal_id, '00000000000000aa', 'header read')
   assert.length(result.events, 2, 'both good events read')
   assert.equals(result.events[2].comment.id, 'b', 'the event after the torn line read')
   assert.length(calls, 1, 'one warning')
@@ -99,9 +99,8 @@ assert.run_test('events get distinct eids; append writes several in one go', fun
   assert.truthy(log.append(path, { header, a, b }, 384), 'appended')
   assert.equals(vim.fn.getfperm(path), 'rw-------', 'created with the mode given')
   local result = log.read(path)
-  assert.equals(result.log_id, header.journal_id, 'header first')
+  assert.equals(result.header.journal_id, header.journal_id, 'header first')
   assert.length(result.events, 2, 'both events')
-  assert.equals(log.read_id(path), header.journal_id, 'read_id')
   os.remove(path)
 end)
 
@@ -112,7 +111,6 @@ assert.run_test('a file without a header is not a log; reading past its end fail
   assert.equals(result, nil, 'refused')
   assert.truthy(err:find('not a quickfix-review log', 1, true), 'says why: ' .. tostring(err))
   assert.truthy(err:find(path .. '.bad', 1, true), 'names the manual fix: ' .. err)
-  assert.equals(log.read_id(path), nil, 'no log_id')
   write_bytes(path, HEADER)
   result, err = log.read(path, 1000)
   assert.equals(result, nil, 'shorter than the offset')

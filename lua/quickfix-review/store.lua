@@ -14,7 +14,7 @@
 -- record (a comment record), location (where the review is stored),
 -- journal (the journal read into memory, sealed and checkpointed),
 -- segment and checkpoint (its files), lock, migrate (getting a review into
--- a journal, from comments.json or a v2 log), maintenance (snapshot GC),
+-- a journal, from comments.json), maintenance (snapshot GC),
 -- view (the comments as shown, and the quickfix list) and sync (the order
 -- those run in for a sync or a change).
 local M = {}
@@ -69,12 +69,6 @@ end
 -- migrated into the journal (and renamed to comments.json.pre-log.bak) on first use
 function M.path()
   return location.resolve().path
-end
-
--- The review's v2 log.jsonl: once migrated, the tombstone pointing at
--- events/ (docs/journal.md#migration)
-function M.log_path()
-  return location.resolve().log
 end
 
 -- The review's journal: its directory of event segments, the source of truth
@@ -430,10 +424,6 @@ function M.save()
     return false, string.format('%s is not writable: %s is shown read-only', loc.dir, loc.path)
   end
   if mode == nil then return true, 'Review saved (no comments yet)' end
-  if mode == 'v2' then
-    return true, string.format('Review saved to %s (%d comments; not migrated, so no checkpoint)', loc.log,
-      #view.comments())
-  end
   local wrote, werr = journal.flush(true)
   if not wrote then
     return false, 'Could not write a checkpoint in ' .. loc.checkpoints .. ': ' .. tostring(werr)

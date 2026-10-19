@@ -56,7 +56,7 @@ end
 
 -- A loc-shaped table for the lock of a review stored at `base`
 local function loc_at(base)
-  return { flock = base .. '.journal.lock', lock = base .. '.lock', log = base .. '.log.jsonl' }
+  return { flock = base .. '.journal.lock', lock = base .. '.lock' }
 end
 
 -- The location of a review kept in the explicit storage file `file`
@@ -214,8 +214,7 @@ run_test('under the flock, a mkdir lock with a live pid, or a fresh one with non
   local loc = loc_at(vim.fn.tempname())
   local live = sleeper().pid
   for _, case in ipairs({
-    { 'live pid (with_lock)', live, lock.with_lock },
-    { 'live pid (with_both)', live, lock.with_both },
+    { 'live pid', live, lock.with_lock },
     { 'no pid', nil, lock.with_lock },
   }) do
     seed_old_lock(loc.lock, case[2])
@@ -335,27 +334,6 @@ local errno_ok, errno_err = pcall(function()
     assert.truthy(inner, 'the nested call ran')
     assert.equals(pid_after, uv.os_getpid(), 'the outer lock is still this process\'s')
     assert.length(vim.fn.glob(loc.lock .. '.stale-*', true, true), 0, 'not broken aside')
-    assert.equals(vim.fn.isdirectory(loc.lock), 0, 'released')
-    remove_lock_files(loc)
-  end)
-
-  run_test('with_both after a flock refusal runs fn once under the mkdir lock', function()
-    local loc = loc_at(vim.fn.tempname())
-    reset(38) -- ENOSYS
-    local runs = 0
-    local ok, a
-    local start = uv.hrtime()
-    capture_notify(function()
-      ok, a = flk.with_both(loc, function()
-        runs = runs + 1
-        return vim.fn.isdirectory(loc.lock)
-      end)
-    end)
-    local waited = (uv.hrtime() - start) / 1e6
-    assert.truthy(ok, 'taken')
-    assert.equals(a, 1, 'under the mkdir lock')
-    assert.equals(runs, 1, 'fn ran once')
-    assert.truthy(waited < 100, 'no wait, got ' .. waited .. 'ms')
     assert.equals(vim.fn.isdirectory(loc.lock), 0, 'released')
     remove_lock_files(loc)
   end)

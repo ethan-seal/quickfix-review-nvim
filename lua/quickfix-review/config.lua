@@ -293,8 +293,8 @@ local function derive(user_opts)
     for type_name, _ in pairs(base_types) do M.options.keymaps['add_' .. type_name] = false end
   end
 
-  -- Journal options (docs/journal.md). log_max_bytes (v2's rotation size)
-  -- is the deprecated name of segment_max_bytes; log_retention_days is gone
+  -- Journal options (docs/journal.md). log_max_bytes is the
+  -- deprecated name of segment_max_bytes; log_retention_days is gone
   -- (segments are never deleted), and ignored.
   if user_opts.log_max_bytes ~= nil then
     notify.once('deprecated-log_max_bytes',

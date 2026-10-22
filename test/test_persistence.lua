@@ -506,6 +506,32 @@ assert.run_test('a change written to the log whose fsync failed is reported as m
   if not ok then error(err, 0) end
 end)
 
+-- Every window showing a comment editor float (edit.lua's open_editor)
+local function editor_wins()
+  local wins = {}
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    local name = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win))
+    if name:match('^quickfix%-review://edit/') then table.insert(wins, win) end
+  end
+  return wins
+end
+
+local function close_editors()
+  for _, win in ipairs(editor_wins()) do pcall(vim.api.nvim_win_close, win, true) end
+end
+
+-- Edit the comment under the cursor in its editor float: these lines, saved
+-- with <CR>. Returns the float's window and buffer (still open if the save
+-- failed).
+local function edit_in_float(lines)
+  require('quickfix-review').edit_comment()
+  local win, buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
+  assert.truthy(vim.api.nvim_buf_get_name(buf):match('^quickfix%-review://edit/'), 'editor float opened')
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_feedkeys(vim.keycode('<CR>'), 'x', false)
+  return win, buf
+end
+
 assert.run_test('a failed log append is reported as a failure by every change', function()
   reset()
   vim.fn.cursor(2, 1)
@@ -528,10 +554,11 @@ assert.run_test('a failed log append is reported as a failure by every change', 
       removed = store.remove(c.id)
       printed = capture_print(function()
         vim.fn.cursor(2, 1)
-        local original_input = vim.ui.input
-        vim.ui.input = function(_, on_confirm) on_confirm('edited body') end
-        local eok, eerr = pcall(qf.edit_comment)
-        vim.ui.input = original_input
+        local eok, eerr = pcall(function()
+          local win = edit_in_float({ 'edited body' })
+          assert.truthy(vim.api.nvim_win_is_valid(win), 'editor float stays open after the failed save')
+        end)
+        close_editors()
         if not eok then error(eerr, 0) end
         vim.fn.cursor(4, 1)
         qf.add_comment('NOTE')
@@ -594,28 +621,32 @@ assert.run_test('a failed edit keeps the typed body in the unnamed register and 
   assert.length(qf.comments(), 1, 'seeded')
 
   local log = require('quickfix-review.log')
-  local original_append, original_input = log.append, vim.ui.input
+  local original_append = log.append
   log.append = function() return false, 'short write (0 of 10 bytes)' end
-  vim.ui.input = function(_, on_confirm) on_confirm('edited body') end
   vim.fn.setreg('"', '')
 
   local ok, err = pcall(function()
+    local win, buf
     local calls = capture_notify(function()
       vim.fn.cursor(2, 1)
-      qf.edit_comment()
+      win, buf = edit_in_float({ 'edited body' })
     end)
     assert.equals(vim.fn.getreg('"'), 'edited body', 'body in the unnamed register')
     assert.equals(vim.fn.histget('input', -1), 'edited body', 'body in the input history')
     assert.truthy(#warnings_mentioning(calls, 'the comment was not edited', 'short write') >= 1,
       'the warning names the reason: ' .. vim.inspect(calls))
+    assert.truthy(vim.api.nvim_win_is_valid(win), 'editor float stays open')
+    assert.equals(table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), '\n'), 'edited body', 'with the text typed')
+    close_editors()
     assert.equals(qf.comments()[1].body, 'Test comment', 'body unchanged')
   end)
+  close_editors()
 
-  log.append, vim.ui.input = original_append, original_input
+  log.append = original_append
   if not ok then error(err, 0) end
 end)
 
-assert.run_test('a failed edit of a multi-line body keeps it unescaped, and as typed in the history', function()
+assert.run_test('a failed save of a multi-line edit keeps real line breaks in the register and the float', function()
   reset()
   vim.fn.cursor(2, 1)
   qf.add_comment('ISSUE')
@@ -623,23 +654,25 @@ assert.run_test('a failed edit of a multi-line body keeps it unescaped, and as t
   local id = qf.comments()[1].id
   assert.equals(store.edit(id, 'line one\nline two'), 'edited', 'made multi-line')
 
-  local original_edit, original_input = store.edit, vim.ui.input
+  local original_edit = store.edit
   store.edit = function() return nil, 'Timed out waiting for the lock /y' end
-  vim.ui.input = function(_, on_confirm) on_confirm('first\\nsecond') end
   vim.fn.setreg('"', '')
 
   local ok, err = pcall(function()
+    local win, buf
     local calls = capture_notify(function()
       vim.fn.cursor(2, 1)
-      qf.edit_comment()
+      win, buf = edit_in_float({ 'first', 'second' })
     end)
-    assert.equals(vim.fn.getreg('"'), 'first\nsecond', 'the unescaped body in the unnamed register')
-    assert.equals(vim.fn.histget('input', -1), 'first\\nsecond', 'the answer as typed in the input history')
+    assert.equals(vim.fn.getreg('"'), 'first\nsecond', 'the body with its line breaks in the unnamed register')
     assert.truthy(#warnings_mentioning(calls, 'the comment was not edited', 'Timed out waiting for the lock /y') >= 1,
       'the warning names the reason: ' .. vim.inspect(calls))
+    assert.truthy(vim.api.nvim_win_is_valid(win), 'editor float stays open')
+    assert.equals(table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), '\n'), 'first\nsecond', 'with its lines')
   end)
+  close_editors()
 
-  store.edit, vim.ui.input = original_edit, original_input
+  store.edit = original_edit
   if not ok then error(err, 0) end
 end)
 

@@ -315,21 +315,39 @@ function M.set_context(key, id, ctx)
   end)
 end
 
--- Change a comment's text: one update event setting its body, with the
--- previous body (as shown, so a legacy record's `text`) in `prev`. Nothing is
--- logged when the comment is gone or the body is unchanged.
+-- Change a comment's text and/or type: one update event setting whichever
+-- of `body` and `kind` (a type key, any case; optional) differ from the
+-- comment, with their previous values (as shown, so a legacy record's
+-- `text`) in `prev`. Nothing is logged when the comment is gone or neither
+-- changes. A kind that is not a configured type is refused, unless it is the
+-- comment's own (so the text of a comment whose type was dropped from the
+-- config can still be edited).
 -- Returns: 'edited', 'unchanged', 'missing' (no live comment with this id),
--- or nil if the body isn't a non-empty string or the change was refused, and
+-- or nil if the body isn't a non-empty string, the kind isn't a string or is
+-- a new unconfigured type (then saying so), or the change was refused, and
 -- then the reason (a string, when one is known)
-function M.edit(id, body)
+function M.edit(id, body, kind)
   if type(body) ~= 'string' or body == '' then return nil end
+  if kind ~= nil and type(kind) ~= 'string' then return nil end
+  kind = kind and kind:lower()
+  local unknown_kind = false
   local res, _, err = mutate(function()
     local r = journal.get(id)
     local c = r and view.view_of(r, location.resolve().root, journal.rebases())
     if not c then return {}, 'missing' end
-    if c.body == body then return {}, 'unchanged' end
-    return { log.event('update', { id = id, set = { body = body }, prev = { body = c.body } }) }, 'edited'
+    local set, prev = {}, {}
+    if c.body ~= body then set.body, prev.body = body, c.body end
+    if kind and kind ~= c.kind then
+      if not utils.get_comment_type_config(kind) then
+        unknown_kind = true
+        return {}, nil
+      end
+      set.kind, prev.kind = kind, c.kind
+    end
+    if next(set) == nil then return {}, 'unchanged' end
+    return { log.event('update', { id = id, set = set, prev = prev }) }, 'edited'
   end)
+  if unknown_kind then return nil, 'unknown comment type: ' .. kind end
   if res == nil then return nil, err end
   return res
 end

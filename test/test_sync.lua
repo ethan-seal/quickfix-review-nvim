@@ -141,16 +141,21 @@ assert.run_test(':ReviewEdit on a comment another Neovim deleted says so and log
   vim.fn.cursor(2, 1)
   qf.add_comment('NOTE')
   local id = qf.comments()[1].id
-  local original = vim.ui.input
-  -- Deleted elsewhere while the prompt is open
-  vim.ui.input = function(_, on_confirm)
+  qf.edit_comment()
+  local win, buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
+  local is_editor = vim.api.nvim_buf_get_name(buf) == 'quickfix-review://edit/' .. id
+  -- Deleted elsewhere while the editor float is open
+  local ok, printed, notified = pcall(capture, function()
+    assert.truthy(is_editor, 'editor float opened')
     other(string.format('assert(store.remove(%q) == 1)', id))
-    on_confirm('too late')
-  end
-  local ok, printed, notified = pcall(capture, function() qf.edit_comment() end)
-  vim.ui.input = original
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'too late' })
+    vim.api.nvim_feedkeys(vim.keycode('<CR>'), 'x', false)
+  end)
+  local still_open = vim.api.nvim_win_is_valid(win)
+  if is_editor and still_open then pcall(vim.api.nvim_win_close, win, true) end
   if not ok then error(printed, 0) end
   assert.truthy(vim.tbl_contains(printed, 'Comment no longer exists'), 'says so: ' .. vim.inspect(printed))
+  assert.falsy(still_open, 'editor float closed')
   assert.length(notified, 0, 'no error or warning')
   assert.length(test_helper.log_ops(log_file, 'update'), 0, 'no update logged')
   reset()

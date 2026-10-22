@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-vgoq
 title: Edit comments in a scratch float, including their type
-status: todo
+status: completed
 type: feature
+priority: normal
 created_at: 2026-10-22T20:28:44Z
-updated_at: 2026-10-22T20:28:44Z
+updated_at: 2026-10-22T21:17:09Z
 ---
 
 **Background.** `:ReviewEdit` / `keymaps.edit` (`<leader>cm`) resolve the comment (quickfix row, else `comments_on_line()` with a picker when several cover the line) in `M.edit_comment()` (`lua/quickfix-review/edit.lua:475`), then `prompt_edit()` (`edit.lua:444`) asks for the body in a one-line `vim.ui.input`. Multi-line bodies are flattened through `escape_body`/`unescape_body` (`edit.lua:426-441`). The type (`kind`) can't be changed at all. `store.edit(id, body)` (`lua/quickfix-review/store.lua:324`) logs one `update {set={body}, prev={body}}`.

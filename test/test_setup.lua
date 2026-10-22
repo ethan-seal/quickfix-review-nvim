@@ -342,6 +342,12 @@ assert.run_test('commands work before setup()', function()
       'ReviewAddIssue', 'ReviewAddSuggestion', 'ReviewAddNote', 'ReviewAddPraise',
       'ReviewAddQuestion', 'ReviewAddInsight', 'ReviewAdd note' }) do
       local cok, cerr = pcall(vim.cmd, cmd)
+      -- :ReviewEdit may open its editor float, entered: close it, so the
+      -- commands after it run in the file
+      for _, win in ipairs(vim.api.nvim_list_wins()) do
+        local name = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win))
+        if name:match('^quickfix%-review://edit/') then pcall(vim.api.nvim_win_close, win, true) end
+      end
       assert.truthy(cok, ':' .. cmd .. ' does not error: ' .. tostring(cerr))
     end
     vim.ui.input = original_input

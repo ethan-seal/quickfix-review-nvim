@@ -911,36 +911,92 @@ assert.run_test('a snapshot that cannot be saved warns and still adds the commen
   qf.clear_review()
 end)
 
--- Run fn with vim.ui.input answering `answer` (or calling answer(opts) when
--- it's a function); returns the opts of every prompt shown
-local function with_input(answer, fn)
-  local prompts = {}
-  local original = vim.ui.input
-  vim.ui.input = function(opts, on_confirm)
-    table.insert(prompts, opts)
-    if type(answer) == 'function' then answer = answer(opts) end
-    on_confirm(answer)
+local edit_mod = require('quickfix-review.edit')
+
+-- The editor float (edit.lua's open_editor), when it is the current window:
+-- its window and buffer
+local function editor()
+  local buf = vim.api.nvim_get_current_buf()
+  if vim.api.nvim_buf_get_name(buf):match('^quickfix%-review://edit/') then
+    return vim.api.nvim_get_current_win(), buf
   end
+end
+
+-- Every window showing an editor buffer
+local function editor_wins()
+  local wins = {}
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    local name = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win))
+    if name:match('^quickfix%-review://edit/') then table.insert(wins, win) end
+  end
+  return wins
+end
+
+-- Close any editor float left open
+local function close_editors()
+  for _, win in ipairs(editor_wins()) do pcall(vim.api.nvim_win_close, win, true) end
+end
+
+-- Type keys into the current window, as the user would, and run them now
+local function keys(k)
+  vim.api.nvim_feedkeys(vim.keycode(k), 'x', false)
+end
+
+local function set_lines(lines)
+  local _, buf = editor()
+  assert.truthy(buf, 'editor float is current')
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+end
+
+-- Run fn; close any editor float it left open, whether or not it failed
+local function with_editor(fn)
   local ok, err = pcall(fn)
-  vim.ui.input = original
+  close_editors()
   if not ok then error(err, 0) end
-  return prompts
 end
 
 local function updates()
   return test_helper.log_ops(test_helper.events_path(), 'update')
 end
 
-assert.run_test('edit saves the new body; id and anchor unchanged', function()
+-- The sign text and highlight on a line of the test file
+local function sign_on(lnum)
+  local marks = vim.api.nvim_buf_get_extmarks(file_buf, utils.get_ns_id(), { lnum - 1, 0 }, { lnum - 1, -1 },
+    { details = true })
+  for _, m in ipairs(marks) do
+    local d = m[4]
+    if d and d.sign_text then
+      return (d.sign_text:gsub('%s+$', ''):gsub('^%s+', '')), d.sign_hl_group
+    end
+  end
+end
+
+-- Edit the comment on line 5 (one ISSUE 'Test comment'): `lines` into the
+-- float, then `save` ('<CR>' or ':w')
+local function edit_body_test(save)
   qf.clear_review()
   vim.fn.cursor(5, 1)
   qf.add_comment('ISSUE')
   local before = vim.deepcopy(qf.comments()[1])
   local n = #updates()
 
-  local prompts = with_input('New body', function() qf.edit_comment() end)
-  assert.length(prompts, 1, 'one prompt')
-  assert.equals(prompts[1].default, 'Test comment', 'prompt prefilled with the body')
+  with_editor(function()
+    qf.edit_comment()
+    local win, buf = editor()
+    assert.truthy(win, 'editor float entered')
+    assert.equals(vim.api.nvim_buf_get_name(buf), 'quickfix-review://edit/' .. before.id, 'named for the comment')
+    same(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { 'Test comment' }, 'holds the body')
+    assert.equals(vim.api.nvim_win_get_config(win).title[1][1], ' ISSUE ', 'titled with the type')
+    set_lines({ 'New body' })
+    local printed = capture_print(function()
+      if save == ':w' then vim.cmd('write') else keys('<CR>') end
+    end)
+    assert.equals(printed[1], 'Comment edited', 'says so')
+    -- After :w the float closes once the write is done (a scheduled close)
+    vim.wait(100, function() return not vim.api.nvim_win_is_valid(win) end)
+    assert.falsy(vim.api.nvim_win_is_valid(win), 'float closed')
+    assert.equals(vim.api.nvim_get_current_buf(), file_buf, 'back in the file')
+  end)
 
   local c = qf.comments()[1]
   assert.equals(c.body, 'New body', 'body changed')
@@ -948,9 +1004,11 @@ assert.run_test('edit saves the new body; id and anchor unchanged', function()
   assert.equals(c.kind, before.kind, 'kind unchanged')
   assert.equals(c.lnum, before.lnum, 'lnum unchanged')
   assert.equals(c.anchor.sha, before.anchor.sha, 'anchor unchanged')
+  same(c.anchor.lines, before.anchor.lines, 'anchor lines unchanged')
   qf.show_list()
   local row = vim.fn.getqflist()[1]
   assert.truthy(row and row.text:find('New body', 1, true), 'quickfix text updated')
+  vim.cmd('cclose')
 
   local ups = updates()
   assert.equals(#ups, n + 1, 'one update logged')
@@ -958,90 +1016,393 @@ assert.run_test('edit saves the new body; id and anchor unchanged', function()
   assert.equals(ups[#ups].set.body, 'New body', 'update sets the body')
   assert.equals(ups[#ups].prev.body, 'Test comment', 'update keeps the old body')
   assert.equals(vim.tbl_count(ups[#ups].set), 1, 'update sets only the body')
+end
+
+assert.run_test('edit in the float, saved with <CR>: one update; id and anchor unchanged', function()
+  edit_body_test('<CR>')
 end)
 
-assert.run_test('cancelled or empty edit logs nothing', function()
+assert.run_test('edit in the float, saved with :w', function()
+  edit_body_test(':w')
+end)
+
+-- :wq / :x quit the window that is current once the write returns: that must
+-- be the float, not the code window it was opened from
+for _, cmd in ipairs({ 'wq', 'x' }) do
+  assert.run_test(':' .. cmd .. ' in the float saves and closes only the float', function()
+    qf.clear_review()
+    vim.fn.cursor(5, 1)
+    qf.add_comment('ISSUE')
+    local id = qf.comments()[1].id
+    local n = #updates()
+    local code_win = vim.api.nvim_get_current_win()
+    -- A second split, so a quit that lands on the code window cannot exit Neovim
+    vim.cmd('split')
+    local other_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_set_current_win(code_win)
+    local function non_floats()
+      local count = 0
+      for _, w in ipairs(vim.api.nvim_list_wins()) do
+        if vim.api.nvim_win_get_config(w).relative == '' then count = count + 1 end
+      end
+      return count
+    end
+    local before_wins = non_floats()
+
+    local ok, err = pcall(with_editor, function()
+      qf.edit_comment()
+      local win = editor()
+      assert.truthy(win, 'editor float entered')
+      set_lines({ 'Quit body' })
+      local printed = capture_print(function() vim.cmd(cmd) end)
+      vim.wait(100, function() return not vim.api.nvim_win_is_valid(win) end)
+      assert.equals(printed[1], 'Comment edited', 'says so')
+      assert.falsy(vim.api.nvim_win_is_valid(win), 'float closed')
+      assert.length(editor_wins(), 0, 'no editor left')
+      assert.truthy(vim.api.nvim_win_is_valid(code_win), 'code window still open')
+      assert.truthy(vim.api.nvim_win_is_valid(other_win), 'other split still open')
+      assert.equals(non_floats(), before_wins, 'no other window closed')
+      assert.equals(vim.api.nvim_win_get_buf(code_win), file_buf, 'code window still shows the file')
+    end)
+    if vim.api.nvim_win_is_valid(other_win) and #vim.api.nvim_list_wins() > 1 then
+      vim.api.nvim_win_close(other_win, true)
+    end
+    if vim.api.nvim_win_is_valid(code_win) then vim.api.nvim_set_current_win(code_win) end
+    if not ok then error(err, 0) end
+
+    local c = qf.comments()[1]
+    assert.equals(c.id, id, 'same comment')
+    assert.equals(c.body, 'Quit body', 'body changed')
+    local ups = updates()
+    assert.equals(#ups, n + 1, 'one update logged')
+    assert.equals(ups[#ups].set.body, 'Quit body', 'update sets the body')
+  end)
+end
+
+assert.run_test('q after changing the text closes the float and logs nothing', function()
   qf.clear_review()
   vim.fn.cursor(5, 1)
   qf.add_comment('ISSUE')
   local n = #updates()
-  for _, answer in ipairs({ vim.NIL, '' }) do
-    with_input(answer ~= vim.NIL and answer or nil, function() qf.edit_comment() end)
+  for _, cancel in ipairs({ 'q', '<Esc>' }) do
+    with_editor(function()
+      qf.edit_comment()
+      local win = editor()
+      set_lines({ 'Thrown away' })
+      keys(cancel)
+      assert.falsy(vim.api.nvim_win_is_valid(win), cancel .. ' closed the float')
+      assert.length(editor_wins(), 0, 'no editor left')
+    end)
     assert.equals(qf.comments()[1].body, 'Test comment', 'body unchanged')
     assert.equals(#updates(), n, 'no update logged')
   end
 end)
 
-assert.run_test('edit to the same body logs nothing', function()
+assert.run_test('saving unchanged text closes the float silently and logs nothing', function()
   qf.clear_review()
   vim.fn.cursor(5, 1)
   qf.add_comment('ISSUE')
   local n = #updates()
-  with_input(function(opts) return opts.default end, function() qf.edit_comment() end)
+  with_editor(function()
+    qf.edit_comment()
+    local win = editor()
+    local printed = capture_print(function() keys('<CR>') end)
+    assert.length(printed, 0, 'nothing said')
+    assert.falsy(vim.api.nvim_win_is_valid(win), 'float closed')
+  end)
   assert.equals(#updates(), n, 'no update logged')
 end)
 
-assert.run_test('edit of a multi-line body: unchanged Enter logs nothing, body intact', function()
+assert.run_test('a multi-line body is edited as lines; unchanged save keeps its breaks', function()
   qf.clear_review()
-  local body = 'first line\nsecond \\ line'
+  local body = 'first line\nsecond \\ line\n\nfourth'
   store.add({ filename = vim.fn.expand('%:p'), lnum = 5, end_lnum = 5, kind = 'note', body = body })
   vim.fn.cursor(5, 1)
   local n = #updates()
-  local prompts = with_input(function(opts) return opts.default end, function() qf.edit_comment() end)
-  assert.length(prompts, 1, 'one prompt')
-  assert.equals(prompts[1].default, 'first line\\nsecond \\\\ line', 'prefill escapes breaks and backslashes')
-  assert.falsy(prompts[1].default:find('\n', 1, true), 'prefill is one line')
+  with_editor(function()
+    qf.edit_comment()
+    local win, buf = editor()
+    same(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { 'first line', 'second \\ line', '', 'fourth' },
+      'one buffer line per line, backslashes as they are')
+    assert.equals(vim.api.nvim_win_get_height(win), 4, 'as tall as the body')
+    keys('<CR>')
+    assert.falsy(vim.api.nvim_win_is_valid(win), 'float closed')
+  end)
   assert.equals(#updates(), n, 'no update logged')
   assert.equals(qf.comments()[1].body, body, 'body intact')
 
-  -- Deliberately joining the lines with spaces is a real edit
-  with_input('first line second \\\\ line', function() qf.edit_comment() end)
-  assert.equals(#updates(), n + 1, 'joined lines logged as an edit')
-  assert.equals(qf.comments()[1].body, 'first line second \\ line', 'body joined')
+  -- Trailing blank lines are dropped; a new line is a real edit
+  with_editor(function()
+    qf.edit_comment()
+    set_lines({ 'a', 'b', '', '  ', '' })
+    keys('<CR>')
+  end)
+  assert.equals(#updates(), n + 1, 'one update logged')
+  assert.equals(qf.comments()[1].body, 'a\nb', 'lines joined with breaks, trailing blanks dropped')
 end)
 
-assert.run_test('edit of a multi-line body keeps line breaks written as \\n', function()
-  qf.clear_review()
-  store.add({ filename = vim.fn.expand('%:p'), lnum = 5, end_lnum = 5, kind = 'note', body = 'a\nb' })
-  vim.fn.cursor(5, 1)
-  local n = #updates()
-  with_input('a\\nb\\nc \\\\n \\t', function() qf.edit_comment() end)
-  local c = qf.comments()[1]
-  assert.equals(c.body, 'a\nb\nc \\n \\t', '\\n is a break, \\\\ a backslash, others kept')
-  local ups = updates()
-  assert.equals(#ups, n + 1, 'one update logged')
-  assert.equals(ups[#ups].prev.body, 'a\nb', 'old body kept')
-end)
-
-assert.run_test('edit of a single-line body takes backslashes literally', function()
+assert.run_test('cycling the type in the float saves it with the body in one update', function()
   qf.clear_review()
   vim.fn.cursor(5, 1)
   qf.add_comment('ISSUE')
-  local prompts = with_input('path C:\\new', function() qf.edit_comment() end)
-  assert.equals(prompts[1].prompt, 'Edit comment: ', 'plain prompt')
-  assert.equals(qf.comments()[1].body, 'path C:\\new', 'no unescaping')
+  local id = qf.comments()[1].id
+  local types = utils.get_comment_types()
+  assert.equals(types[1], 'issue', 'issue is the first type')
+  local cycle_before = edit_mod.current_cycle_type()
+  local n = #updates()
+
+  with_editor(function()
+    qf.edit_comment()
+    local win = editor()
+    assert.truthy(vim.api.nvim_win_get_config(win).footer[1][1]:find('+/- type', 1, true), 'footer names the keys')
+    keys('+')
+    assert.equals(vim.api.nvim_win_get_config(win).title[1][1], ' ' .. types[2]:upper() .. ' ', 'retitled')
+    assert.equals(vim.api.nvim_win_get_config(win).relative, 'win', 'still anchored where it opened')
+    keys('+')
+    keys('-')
+    assert.equals(vim.api.nvim_win_get_config(win).title[1][1], ' ' .. types[2]:upper() .. ' ', 'back one')
+    assert.equals(edit_mod.current_cycle_type(), cycle_before, 'the add cycle is untouched')
+    set_lines({ 'Now a suggestion' })
+    keys('<CR>')
+    assert.falsy(vim.api.nvim_win_is_valid(win), 'float closed')
+  end)
+
+  local ups = updates()
+  assert.equals(#ups, n + 1, 'one update logged')
+  same(ups[#ups].set, { body = 'Now a suggestion', kind = types[2] }, 'sets body and kind')
+  same(ups[#ups].prev, { body = 'Test comment', kind = 'issue' }, 'keeps the old ones')
+  local c = store.get(id)
+  assert.equals(c.kind, types[2], 'kind changed')
+  assert.equals(edit_mod.current_cycle_type(), cycle_before, 'the add cycle is still untouched')
+
+  local text, hl = sign_on(5)
+  assert.equals(text, 'S', 'sign shows the new type')
+  assert.equals(hl, 'DiagnosticWarn', 'sign highlight of the new type')
+  qf.show_list()
+  assert.equals(vim.fn.getqflist()[1].type, 'S', 'quickfix type changed')
+  vim.cmd('cclose')
+
+  -- The type alone
+  with_editor(function()
+    qf.edit_comment()
+    keys('-')
+    keys('<CR>')
+  end)
+  ups = updates()
+  assert.equals(#ups, n + 2, 'second update logged')
+  same(ups[#ups].set, { kind = 'issue' }, 'sets only the kind')
+  same(ups[#ups].prev, { kind = types[2] }, 'previous kind kept')
+end)
+
+assert.run_test('an emptied float is not saved and stays open', function()
+  qf.clear_review()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local n = #updates()
+  with_editor(function()
+    qf.edit_comment()
+    local win = editor()
+    set_lines({ '', '   ' })
+    local printed = capture_print(function() keys('<CR>') end)
+    assert.equals(printed[1], 'Comment text is empty (q to cancel)', 'says so')
+    assert.truthy(vim.api.nvim_win_is_valid(win), 'float still open')
+    assert.equals(vim.api.nvim_get_current_win(), win, 'still in it')
+  end)
+  assert.equals(#updates(), n, 'no update logged')
+  assert.equals(qf.comments()[1].body, 'Test comment', 'body unchanged')
+end)
+
+assert.run_test('editing while the view float is open replaces it with the editor', function()
+  qf.clear_review()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local id = qf.comments()[1].id
+  local file_win = vim.api.nvim_get_current_win()
+  with_editor(function()
+    qf.view_comment()
+    local floats = vim.tbl_filter(function(w) return vim.api.nvim_win_get_config(w).relative ~= '' end,
+      vim.api.nvim_list_wins())
+    assert.length(floats, 1, 'view float open')
+    qf.edit_comment()
+    floats = vim.tbl_filter(function(w) return vim.api.nvim_win_get_config(w).relative ~= '' end,
+      vim.api.nvim_list_wins())
+    assert.length(floats, 1, 'only one float')
+    local win, buf = editor()
+    assert.equals(floats[1], win, 'it is the editor, and current')
+    assert.equals(vim.api.nvim_buf_get_name(buf), 'quickfix-review://edit/' .. id, 'for the comment')
+    same(vim.api.nvim_get_autocmds({ group = 'QuickfixReviewFloat' }), {}, 'view float handler removed')
+
+    -- Editing it again while it is open goes back to it
+    vim.api.nvim_set_current_win(file_win)
+    qf.edit_comment()
+    assert.equals(vim.api.nvim_get_current_win(), win, 'back in the same editor')
+    assert.length(editor_wins(), 1, 'still one editor')
+  end)
+end)
+
+assert.run_test('editing from the review quickfix row edits that row\'s comment', function()
+  qf.clear_review()
+  vim.fn.cursor(2, 1)
+  qf.add_comment('ISSUE')
+  vim.fn.cursor(7, 1)
+  qf.add_comment('NOTE')
+  with_editor(function()
+    qf.show_list()
+    vim.cmd('copen')
+    vim.fn.cursor(2, 1)
+    local row = vim.fn.getqflist()[2]
+    local id = row.user_data.id
+    qf.edit_comment()
+    local _, buf = editor()
+    assert.equals(vim.api.nvim_buf_get_name(buf), 'quickfix-review://edit/' .. id, 'the row\'s comment')
+    set_lines({ 'From the list' })
+    keys('<CR>')
+    assert.equals(store.get(id).body, 'From the list', 'that comment edited')
+  end)
+  vim.cmd('cclose')
+  vim.api.nvim_set_current_buf(file_buf)
+  local bodies = vim.tbl_map(function(c) return c.body end, qf.comments())
+  table.sort(bodies)
+  same(bodies, { 'From the list', 'Test comment' }, 'the other comment unchanged')
+end)
+
+assert.run_test('a failed save keeps the float open and the text in register "', function()
+  qf.clear_review()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local n = #updates()
+  local original = store.edit
+  store.edit = function() return nil, 'disk full' end
+  local ok, err = pcall(with_editor, function()
+    qf.edit_comment()
+    local win, buf = editor()
+    set_lines({ 'kept', 'here' })
+    local calls = capture_notify(function() keys('<CR>') end)
+    assert.equals(count_level(calls, vim.log.levels.WARN), 1, 'one warning')
+    assert.truthy(calls[1].msg:find('was not edited (disk full)', 1, true), 'gives the reason')
+    assert.truthy(vim.api.nvim_win_is_valid(win), 'float still open')
+    same(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { 'kept', 'here' }, 'text still there')
+    assert.equals(vim.fn.getreg('"'), 'kept\nhere', 'text in register "')
+  end)
+  store.edit = original
+  if not ok then error(err, 0) end
+  assert.equals(#updates(), n, 'no update logged')
+end)
+
+assert.run_test('the type keys follow the cycle keymaps; one set to false is not mapped', function()
+  local config = require('quickfix-review.config')
+  local keymaps = config.options.keymaps
+  local saved_next = keymaps.cycle_next
+  local ok, err = pcall(function()
+    qf.clear_review()
+    vim.fn.cursor(5, 1)
+    qf.add_comment('ISSUE')
+    keymaps.cycle_next = false
+    with_editor(function()
+      qf.edit_comment()
+      local win, buf = editor()
+      local footer = vim.api.nvim_win_get_config(win).footer[1][1]
+      assert.falsy(footer:find('+', 1, true), 'no + in the footer')
+      assert.truthy(footer:find('- type', 1, true), '- still named')
+      local lhs = {}
+      for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, 'n')) do lhs[m.lhs] = true end
+      assert.falsy(lhs['+'], 'no buffer-local +')
+      assert.truthy(lhs['-'], 'buffer-local -')
+    end)
+  end)
+  keymaps.cycle_next = saved_next
+  if not ok then error(err, 0) end
+end)
+
+assert.run_test('a type no longer configured is shown as-is; + goes to the first, - to the last', function()
+  qf.clear_review()
+  store.add({ filename = vim.fn.expand('%:p'), lnum = 5, end_lnum = 5, kind = 'nit', body = 'old type' })
+  local types = utils.get_comment_types()
+  local ok, err = pcall(function()
+    vim.fn.cursor(5, 1)
+    with_editor(function()
+      qf.edit_comment()
+      local win = editor()
+      assert.equals(vim.api.nvim_win_get_config(win).title[1][1], ' NIT ', 'shown as it is')
+      keys('+')
+      assert.equals(vim.api.nvim_win_get_config(win).title[1][1], ' ' .. types[1]:upper() .. ' ', '+ to the first')
+    end)
+    with_editor(function()
+      qf.edit_comment()
+      local win = editor()
+      keys('-')
+      assert.equals(vim.api.nvim_win_get_config(win).title[1][1], ' ' .. types[#types]:upper() .. ' ', '- to the last')
+    end)
+    -- Its text can still be saved, keeping the type
+    local n = #updates()
+    with_editor(function()
+      qf.edit_comment()
+      set_lines({ 'new text' })
+      keys('<CR>')
+    end)
+    local ups = updates()
+    assert.equals(#ups, n + 1, 'one update logged')
+    same(ups[#ups].set, { body = 'new text' }, 'only the body')
+  end)
+  if not ok then error(err, 0) end
+  local c = qf.comments()[1]
+  assert.equals(c.kind, 'nit', 'type kept')
+end)
+
+assert.run_test('store.edit: kind alone, with the body, unchanged, unknown and non-string', function()
+  qf.clear_review()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local id = qf.comments()[1].id
+  local n = #updates()
+
+  assert.equals(store.edit(id, 'Test comment', 'NOTE'), 'edited', 'kind alone')
+  local ups = updates()
+  assert.equals(#ups, n + 1, 'one update')
+  same(ups[#ups].set, { kind = 'note' }, 'kind stored lowercase, body not set')
+  same(ups[#ups].prev, { kind = 'issue' }, 'previous kind')
+
+  assert.equals(store.edit(id, 'Both', 'suggestion'), 'edited', 'body and kind')
+  ups = updates()
+  assert.equals(#ups, n + 2, 'one more update')
+  same(ups[#ups].set, { body = 'Both', kind = 'suggestion' }, 'both in one event')
+
+  assert.equals(store.edit(id, 'Both', 'suggestion'), 'unchanged', 'same body and kind')
+  assert.equals(store.edit(id, 'Both'), 'unchanged', 'same body, no kind')
+  assert.equals(#updates(), n + 2, 'nothing logged')
+
+  assert.equals(store.edit(id, 'Other', 'nonsense'), nil, 'unknown new kind refused')
+  local okc, res = pcall(store.edit, id, 'Other', 42)
+  assert.truthy(okc, 'non-string kind does not throw')
+  assert.equals(res, nil, 'non-string kind refused')
+  assert.equals(#updates(), n + 2, 'nothing logged')
+  assert.equals(store.get(id).body, 'Both', 'body unchanged by refused edits')
+  assert.equals(store.edit('no-such-id', 'x', 'note'), 'missing', 'missing comment')
 end)
 
 assert.run_test('edit on the middle line of a range comment', function()
   qf.clear_review()
   qf.add_comment('ISSUE', { 2, 6 })
   vim.fn.cursor(4, 1)
-  with_input('Ranged', function() qf.edit_comment() end)
+  with_editor(function()
+    qf.edit_comment()
+    set_lines({ 'Ranged' })
+    keys('<CR>')
+  end)
   assert.equals(qf.comments()[1].body, 'Ranged', 'range comment edited')
 end)
 
-assert.run_test('edit on a line with no comment prompts and logs nothing', function()
+assert.run_test('edit on a line with no comment opens nothing and logs nothing', function()
   qf.clear_review()
   vim.fn.cursor(5, 1)
   qf.add_comment('ISSUE')
   local n = #updates()
   vim.fn.cursor(8, 1)
-  local prompts
-  local printed = capture_print(function()
-    prompts = with_input('Nope', function() qf.edit_comment() end)
+  with_editor(function()
+    local printed = capture_print(function() qf.edit_comment() end)
+    assert.length(editor_wins(), 0, 'no editor')
+    assert.equals(printed[1], 'No comment on this line', 'says so')
   end)
-  assert.length(prompts, 0, 'no prompt')
-  assert.equals(printed[1], 'No comment on this line', 'says so')
   assert.equals(#updates(), n, 'no update logged')
 end)
 
@@ -1053,13 +1414,13 @@ assert.run_test('a comment hidden in a diff buffer: view, edit and delete say so
   local miss = 'No comment on this line (diff buffer shows another revision)'
   in_scratch(diff_name, 'nofile', function()
     vim.fn.cursor(2, 1)
-    local printed, prompts
+    local printed
     printed = capture_print(function() qf.view_comment() end)
     assert.equals(printed[1], miss, 'view says so')
-    printed = capture_print(function()
-      prompts = with_input('Nope', function() qf.edit_comment() end)
+    with_editor(function()
+      printed = capture_print(function() qf.edit_comment() end)
+      assert.length(editor_wins(), 0, 'edit: no editor')
     end)
-    assert.length(prompts, 0, 'edit: no prompt')
     assert.equals(printed[1], miss, 'edit says so')
     printed = capture_print(function() qf.delete_comment() end)
     assert.equals(printed[1], miss, 'delete says so')
@@ -1087,7 +1448,13 @@ assert.run_test('edit with overlapping comments edits only the chosen one', func
     offered = vim.tbl_map(opts.format_item, items)
     on_choice(items[2])
   end
-  local ok, err = pcall(with_input, 'Chosen', function() qf.edit_comment() end)
+  local ok, err = pcall(with_editor, function()
+    qf.edit_comment()
+    local win = editor()
+    assert.equals(vim.api.nvim_win_get_config(win).title[1][1], ' NOTE ', 'the chosen comment\'s type')
+    set_lines({ 'Chosen' })
+    keys('<CR>')
+  end)
   vim.ui.select = original
   if not ok then error(err, 0) end
 

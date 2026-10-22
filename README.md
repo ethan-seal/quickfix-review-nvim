@@ -56,8 +56,9 @@ use {
 1. Open a file to review
 2. Press `<leader>ci` to add an ISSUE comment (or `cs`/`cn`/`cp`/`cq`/`ck` for other types)
 3. Enter your comment text
-4. Use `]r` and `[r` to navigate between comments
-5. Press `<leader>ce` to export the review to markdown
+4. Press `<leader>cm` to edit the comment under the cursor (text and type)
+5. Use `]r` and `[r` to navigate between comments
+6. Press `<leader>ce` to export the review to markdown
 
 ### Comment Type Cycling
 
@@ -147,7 +148,7 @@ require('quickfix-review').setup({
 
     delete_comment = '<leader>cd',  -- Delete the comment at cursor (pick one when several), or all in the selection
     view = '<leader>cv',
-    edit = '<leader>cm',  -- Edit the comment at cursor (or on the quickfix row)
+    edit = '<leader>cm',  -- Edit the text and type of the comment at cursor (or on the quickfix row) in a float
     export = '<leader>ce',
     clear = '<leader>cc',
     summary = '<leader>cS',
@@ -290,7 +291,7 @@ A pattern that doesn't accept those four values falls back to the default with a
 | `:[range]ReviewAddInsight` | Add an INSIGHT comment |
 | `:[range]ReviewDelete` | Delete the comment at the cursor (you pick one when several cover the line), or all comments overlapping the range |
 | `:ReviewView` | View comment at cursor |
-| `:ReviewEdit` | Edit the text of the comment at cursor, or of the row under the cursor in the review's quickfix window (single line: a multi-line comment is shown with breaks as `\n` and backslashes as `\\`; the change shows in `:ReviewHistory`) |
+| `:ReviewEdit` | Edit the text and type of the comment at cursor, or of the row under the cursor in the review's quickfix window, in a float: `<CR>` or `:w` saves, `q` cancels, `+`/`-` (the cycle keys) change the type; the change shows in `:ReviewHistory` |
 | `:ReviewExport` | Export to markdown and clipboard |
 | `:ReviewClear` | Clear all comments (asks first; `:ReviewClear!` doesn't) |
 | `:ReviewTrash` | List deleted and cleared comments, newest first, in a quickfix list titled "Review trash" |

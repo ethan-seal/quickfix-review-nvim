@@ -199,17 +199,23 @@ assert.run_test("edit from the review list edits the row's comment", function()
   vim.fn.cursor(2, 1)
   local id = vim.fn.getqflist()[2].user_data.id
 
-  local original = vim.ui.input
   local default
-  vim.ui.input = function(opts, on_confirm)
-    default = opts.default
-    on_confirm('Edited from list')
+  local ok, err = pcall(function()
+    qf.edit_comment()
+    local buf = vim.api.nvim_get_current_buf()
+    assert.equals(vim.api.nvim_buf_get_name(buf), 'quickfix-review://edit/' .. id, 'editor float for the row')
+    default = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), '\n')
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'Edited from list' })
+    vim.api.nvim_feedkeys(vim.keycode('<CR>'), 'x', false)
+  end)
+  -- A float a failure left open would take over every later test
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    local name = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win))
+    if name:match('^quickfix%-review://edit/') then pcall(vim.api.nvim_win_close, win, true) end
   end
-  local ok, err = pcall(qf.edit_comment)
-  vim.ui.input = original
   if not ok then error(err, 0) end
 
-  assert.equals(default, 'Test comment', 'prompt prefilled with the row body')
+  assert.equals(default, 'Test comment', 'editor holds the row body')
   local by_line = {}
   for _, c in ipairs(qf.comments()) do by_line[c.lnum] = c end
   assert.equals(by_line[3].body, 'Edited from list', 'the line 3 comment was edited')

@@ -518,20 +518,34 @@ press `dd` to delete the comment under cursor.
 :ReviewView             View comment at the current line.
 
                                                              *:ReviewEdit*
-:ReviewEdit             Edit the text of the comment at the current line,
-                        with the input prefilled with its current text.
-                        If several comments cover the line, you pick one
+:ReviewEdit             Edit the text and type of the comment at the
+                        current line in a floating window under the cursor
+                        (any open |:ReviewView| float is closed first). If
+                        several comments cover the line, you pick one
                         first. In the review's quickfix window, edits the
-                        comment on the row under the cursor. Its id, kind
-                        and position are unchanged. Comment text is a
-                        single line; a comment whose text has line breaks
-                        (from an import or another tool) is shown with each
-                        break as `\n` and each backslash as `\\`, and typing
-                        `\n` makes a break. Accepting the text unchanged
-                        logs nothing. Cancelling (or an empty input)
-                        changes nothing. The edit is logged as one
-                        `update` event, shown by |:ReviewHistory| with the
-                        old and new text; it is not undone by
+                        comment on the row under the cursor. Its id and
+                        position are unchanged.
+                        The float holds the comment's text, one line per
+                        line, and its title shows the type. In it (Normal
+                        mode):
+                          `<CR>` or `:w`   save the text and type
+                          `q` or `<Esc>`   close without saving
+                          `+` / `-`        next / previous type (the
+                                         `keymaps.cycle_next` and
+                                         `keymaps.cycle_previous` keys;
+                                         one set to `false` is not
+                                         mapped). This does not change
+                                         the type `<leader>ca` adds.
+                        Trailing blank lines are dropped. Saving an empty
+                        float is refused, and saving it unchanged logs
+                        nothing. If the save fails, the float stays open
+                        and the text is also put in register `"`. A
+                        comment whose type is no longer configured keeps
+                        it unless you pick another. The edit is not made
+                        through |vim.ui.input()|, so a replacement for it
+                        is not used. A change of text and type is logged
+                        as one `update` event, shown by |:ReviewHistory|
+                        with the old and new values; it is not undone by
                         |:ReviewRestore|.
 
                                                            *:ReviewExport*
@@ -639,7 +653,7 @@ Default keymaps (normal and visual mode where applicable):
                   cover the line), or all comments overlapping the
                   selection
   `<leader>cv`    View comment at cursor
-  `<leader>cm`    Edit comment at cursor
+  `<leader>cm`    Edit comment at cursor (text and type) in a float
   `<leader>ce`    Export review to markdown
   `<leader>cc`    Clear all comments
   `<leader>cS`    Show review summary
@@ -700,8 +714,9 @@ require('quickfix-review').view_comment()           *quickfix-review.view_commen
     View the comment at the current line.
 
 require('quickfix-review').edit_comment()           *quickfix-review.edit_comment()*
-    Edit the text of the comment at the current line, or of the row under
-    the cursor in the review's quickfix window. See |:ReviewEdit|.
+    Open the editor float for the text and type of the comment at the
+    current line, or of the row under the cursor in the review's quickfix
+    window. See |:ReviewEdit|.
 
 require('quickfix-review').export_review()         *quickfix-review.export_review()*
     Export all comments to markdown and clipboard.

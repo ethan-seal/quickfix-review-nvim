@@ -84,12 +84,11 @@ end
 local UNCHANGED = 'the review could not be changed'
 
 -- Keep text the user typed for a change that failed: in the unnamed
--- register, and (as typed, when that differs) in the input history, so it
--- can be pasted or recalled with <Up>. A vim.ui.input replacement need not
--- add its answer to the history itself.
-local function keep_typed(text, typed)
+-- register, and in the input history, so it can be pasted or recalled with
+-- <Up>
+local function keep_typed(text)
   vim.fn.setreg('"', text)
-  vim.fn.histadd('input', typed or text)
+  vim.fn.histadd('input', text)
 end
 
 -- Add comment to quickfix and place sign
@@ -466,58 +465,156 @@ function M.delete_comment_from_qf()
   delete_one(id)
 end
 
--- A multi-line body (one from an import or an external tool) is edited in a
--- single-line prompt as escaped text: a line break is `\n` and a backslash
--- `\\`. Single-line bodies are edited as they are, backslashes and all.
-local function escape_body(body)
-  return (body:gsub('\\', '\\\\'):gsub('\n', '\\n'))
+-- The name of the editor buffer for the comment with this id
+local EDITOR_PREFIX = 'quickfix-review://edit/'
+
+-- The editor float's title: the type it will save
+local function editor_title(kind)
+  return ' ' .. tostring(kind or '?'):upper() .. ' '
 end
 
--- Inverse of escape_body: `\n` is a line break, `\\` a backslash; any other
--- backslash is kept as typed
-local function unescape_body(text)
-  return (text:gsub('\\(.)', function(ch)
-    if ch == 'n' then return '\n' end
-    if ch == '\\' then return '\\' end
-    return '\\' .. ch
-  end))
+-- The editor float's footer: its keys, the type keys only when mapped
+local function editor_footer()
+  local keymaps = config.options.keymaps or {}
+  local cycle = {}
+  if keymaps.cycle_next then table.insert(cycle, keymaps.cycle_next) end
+  if keymaps.cycle_previous then table.insert(cycle, keymaps.cycle_previous) end
+  local footer = ' <CR> save · q cancel '
+  if #cycle > 0 then footer = footer .. '· ' .. table.concat(cycle, '/') .. ' type ' end
+  return footer
 end
 
--- Ask for a new body for the comment with this id, prefilled with its current
--- one, and save it. A cancelled or empty input changes nothing. A multi-line
--- body is prefilled escaped (see escape_body) and the answer unescaped, so
--- accepting the prefill unchanged keeps its line breaks and logs nothing.
-local function prompt_edit(id, old)
-  old = old or ''
-  local multiline = old:find('\n', 1, true) ~= nil
-  local opts = { prompt = 'Edit comment: ', default = old }
-  if multiline then
-    opts = { prompt = 'Edit comment (\\n = line break): ', default = escape_body(old) }
+-- Edit the comment with this id (`comment` as read before opening: its body
+-- and kind) in an entered scratch float holding its body, one buffer line per
+-- line. <CR> or :w saves the text and the type the float's title shows (one
+-- update, nothing when neither changed); q or <Esc> closes it without
+-- saving. The cycle keys step the type shown, without touching the cycle of
+-- the type <leader>ca adds. A failed save keeps the float open.
+local function open_editor(id, comment)
+  -- One float at a time: the view float goes
+  jump.close_float()
+
+  local name = EDITOR_PREFIX .. id
+  -- By exact name: bufnr() would also take a unique partial match
+  local existing
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_get_name(b) == name then existing = b break end
   end
-  vim.ui.input(opts, function(input)
-    if input == nil or input == '' then return end
-    local typed = input
-    if multiline then
-      input = unescape_body(input)
+  if existing then
+    -- Already being edited (left with <C-w>p): go back to it
+    local existing_win = vim.fn.bufwinid(existing)
+    if existing_win ~= -1 then
+      vim.api.nvim_set_current_win(existing_win)
+      return
     end
-    local result, err = store.edit(id, input)
+    vim.api.nvim_buf_delete(existing, { force = true })
+  end
+
+  local lines = vim.split(comment.body or '', '\n', { plain = true })
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].bufhidden = 'wipe'
+  vim.bo[buf].buftype = 'acwrite'
+  vim.api.nvim_buf_set_name(buf, name)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modified = false
+
+  local pending_kind = comment.kind
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = 'cursor', row = 1, col = 0,
+    width = math.min(80, vim.o.columns - 4),
+    height = math.max(3, math.min(15, #lines)),
+    style = 'minimal', border = 'rounded',
+    title = editor_title(pending_kind),
+    footer = editor_footer(),
+  })
+  vim.wo[win].wrap = true
+
+  local function close()
+    if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
+  end
+
+  -- Save the float's text and pending type. Returns the message to give once
+  -- the float is closed ('' for none), or nil when the float must stay open.
+  local function save()
+    local text_lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    while #text_lines > 0 and text_lines[#text_lines]:match('^%s*$') do
+      table.remove(text_lines)
+    end
+    if #text_lines == 0 then
+      print('Comment text is empty (q to cancel)')
+      return nil
+    end
+    local text = table.concat(text_lines, '\n')
+    local result, err = store.edit(id, text, pending_kind)
     if result == nil then
-      -- The body as it would have been saved, and the answer as typed
-      keep_typed(input, typed)
+      -- The float stays open: with the register, the only copy of the text
+      keep_typed(text)
       vim.notify('quickfix-review: the comment was not edited (' .. (err or UNCHANGED)
         .. '); the text is in register "', vim.log.levels.WARN)
-    elseif result == 'missing' then
-      print('Comment no longer exists')
-    elseif result == 'edited' then
-      print('Comment edited')
+      return nil
     end
-  end)
+    vim.bo[buf].modified = false
+    if result == 'missing' then return 'Comment no longer exists' end
+    if result == 'edited' then return 'Comment edited' end
+    return ''
+  end
+
+  -- <CR>: save and close now
+  local function save_and_close()
+    local msg = save()
+    if msg == nil then return end
+    close()
+    if msg ~= '' then print(msg) end
+  end
+
+  -- :w (and :wq, :x): the write is still running, and :wq/:x quit the current
+  -- window once it returns. Closing the float here would make that the code
+  -- window, so the close waits until the write is done; after :wq/:x the
+  -- float is already gone and it does nothing.
+  local function save_on_write()
+    local msg = save()
+    if msg == nil then return end
+    if msg ~= '' then print(msg) end
+    vim.schedule(close)
+  end
+
+  -- Step the pending type through the configured ones. A kind no longer
+  -- configured sits just before the first: next goes to the first type,
+  -- previous to the last.
+  local function step(dir)
+    local types = utils.get_comment_types()
+    if #types == 0 then return end
+    local idx = 0
+    for i, t in ipairs(types) do
+      if t == pending_kind then idx = i break end
+    end
+    if dir > 0 then
+      pending_kind = types[idx % #types + 1]
+    else
+      pending_kind = types[idx <= 1 and #types or idx - 1]
+    end
+    -- Title only: a full config round-trip would re-anchor the float to the
+    -- cursor inside it
+    vim.api.nvim_win_set_config(win, { title = editor_title(pending_kind) })
+  end
+
+  vim.api.nvim_create_autocmd('BufWriteCmd', { buffer = buf, callback = save_on_write })
+  local function map(lhs, fn, desc)
+    vim.keymap.set('n', lhs, fn, { buffer = buf, nowait = true, silent = true, desc = desc })
+  end
+  map('<CR>', save_and_close, 'Save the comment')
+  map('q', close, 'Close without saving')
+  map('<Esc>', close, 'Close without saving')
+  local keymaps = config.options.keymaps or {}
+  if keymaps.cycle_next then map(keymaps.cycle_next, function() step(1) end, 'Next comment type') end
+  if keymaps.cycle_previous then map(keymaps.cycle_previous, function() step(-1) end, 'Previous comment type') end
 end
 
--- Edit the text of a comment: the one on the row under the cursor in the
--- review's quickfix window, otherwise the one covering the cursor line (a
--- choice is offered when several do). Ids and bodies are taken before any
--- prompt, since vim.ui prompts may return after the review has changed.
+-- Edit the text and type of a comment: the one on the row under the cursor
+-- in the review's quickfix window, otherwise the one covering the cursor line
+-- (a choice is offered when several do), in an editor float (see
+-- open_editor). Ids, bodies and kinds are taken before any prompt, since
+-- vim.ui prompts may return after the review has changed.
 function M.edit_comment()
   if vim.fn.win_gettype() == 'quickfix' then
     if not store.is_current_view() then
@@ -536,25 +633,25 @@ function M.edit_comment()
       print('Comment no longer exists')
       return
     end
-    prompt_edit(id, c.body)
+    open_editor(id, c)
     return
   end
 
   local matches = {}
   for _, c in ipairs(comments_on_line()) do
-    table.insert(matches, { id = c.id, body = c.body, headline = store.headline(c) })
+    table.insert(matches, { id = c.id, body = c.body, kind = c.kind, headline = store.headline(c) })
   end
   if #matches == 0 then
     print(no_comment_message())
   elseif #matches == 1 then
-    prompt_edit(matches[1].id, matches[1].body)
+    open_editor(matches[1].id, matches[1])
   else
     vim.ui.select(matches, {
       prompt = 'Edit which comment?',
       -- First line only: a multi-line body would break the picker row
       format_item = function(m) return (m.headline:match('^[^\n]*')) end,
     }, function(m)
-      if m then prompt_edit(m.id, m.body) end
+      if m then open_editor(m.id, m) end
     end)
   end
 end

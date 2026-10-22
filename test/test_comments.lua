@@ -710,6 +710,120 @@ assert.run_test(':3,4ReviewDelete deletes comments in the range', function()
   qf.clear_review()
 end)
 
+local function deletes()
+  return #test_helper.log_ops(test_helper.events_path(), 'delete')
+end
+
+-- Run fn with vim.ui.select answering with choose(items) (nil cancels);
+-- returns the format_item rows of every picker shown
+local function with_select(choose, fn)
+  local shown = {}
+  local original = vim.ui.select
+  vim.ui.select = function(items, opts, on_choice)
+    table.insert(shown, vim.tbl_map(opts.format_item, items))
+    on_choice(choose(items))
+  end
+  local ok, err = pcall(fn)
+  vim.ui.select = original
+  if not ok then error(err, 0) end
+  return shown
+end
+
+-- Two comments covering line 5: a range one starting earlier, then a
+-- single-line one. Returns their ids in that (picker) order.
+local function two_on_line_5()
+  qf.clear_review()
+  qf.add_comment('ISSUE', { 3, 6 })
+  vim.fn.cursor(5, 1)
+  qf.add_comment('NOTE')
+  local ids = {}
+  for _, c in ipairs(qf.comments()) do ids[c.kind] = c.id end
+  vim.fn.cursor(5, 1)
+  return { ids.issue, ids.note }
+end
+
+assert.run_test('delete at cursor with two comments deletes only the picked one', function()
+  local ids = two_on_line_5()
+  local printed
+  local shown = with_select(function(items) return items[2] end, function()
+    printed = capture_print(function() qf.delete_comment() end)
+  end)
+  assert.length(shown, 1, 'one picker')
+  assert.length(shown[1], 2, 'both comments offered')
+  assert.truthy(shown[1][1]:find('ISSUE', 1, true), 'range comment first (starts earlier)')
+  local list = qf.comments()
+  assert.length(list, 1, 'one comment left')
+  assert.equals(list[1].id, ids[1], 'the other comment survives')
+  assert.equals(printed[1], string.format('Deleted 1 comment(s) from %s:5',
+    vim.fn.fnamemodify(abs, ':.')), 'says so')
+  qf.clear_review()
+end)
+
+assert.run_test('delete at cursor: a cancelled picker deletes nothing', function()
+  two_on_line_5()
+  local n = deletes()
+  local shown = with_select(function() return nil end, function() qf.delete_comment() end)
+  assert.length(shown, 1, 'picker shown')
+  assert.length(qf.comments(), 2, 'both comments remain')
+  assert.equals(deletes(), n, 'no delete logged')
+  qf.clear_review()
+end)
+
+assert.run_test('delete at cursor: a picked comment deleted meanwhile is reported gone', function()
+  local ids = two_on_line_5()
+  local n = deletes()
+  local printed
+  with_select(function(items)
+    -- Another change removes the chosen comment while the picker is open
+    assert.equals(store.remove(ids[2]), 1, 'removed elsewhere')
+    return items[2]
+  end, function()
+    printed = capture_print(function() qf.delete_comment() end)
+  end)
+  assert.equals(printed[1], 'Comment no longer exists', 'says so')
+  assert.equals(deletes(), n + 1, 'only the other removal logged')
+  assert.length(qf.comments(), 1, 'the unpicked comment remains')
+  assert.equals(qf.comments()[1].id, ids[1], 'it is the range comment')
+  qf.clear_review()
+end)
+
+assert.run_test('delete at cursor with one comment deletes it without a picker', function()
+  qf.clear_review()
+  vim.fn.cursor(5, 1)
+  qf.add_comment('ISSUE')
+  local shown = with_select(function() error('picker shown for one comment') end, function()
+    qf.delete_comment()
+  end)
+  assert.length(shown, 0, 'no picker')
+  assert.length(qf.comments(), 0, 'comment deleted')
+end)
+
+assert.run_test('delete with an explicit one-line range deletes every overlapping comment', function()
+  two_on_line_5()
+  local shown = with_select(function() error('picker shown for a range') end, function()
+    qf.delete_comment({ 5, 5 })
+  end)
+  assert.length(shown, 0, 'no picker')
+  assert.length(qf.comments(), 0, 'both deleted')
+end)
+
+assert.run_test(':ReviewDelete picks one; :5ReviewDelete deletes all on the line', function()
+  local ids = two_on_line_5()
+  local shown = with_select(function(items) return items[1] end, function()
+    vim.cmd('ReviewDelete')
+  end)
+  assert.length(shown, 1, ':ReviewDelete shows a picker')
+  assert.length(qf.comments(), 1, 'one deleted')
+  assert.equals(qf.comments()[1].id, ids[2], 'the unpicked one survives')
+
+  two_on_line_5()
+  shown = with_select(function() error('picker shown for a range') end, function()
+    vim.cmd('5ReviewDelete')
+  end)
+  assert.length(shown, 0, ':5ReviewDelete shows no picker')
+  assert.length(qf.comments(), 0, 'both deleted')
+end)
+
 local function same(actual, expected, msg)
   assert.truthy(vim.deep_equal(actual, expected),
     string.format('%s: expected %s, got %s', msg, vim.inspect(expected), vim.inspect(actual)))

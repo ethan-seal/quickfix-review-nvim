@@ -458,8 +458,9 @@ Other quickfix lists, and the |:ReviewTrash| list, never show it.
 
 Deleting comments:~
 
-Use `<leader>cd` to delete comments at the current line. In visual mode,
-all comments in the selected range will be deleted. In the quickfix window,
+Use `<leader>cd` to delete the comment at the current line; when several
+cover the line, you pick which one. In visual mode, all comments
+overlapping the selected range are deleted. In the quickfix window,
 press `dd` to delete the comment under cursor.
 
 ==============================================================================
@@ -509,8 +510,9 @@ press `dd` to delete the comment under cursor.
                         loses its command.
 
                                                            *:ReviewDelete*
-:[range]ReviewDelete    Delete comment(s) at the current line, or every
-                        comment overlapping [range].
+:[range]ReviewDelete    Delete the comment at the current line (you pick
+                        one when several cover the line), or every comment
+                        overlapping [range].
 
                                                              *:ReviewView*
 :ReviewView             View comment at the current line.
@@ -633,7 +635,9 @@ Default keymaps (normal and visual mode where applicable):
   `<leader>ca`    Add comment with current cycle type
   `+`             Cycle to next comment type
   `-`             Cycle to previous comment type
-  `<leader>cd`    Delete comment at cursor/selection
+  `<leader>cd`    Delete the comment at cursor (you pick one when several
+                  cover the line), or all comments overlapping the
+                  selection
   `<leader>cv`    View comment at cursor
   `<leader>cm`    Edit comment at cursor
   `<leader>ce`    Export review to markdown
@@ -688,7 +692,9 @@ require('quickfix-review').add_comment_cycle()
 
 require('quickfix-review').delete_comment({range})
                                                *quickfix-review.delete_comment()*
-    Delete comments at the current line or range.
+    Delete the comment at the current line (you pick one with
+    |vim.ui.select()| when several cover it), or every comment overlapping
+    {range} ({start_line, end_line}). See |:ReviewDelete|.
 
 require('quickfix-review').view_comment()           *quickfix-review.view_comment()*
     View the comment at the current line.

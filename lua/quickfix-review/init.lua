@@ -316,7 +316,7 @@ local function setup_keymaps()
 
   -- Add keymaps for comment deletion
   if keymaps.delete_comment then
-    map('n', keymaps.delete_comment, function() M.delete_comment() end, 'Delete comment at current line')
+    map('n', keymaps.delete_comment, function() M.delete_comment() end, 'Delete comment at current line (pick one when several)')
     map('v', keymaps.delete_comment, M.delete_comment_visual, 'Delete comments in selection')
   end
 

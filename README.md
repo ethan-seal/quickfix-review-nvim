@@ -145,7 +145,7 @@ require('quickfix-review').setup({
     cycle_next = '+',                  -- Cycle to next type
     cycle_previous = '-',              -- Cycle to previous type
 
-    delete_comment = '<leader>cd',
+    delete_comment = '<leader>cd',  -- Delete the comment at cursor (pick one when several), or all in the selection
     view = '<leader>cv',
     edit = '<leader>cm',  -- Edit the comment at cursor (or on the quickfix row)
     export = '<leader>ce',
@@ -288,7 +288,7 @@ A pattern that doesn't accept those four values falls back to the default with a
 | `:[range]ReviewAddPraise` | Add a PRAISE comment |
 | `:[range]ReviewAddQuestion` | Add a QUESTION comment |
 | `:[range]ReviewAddInsight` | Add an INSIGHT comment |
-| `:[range]ReviewDelete` | Delete comment(s) at cursor, or overlapping the range |
+| `:[range]ReviewDelete` | Delete the comment at the cursor (you pick one when several cover the line), or all comments overlapping the range |
 | `:ReviewView` | View comment at cursor |
 | `:ReviewEdit` | Edit the text of the comment at cursor, or of the row under the cursor in the review's quickfix window (single line: a multi-line comment is shown with breaks as `\n` and backslashes as `\\`; the change shows in `:ReviewHistory`) |
 | `:ReviewExport` | Export to markdown and clipboard |

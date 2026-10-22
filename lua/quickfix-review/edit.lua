@@ -326,23 +326,78 @@ end
 -- The quickfix cursor check (jump.lua) opens the float through this
 jump.set_view_comment(function() return M.view_comment() end)
 
--- Delete comment(s) at current line or selected range
-function M.delete_comment(range)
-  local file = utils.get_real_filepath()
-  local start_line, end_line
-  
-  if range then
-    start_line = range[1]
-    end_line = range[2]
-    -- Ensure start_line is less than or equal to end_line
-    if start_line > end_line then
-      start_line, end_line = end_line, start_line
-    end
+-- Remove the comment with this id, warning when the review could not be
+-- changed and saying so when the comment is already gone (store.remove
+-- re-resolves the id, so a stale id removes nothing).
+-- Returns: true when the comment was removed
+local function delete_one(id)
+  local removed, failure = store.remove(id)
+  if removed == nil and failure == 'partial' then
+    vim.notify('quickfix-review: the change was only partly written; the comment may not have been deleted',
+      vim.log.levels.WARN)
+  elseif removed == nil then
+    vim.notify('quickfix-review: the review could not be changed; the comment was not deleted',
+      vim.log.levels.WARN)
+  elseif removed == 0 then
+    print('Comment no longer exists')
   else
-    start_line = vim.fn.line('.')
-    end_line = start_line
+    return true
   end
-  
+  return false
+end
+
+-- Delete the comment covering the cursor line; when several do, ask which.
+-- Ids are taken before the picker, since vim.ui.select may return after the
+-- review has changed.
+local function delete_at_cursor()
+  local file = utils.get_real_filepath()
+  local line = vim.fn.line('.')
+  local display_file = vim.fn.fnamemodify(file, ':.')
+  local function delete(id)
+    if delete_one(id) then
+      print(string.format('Deleted 1 comment(s) from %s:%d', display_file, line))
+    end
+  end
+
+  local matches = {}
+  for _, c in ipairs(comments_on_line()) do
+    table.insert(matches, { id = c.id, headline = store.headline(c) })
+  end
+  if #matches == 0 then
+    if hidden_in_diff_buffer(vim.api.nvim_get_current_buf(), file) then
+      print(DIFF_MISS)
+    else
+      print(string.format('No comments found in %s:%d', display_file, line))
+    end
+  elseif #matches == 1 then
+    delete(matches[1].id)
+  else
+    vim.ui.select(matches, {
+      prompt = 'Delete which comment?',
+      -- First line only: a multi-line body would break the picker row
+      format_item = function(m) return (m.headline:match('^[^\n]*')) end,
+    }, function(m)
+      if m then delete(m.id) end
+    end)
+  end
+end
+
+-- Delete the comment at the current line (a choice is offered when several
+-- cover it), or every comment overlapping `range` ({start_line, end_line})
+function M.delete_comment(range)
+  if not range then
+    delete_at_cursor()
+    return
+  end
+
+  local file = utils.get_real_filepath()
+  local start_line = range[1]
+  local end_line = range[2]
+  -- Ensure start_line is less than or equal to end_line
+  if start_line > end_line then
+    start_line, end_line = end_line, start_line
+  end
+
   -- Remove comments overlapping the specified range
   local bufnr = vim.api.nvim_get_current_buf()
   local comments_deleted, failure = store.remove_if(function(item)
@@ -408,16 +463,7 @@ function M.delete_comment_from_qf()
     return
   end
 
-  local removed, failure = store.remove(id)
-  if removed == nil and failure == 'partial' then
-    vim.notify('quickfix-review: the change was only partly written; the comment may not have been deleted',
-      vim.log.levels.WARN)
-  elseif removed == nil then
-    vim.notify('quickfix-review: the review could not be changed; the comment was not deleted',
-      vim.log.levels.WARN)
-  elseif removed == 0 then
-    print('Comment no longer exists')
-  end
+  delete_one(id)
 end
 
 -- A multi-line body (one from an import or an external tool) is edited in a

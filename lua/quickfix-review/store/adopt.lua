@@ -27,22 +27,12 @@ local segment = require('quickfix-review.store.segment')
 local uv = vim.uv or vim.loop
 
 -- The paths of the review in storage dir `dir`, laid out as location.resolve
--- lays out a per-project dir
-local function location_of(dir)
-  return {
-    dir = dir, path = dir .. '/comments.json',
-    lock = dir .. '/lock', flock = dir .. '/journal.lock',
-    events = dir .. '/events', checkpoints = dir .. '/checkpoints', snapshots = dir .. '/snapshots',
-  }
-end
+-- lays out a stdpath dir (the source of an adopt is always read so)
+local location_of = location.stdpath_location
 
--- Whether the dir at `loc` already holds a review: any event segment or a
--- comments.json. Structural, not
--- "has comments": a review that was written to and then cleared still
--- counts, so adopting never has to merge two journals.
-local function has_review(loc)
-  return #segment.list(loc.events) > 0 or uv.fs_stat(loc.path) ~= nil
-end
+-- Whether the dir at `loc` already holds a review (location.has_review):
+-- structural, so adopting never has to merge two journals
+local has_review = location.has_review
 
 -- Whether the review at `loc` is a journal that never held a comment: no
 -- comments.json, and nothing live, trashed
@@ -107,9 +97,11 @@ local function copy_file(src, dst)
 end
 
 -- Copy the snapshots in `from` that `to` lacks (snapshots are named by the
--- sha of their content, so an existing one is the same)
+-- sha of their content, so an existing one is the same). With `tmp_dir`
+-- (in the repo) each is copied there and then linked into `to`, so no
+-- partial file is ever left under a sha name in snapshots/.
 -- Returns: ok, err
-local function copy_snapshots(from, to)
+local function copy_snapshots(from, to, tmp_dir)
   local handle = uv.fs_scandir(from)
   if not handle then return true, nil end
   if vim.fn.isdirectory(to) == 0 and not pcall(vim.fn.mkdir, to, 'p') then
@@ -119,11 +111,24 @@ local function copy_snapshots(from, to)
     local name, kind = uv.fs_scandir_next(handle)
     if not name then break end
     if kind == 'file' and name:match('^%x+$') and not uv.fs_stat(to .. '/' .. name) then
-      local ok, err = copy_file(from .. '/' .. name, to .. '/' .. name)
-      if not ok then return false, err end
+      if tmp_dir then
+        local tmp = segment.tmp_for(to .. '/' .. name, tmp_dir)
+        os.remove(tmp)
+        local ok, err = copy_file(from .. '/' .. name, tmp)
+        if not ok then return false, err end
+        local linked, lerr, lname = uv.fs_link(tmp, to .. '/' .. name)
+        os.remove(tmp)
+        if not linked and lname ~= 'EEXIST' then
+          return false, 'Could not create ' .. to .. '/' .. name .. ': ' .. tostring(lerr)
+        end
+      else
+        local ok, err = copy_file(from .. '/' .. name, to .. '/' .. name)
+        if not ok then return false, err end
+      end
     end
   end
   segment.fsync_dir(to)
+  if tmp_dir then segment.fsync_dir(tmp_dir) end
   return true, nil
 end
 
@@ -175,9 +180,13 @@ function M.adopt(old_dir)
       local replayed, perr = journal.replay(old.events, nil)
       if not replayed then return false, old.dir .. ': ' .. tostring(perr) end
       local from_root = old_root(old.dir, replayed.state)
-      -- Copied into a staging dir beside events/, then renamed into place,
-      -- so a reader sees no journal or all of it
-      local staging = loc.dir .. '/events.adopt-' .. uv.os_getpid()
+      -- Copied into a staging dir beside events/ (in the repo, in
+      -- local/tmp), then renamed into place, so a reader sees no journal or
+      -- all of it
+      local tmp_dir, terr = location.ensure_tmp(loc)
+      if terr then return false, terr end
+      local staging_dir = tmp_dir or loc.dir
+      local staging = staging_dir .. '/events.adopt-' .. uv.os_getpid()
       vim.fn.delete(staging, 'rf')
       if not pcall(vim.fn.mkdir, staging, 'p') or vim.fn.isdirectory(staging) == 0 then
         return false, 'Could not create ' .. staging
@@ -198,17 +207,47 @@ function M.adopt(old_dir)
           return false, 'Could not write to ' .. last .. ': ' .. tostring(aerr)
         end
       end
+      -- In the repo, events/.gitattributes moves with the journal: the
+      -- existing one (its bytes kept) into the staging dir, else a new one,
+      -- so the adopted events/ is still marked (and an events/ holding only
+      -- it can be replaced). Moved back if the journal can't be moved in.
+      local marker, staged_marker, marker_moved
+      if loc.in_repo then
+        marker, staged_marker = loc.events .. '/.gitattributes', staging .. '/.gitattributes'
+        if uv.fs_lstat(marker) then
+          local mv, merr = uv.fs_rename(marker, staged_marker)
+          if not mv then
+            vim.fn.delete(staging, 'rf')
+            return false, 'Could not move ' .. marker .. ': ' .. tostring(merr)
+          end
+          marker_moved = true
+        else
+          local res, cerr = segment.create_file(staged_marker, location.GITATTRIBUTES, 420,
+            segment.tmp_for(staged_marker, tmp_dir))
+          if not res then
+            vim.fn.delete(staging, 'rf')
+            return false, tostring(cerr)
+          end
+        end
+      end
+      local function abandon()
+        if marker_moved then
+          if vim.fn.isdirectory(loc.events) == 0 then pcall(vim.fn.mkdir, loc.events, 'p') end
+          uv.fs_rename(staged_marker, marker)
+        end
+        vim.fn.delete(staging, 'rf')
+      end
       segment.fsync_dir(staging)
       -- An empty journal (see empty_journal) is moved aside, and put back if
       -- the new one can't be moved in; an empty events/ (a review never
       -- written to) is replaced
       local aside
       if replace then
-        aside = loc.dir .. '/events.replaced-' .. uv.os_getpid()
+        aside = staging_dir .. '/events.replaced-' .. uv.os_getpid()
         vim.fn.delete(aside, 'rf')
         local moved, merr = uv.fs_rename(loc.events, aside)
         if not moved then
-          vim.fn.delete(staging, 'rf')
+          abandon()
           return false, 'Could not move ' .. loc.events .. ' aside: ' .. tostring(merr)
         end
       elseif uv.fs_stat(loc.events) then
@@ -216,13 +255,14 @@ function M.adopt(old_dir)
       end
       local renamed, rerr = uv.fs_rename(staging, loc.events)
       if not renamed then
-        vim.fn.delete(staging, 'rf')
         if aside then uv.fs_rename(aside, loc.events) end
+        abandon()
         return false, 'Could not move ' .. staging .. ' to ' .. loc.events .. ': ' .. tostring(rerr)
       end
       segment.fsync_dir(loc.dir)
+      if tmp_dir then segment.fsync_dir(tmp_dir) end
       if aside then vim.fn.delete(aside, 'rf') end
-      local sok, serr = copy_snapshots(old.snapshots, loc.snapshots)
+      local sok, serr = copy_snapshots(old.snapshots, loc.snapshots, tmp_dir)
       if not sok then
         vim.notify('quickfix-review: adopted the review, but not all of its snapshots: ' .. tostring(serr),
           vim.log.levels.WARN)

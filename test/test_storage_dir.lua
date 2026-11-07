@@ -23,9 +23,25 @@ local function fresh_data()
   return dir
 end
 
+-- Run git in `dir` hermetically: no global or system config, a fixed
+-- identity, no signing. Returns the vim.system result.
+local function git_in(dir, ...)
+  local cmd = { 'git', '-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false',
+    '-c', 'init.defaultBranch=main', ... }
+  return vim.system(cmd, { text = true, env = { GIT_CONFIG_GLOBAL = '/dev/null', GIT_CONFIG_NOSYSTEM = '1' } })
+    :wait()
+end
+
+-- git in `dir`, which must succeed; returns its stdout
+local function git(dir, ...)
+  local r = git_in(dir, ...)
+  assert.equals(r.code, 0, 'git ' .. table.concat({ ... }, ' ') .. ': ' .. tostring(r.stderr))
+  return r.stdout
+end
+
 local function git_init(dir)
-  local r = vim.system({ 'git', 'init', '-q', dir }, { text = true }):wait()
-  assert.equals(r.code, 0, 'git init ' .. dir)
+  vim.fn.mkdir(dir, 'p')
+  git(dir, 'init', '-q')
 end
 
 -- A temp git repo holding one file; returns its real path and the file.
@@ -40,8 +56,31 @@ local function make_repo(name)
   return real, file
 end
 
+-- A temp dir that is not in a git repo, holding one file; returns its real
+-- path and the file (its review is in stdpath_dir)
+local function make_plain(name)
+  local dir = vim.fn.tempname() .. '-' .. name
+  vim.fn.mkdir(dir, 'p')
+  local real = vim.uv.fs_realpath(dir)
+  local file = real .. '/' .. name .. '.txt'
+  vim.fn.writefile({ 'line 1', 'line 2', 'line 3' }, file)
+  return real, file
+end
+
 local function cd(dir)
   vim.cmd('cd ' .. vim.fn.fnameescape(dir))
+end
+
+-- Storage dir of the non-git project whose root is `root`, under
+-- stdpath('data')
+local function stdpath_dir(root)
+  return vim.env.XDG_DATA_HOME .. '/nvim/quickfix-review/' .. vim.fn.fnamemodify(root, ':t') .. '-'
+    .. vim.fn.sha256(root):sub(1, 12)
+end
+
+-- Storage dir of the git repo whose toplevel is `root`: in the repo
+local function repo_dir(root)
+  return root .. '/.quickfix-review'
 end
 
 -- Simulate quitting and reopening Neovim in the current cwd, with no
@@ -117,19 +156,52 @@ local function storage_test(name, fn)
   end)
 end
 
-storage_test('the default dir is stdpath(data)/quickfix-review/<basename>-<sha256 prefix>', function()
-  local data = fresh_data()
+storage_test('in a git repo the default dir is <root>/.quickfix-review, with local/ for the untracked files', function()
   local a = make_repo('proj')
+  cd(a)
+  restart()
+  local _, store = mods()
+  local expected = a .. '/.quickfix-review'
+  assert.equals(store.dir(), expected, 'storage dir')
+  assert.equals(store.path(), expected .. '/local/comments.json', 'storage file')
+  assert.equals(store.events_dir(), expected .. '/events', 'journal')
+  assert.equals(store.checkpoints_dir(), expected .. '/local/checkpoints', 'checkpoints')
+  assert.equals(store.root(), a, 'project root')
+  local loc = require('quickfix-review.store.location').resolve()
+  assert.truthy(loc.in_repo, 'in the repo')
+  assert.truthy(loc.per_project, 'per project')
+  assert.equals(loc.lock, expected .. '/local/lock', 'mkdir lock')
+  assert.equals(loc.flock, expected .. '/local/journal.lock', 'flock')
+  assert.equals(loc.snapshots, expected .. '/snapshots', 'snapshots')
+  assert.equals(loc.refs, expected .. '/local/refs', 'refs')
+  assert.equals(loc.gc_stamp, expected .. '/local/gc.stamp', 'gc stamp')
+  assert.equals(loc.tmp, expected .. '/local/tmp', 'tmp')
+  assert.falsy(vim.uv.fs_stat(expected), 'nothing created before the first write')
+end)
+
+storage_test('outside git the default dir is stdpath(data)/quickfix-review/<basename>-<sha256 prefix>', function()
+  local data = fresh_data()
+  local a = make_plain('plainproj')
   cd(a)
   restart()
   local _, store = mods()
   local expected = data .. '/nvim/quickfix-review/' .. vim.fn.fnamemodify(a, ':t') .. '-'
     .. vim.fn.sha256(a):sub(1, 12)
+  assert.equals(expected, stdpath_dir(a), 'stdpath_dir')
   assert.equals(store.dir(), expected, 'storage dir')
   assert.equals(store.path(), expected .. '/comments.json', 'storage file')
   assert.equals(store.events_dir(), expected .. '/events', 'journal')
   assert.equals(store.checkpoints_dir(), expected .. '/checkpoints', 'checkpoints')
   assert.equals(store.root(), a, 'project root')
+  local loc = require('quickfix-review.store.location').resolve()
+  assert.falsy(loc.in_repo, 'not in a repo')
+  assert.truthy(loc.per_project, 'per project')
+  assert.equals(loc.lock, expected .. '/lock', 'mkdir lock')
+  assert.equals(loc.flock, expected .. '/journal.lock', 'flock')
+  assert.equals(loc.snapshots, expected .. '/snapshots', 'snapshots')
+  assert.equals(loc.refs, expected .. '/events', 'refs beside the segments')
+  assert.equals(loc.gc_stamp, expected .. '/snapshots/gc.stamp', 'gc stamp')
+  assert.equals(loc.tmp, nil, 'no tmp dir')
 end)
 
 storage_test('two repos get different dirs and their comments stay apart', function()
@@ -324,12 +396,6 @@ end)
 
 -- The legacy global file, with comments in repo a, repo b and a sibling of a
 -- whose path has a as a prefix
--- Storage dir of the project whose root is `root`, under stdpath('data')
-local function default_dir(root)
-  return vim.env.XDG_DATA_HOME .. '/nvim/quickfix-review/' .. vim.fn.fnamemodify(root, ':t') .. '-'
-    .. vim.fn.sha256(root):sub(1, 12)
-end
-
 local function seed_legacy(a, b, v1)
   local config = mods()
   local legacy = config.legacy_storage_file()
@@ -454,7 +520,7 @@ storage_test('a legacy file is not imported into a review rooted at $HOME', func
     end
     assert.length(warns, 1, 'one warning')
     assert.truthy(warns[1].msg:find(legacy, 1, true), 'the warning names the legacy file: ' .. warns[1].msg)
-    assert.length(vim.fn.glob(default_dir(home) .. '/events/*', false, true), 0, 'no journal started')
+    assert.length(vim.fn.glob(stdpath_dir(home) .. '/events/*', false, true), 0, 'no journal started')
     assert.equals(read_bytes(legacy), bytes, 'legacy bytes unchanged')
   end)
   vim.env.HOME = original_home
@@ -525,7 +591,7 @@ storage_test('a failed legacy import is retried, not marked done by the next cha
   cd(c)
   capture_notify(function() restart() end)
   local _, store = mods()
-  local dir_a = default_dir(a)
+  local dir_a = repo_dir(a)
   local segment = require('quickfix-review.store.segment')
   local original_create = segment.create
   segment.create = function(dir, ...)
@@ -570,7 +636,7 @@ storage_test('an import interrupted in this session leaves no journal and is imp
   cd(c)
   capture_notify(function() restart() end)
   local _, store = mods()
-  local dir_a = default_dir(a)
+  local dir_a = repo_dir(a)
   local segment = require('quickfix-review.store.segment')
   local original_create = segment.create
   local torn = 0
@@ -652,6 +718,9 @@ storage_test('an explicit storage_file behaves as before: one file, no dirs, no 
   cd(a)
   assert.length(store.all(), 1, 'same global review in every project')
   assert.equals(vim.fn.isdirectory(data .. '/nvim/quickfix-review'), 0, 'no storage dirs created')
+  assert.falsy(vim.uv.fs_stat(repo_dir(a)), 'no review dir in repo a')
+  assert.falsy(vim.uv.fs_stat(repo_dir(b)), 'no review dir in repo b')
+  assert.falsy(vim.uv.fs_stat(repo_dir(test_helper.root)), 'none in the plugin checkout')
   os.remove(file)
 end)
 
@@ -677,14 +746,16 @@ storage_test('a failed git rev-parse is retried: the review ends up in the root\
   local sub = a .. '/sub'
   vim.fn.mkdir(sub, 'p')
   cd(sub)
-  local expected = data .. '/nvim/quickfix-review/' .. vim.fn.fnamemodify(a, ':t') .. '-'
-    .. vim.fn.sha256(a):sub(1, 12)
+  assert.truthy(data, 'fresh data dir')
+  local expected = repo_dir(a)
   with_failing_git(function(git)
     local calls = capture_notify(function() restart() end)
     local _, store = mods()
     local dir
     calls = vim.list_extend(calls, capture_notify(function() dir = store.dir() end))
     assert.truthy(dir ~= expected, 'falls back to the cwd while git fails')
+    -- A cwd guess git never confirmed is not a git toplevel: stdpath
+    assert.equals(dir, stdpath_dir(sub), 'the cwd guess is kept in stdpath')
     local warns = mentioning(calls, 'git rev-parse failed in ' .. sub)
     assert.length(warns, 1, 'warned once about the fallback')
     assert.equals(warns[1].level, vim.log.levels.WARN, 'at WARN level')
@@ -694,6 +765,35 @@ storage_test('a failed git rev-parse is retried: the review ends up in the root\
     assert.equals(store.dir(), expected, 'the root\'s dir once git answers')
     assert.equals(store.root(), a, 'project root')
   end)
+end)
+
+storage_test('git failing after it answered keeps the review in the repo (the root it last gave)', function()
+  local a = make_repo('tau3')
+  local sub = a .. '/sub'
+  vim.fn.mkdir(sub, 'p')
+  cd(sub)
+  restart()
+  local _, store = mods()
+  assert.equals(store.dir(), repo_dir(a), 'in the repo while git answers')
+  -- git's answer for the cwd is cached, so it fails here as git_toplevel
+  -- would once the cache is gone: a transient failure
+  local utils = require('quickfix-review.utils')
+  local original = utils.git_toplevel
+  utils.git_toplevel = function() return nil, true end
+  local config = mods()
+  local ok, err = pcall(function()
+    store._set_retry_ns(0)
+    -- '' is the default dir too, but a new option value: resolved again
+    config.options.storage_dir = ''
+    local calls = capture_notify(function()
+      assert.equals(store.dir(), repo_dir(a), 'still in the repo while git fails')
+      assert.equals(store.root(), a, 'the root git last gave')
+    end)
+    assert.length(mentioning(calls, 'git rev-parse failed in ' .. sub), 1, 'the fallback warned about')
+  end)
+  utils.git_toplevel = original
+  config.options.storage_dir = nil
+  if not ok then error(err, 0) end
 end)
 
 -- In a subdir of a repo, with git failing (the review is in the fallback
@@ -710,7 +810,7 @@ local function with_window_expiring_mid_change(a, seed, change, check)
     capture_notify(function() restart() end)
     local _, store = mods()
     fallback = store.dir()
-    assert.truthy(fallback ~= default_dir(a), 'in the fallback dir while git fails')
+    assert.truthy(fallback ~= repo_dir(a), 'in the fallback dir while git fails')
     if seed then seed(store) end
     store._set_retry_ns(0)
     local lock = require('quickfix-review.store.lock')
@@ -738,7 +838,7 @@ storage_test('a retry window expiring mid-change still writes to the project res
     assert.length(list, 1, 'the add is visible')
     assert.equals(list[1].body, 'mid', 'the comment added')
     assert.length(test_helper.log_ops(fallback .. '/events', 'add'), 1, 'add event in the fallback log')
-    assert.falsy(vim.uv.fs_stat(default_dir(a) .. '/events'), 'nothing written to the root\'s dir')
+    assert.falsy(vim.uv.fs_stat(repo_dir(a) .. '/events'), 'nothing written to the root\'s dir')
   end)
 end)
 
@@ -1086,7 +1186,7 @@ storage_test('a failing legacy import warns once, not at every sync', function()
   cd(c)
   capture_notify(function() restart() end)
   local _, store = mods()
-  with_failing_append(default_dir(a), function()
+  with_failing_append(repo_dir(a), function()
     local calls = capture_notify(function()
       cd(a)
       for _ = 1, 3 do store.all() end
@@ -1106,7 +1206,7 @@ storage_test('an unreadable legacy log is warned about once while the import kee
   cd(c)
   capture_notify(function() restart() end)
   local _, store = mods()
-  with_failing_append(default_dir(a), function()
+  with_failing_append(repo_dir(a), function()
     local calls = capture_notify(function()
       cd(a)
       for _ = 1, 3 do store.all() end
@@ -1136,7 +1236,8 @@ storage_test('a failed import retried by a change does not start the log without
       cd(a)
       assert.falsy(store.add({ filename = file_a, lnum = 2, kind = 'note', body = 'first' }), 'the add refused')
     end)
-    assert.falsy(vim.uv.fs_stat(store.events_dir()), 'no journal started without the import')
+    -- (events/ itself may exist: the lock seeds its .gitattributes)
+    assert.equals(vim.fn.glob(store.events_dir() .. '/*.jsonl'), '', 'no journal started without the import')
   end)
   segment.create = original_create
   if not ok then error(err, 0) end
@@ -1163,7 +1264,7 @@ storage_test('a retry window expiring between the snapshot and the add keeps bot
     capture_notify(function() restart() end)
     local _, store = mods()
     local fallback = store.dir()
-    assert.truthy(fallback ~= default_dir(a), 'in the fallback dir while git fails')
+    assert.truthy(fallback ~= repo_dir(a), 'in the fallback dir while git fails')
     store._set_retry_ns(0)
     local snapshots = require('quickfix-review.snapshots')
     local original_put, original_input = snapshots.put, vim.fn.input
@@ -1192,7 +1293,7 @@ storage_test('a retry window expiring between the snapshot and the add keeps bot
     end
     assert.truthy(sha, 'the add event, with its anchor, in the fallback log')
     assert.truthy(vim.uv.fs_stat(fallback .. '/snapshots/' .. sha), 'its snapshot in the same dir')
-    local other = default_dir(a)
+    local other = repo_dir(a)
     assert.falsy(vim.uv.fs_stat(other .. '/events'), 'no journal in the root\'s dir')
     assert.falsy(vim.uv.fs_stat(other .. '/snapshots/' .. sha), 'no snapshot in the root\'s dir')
   end)
@@ -1345,12 +1446,12 @@ storage_test('a log written with absolute filenames loads unchanged, its bytes u
 end)
 
 storage_test(':ReviewAdopt after moving the project: the comment is at the same file and line', function()
-  local a, file = make_repo('mu')
+  local a, file = make_plain('mu')
   cd(a)
   restart()
   local _, store = mods()
   assert.truthy(store.add({ filename = file, lnum = 2, kind = 'issue', body = 'moved' }), 'added')
-  local old = default_dir(a)
+  local old = stdpath_dir(a)
   assert.equals(store.dir(), old, 'in the default dir')
   -- A snapshot, to check it is copied along
   local sha = ('ab'):rep(32)
@@ -1394,16 +1495,16 @@ storage_test(':ReviewAdopt after moving the project: the comment is at the same 
 end)
 
 storage_test(':ReviewAdopt after moving the project, with a legacy global file to import from', function()
-  local a, file = make_repo('omi')
-  local x = make_repo('omx')
-  local y = make_repo('omy')
+  local a, file = make_plain('omi')
+  local x = make_plain('omx')
+  local y = make_plain('omy')
   -- Comments only outside the project: nothing to import into it
   local legacy = seed_legacy(x, y, false)
   cd(a)
   restart()
   local _, store = mods()
   assert.truthy(store.add({ filename = file, lnum = 3, kind = 'note', body = 'legacy moved' }), 'added')
-  local old = default_dir(a)
+  local old = stdpath_dir(a)
   assert.equals(store.dir(), old, 'in the default dir')
   store.save()
   cd(original_cwd)
@@ -1429,8 +1530,8 @@ storage_test(':ReviewAdopt after moving the project, with a legacy global file t
 end)
 
 storage_test(':ReviewAdopt refuses when the current project already has a review', function()
-  local a, file_a = make_repo('nu')
-  local b, file_b = make_repo('xi2')
+  local a, file_a = make_plain('nu')
+  local b, file_b = make_plain('xi2')
   cd(a)
   restart()
   local _, store = mods()
@@ -1454,7 +1555,7 @@ storage_test(':ReviewAdopt refuses when the current project already has a review
 end)
 
 storage_test(':ReviewAdopt refuses its own dir, a dir with no review, and a storage_file setup', function()
-  local a = make_repo('omega')
+  local a = make_plain('omega')
   local empty = vim.fn.tempname() .. '-empty'
   vim.fn.mkdir(empty, 'p')
   cd(a)
@@ -1537,8 +1638,8 @@ local function by_id(list)
 end
 
 storage_test(':ReviewAdopt remaps absolute filenames logged before they were relative', function()
-  local a, file = make_repo('tau')
-  local old = default_dir(a)
+  local a, file = make_plain('tau')
+  local old = stdpath_dir(a)
   write_absolute_review(old, { { id = 'abs1', filename = file, lnum = 2 } })
   local old_seg = read_bytes(old .. '/events/000001.jsonl')
   local moved, new, store = move_and_adopt(a, old)
@@ -1568,13 +1669,13 @@ storage_test(':ReviewAdopt remaps absolute filenames logged before they were rel
 end)
 
 storage_test('an absolute path outside the old root is unchanged after adopt', function()
-  local a, file = make_repo('ups')
+  local a, file = make_plain('ups')
   local sibling = a .. '2'
   vim.fn.mkdir(sibling, 'p')
   vim.fn.writefile({ 'x', 'y' }, sibling .. '/s.txt')
   local outside = vim.uv.fs_realpath(vim.fn.fnamemodify(vim.fn.tempname(), ':h')) .. '/ups-out.txt'
   vim.fn.writefile({ 'x', 'y' }, outside)
-  local old = default_dir(a)
+  local old = stdpath_dir(a)
   write_absolute_review(old, {
     { id = 'under', filename = file, lnum = 1 },
     { id = 'sib', filename = sibling .. '/s.txt', lnum = 2 },
@@ -1589,7 +1690,7 @@ storage_test('an absolute path outside the old root is unchanged after adopt', f
 end)
 
 storage_test('a review with only relative filenames gets no rebase event', function()
-  local a, file = make_repo('phi')
+  local a, file = make_plain('phi')
   cd(a)
   restart()
   local _, store = mods()
@@ -1600,7 +1701,7 @@ storage_test('a review with only relative filenames gets no rebase event', funct
 end)
 
 storage_test('a dir whose journal holds only an empty import is accepted by adopt', function()
-  local a, file = make_repo('chi')
+  local a, file = make_plain('chi')
   cd(a)
   restart()
   local _, store = mods()
@@ -1614,7 +1715,7 @@ storage_test('a dir whose journal holds only an empty import is accepted by adop
   moved = vim.uv.fs_realpath(moved)
   -- A journal holding only an empty import, as reviews created before empty
   -- imports were skipped have
-  local new = default_dir(moved)
+  local new = stdpath_dir(moved)
   local log = require('quickfix-review.log')
   local jid = log.new_journal_id()
   vim.fn.mkdir(new .. '/events', 'p')
@@ -1638,7 +1739,7 @@ storage_test('a dir whose journal holds only an empty import is accepted by adop
   assert.equals(vim.fn.glob(new .. '/events.adopt-*'), '', 'no staging dir is left')
 
   -- A cleared review is still a review
-  local c, file_c = make_repo('psi')
+  local c, file_c = make_plain('psi')
   cd(c)
   note(file_c, 'cleared')
   store.clear()
@@ -1652,8 +1753,8 @@ storage_test('a dir whose journal holds only an empty import is accepted by adop
 end)
 
 storage_test('a checkpoint from before the STATE_VERSION bump is ignored and rebuilt', function()
-  local a, file = make_repo('omg')
-  local old = default_dir(a)
+  local a, file = make_plain('omg')
+  local old = stdpath_dir(a)
   write_absolute_review(old, { { id = 'abs1', filename = file, lnum = 2 } })
   local moved, new, store = move_and_adopt(a, old)
   local reduce = require('quickfix-review.reduce')
@@ -1686,8 +1787,8 @@ storage_test('a checkpoint from before the STATE_VERSION bump is ignored and reb
 end)
 
 storage_test('chained adopts: absolute filenames from the first root follow to the last', function()
-  local a, file = make_repo('kap')
-  local old = default_dir(a)
+  local a, file = make_plain('kap')
+  local old = stdpath_dir(a)
   write_absolute_review(old, { { id = 'abs1', filename = file, lnum = 3 } })
   local b, b_dir, store = move_and_adopt(a, old)
   note(b .. '/kap.txt', 'in b')
@@ -1700,6 +1801,408 @@ storage_test('chained adopts: absolute filenames from the first root follow to t
   local rebases = rebases_in(c_dir)
   assert.length(rebases, 1, 'one rebase event')
   assert.equals(rebases[1].from_root, a, 'the first root\'s')
+end)
+
+-- Every file under `dir`, relative, mapped to its bytes
+local function tree(dir)
+  local out = {}
+  for _, p in ipairs(vim.fn.globpath(dir, '**', true, true)) do
+    if vim.fn.isdirectory(p) == 0 then out[p:sub(#dir + 2)] = read_bytes(p) end
+  end
+  for _, p in ipairs(vim.fn.globpath(dir, '**/.*', true, true)) do
+    if vim.fn.isdirectory(p) == 0 then out[p:sub(#dir + 2)] = read_bytes(p) end
+  end
+  return out
+end
+
+-- The temp files (name containing .tmp. or an adopt/replaced staging dir)
+-- anywhere under `dir`
+local function temps_under(dir)
+  local out = {}
+  for rel in pairs(tree(dir)) do
+    if rel:find('%.tmp%.') or rel:find('adopt%-') or rel:find('replaced%-') then table.insert(out, rel) end
+  end
+  table.sort(out)
+  return out
+end
+
+storage_test('a fresh in-repo review: only events/ and snapshots/ are tracked, local/ ignores itself', function()
+  local snapshots = require('quickfix-review.snapshots')
+  -- A review to adopt, in place before the repo's first comment
+  local plain, plain_file = make_plain('hygsrc')
+  cd(plain)
+  restart()
+  snapshots = require('quickfix-review.snapshots')
+  note(plain_file, 'adopted')
+  assert.truthy(snapshots.put({ 'adopted ' .. vim.uv.hrtime() }), 'a snapshot to adopt')
+  local old = stdpath_dir(plain)
+  local a, file = make_repo('hyg')
+  cd(a)
+  restart({ segment_max_bytes = 1 })
+  local adopted = capture_notify(function() vim.cmd('ReviewAdopt ' .. vim.fn.fnameescape(old)) end)
+  assert.length(mentioning(adopted, 'Adopted'), 1, 'adopted: ' .. vim.inspect(adopted))
+  local _, store = mods()
+  snapshots = require('quickfix-review.snapshots')
+  note(file, 'one')
+  assert.truthy(snapshots.put({ 'line 1', 'line 2', 'line 3' }), 'snapshot written')
+  note(file, 'two')
+  note(file, 'three')
+  store.save()
+  store.gc_snapshots({ force = true })
+  assert.length(store.all(), 4, 'the adopted comment and three more')
+  local dir = repo_dir(a)
+  assert.equals(read_bytes(dir .. '/local/.gitignore'), '*\n', 'local/ ignores itself')
+  assert.equals(read_bytes(dir .. '/events/.gitattributes'), '*.jsonl merge=union\n', 'segments merge by union')
+  assert.truthy(#test_helper.segments_of(dir .. '/events') > 1, 'sealed into several segments')
+  git(a, 'add', '-A')
+  local status = git(a, 'status', '--short', '--ignored', '--', '.quickfix-review')
+  for _, line in ipairs(vim.split(status, '\n', { trimempty = true })) do
+    local ok = line:match('^A  %.quickfix%-review/events/') or line:match('^A  %.quickfix%-review/snapshots/')
+      or line == '!! .quickfix-review/local/'
+    assert.truthy(ok, 'only events/, snapshots/ and an ignored local/: ' .. line)
+  end
+  assert.truthy(status:find('!! .quickfix-review/local/', 1, true), 'local/ is ignored')
+  assert.truthy(status:find('A  .quickfix-review/snapshots/', 1, true), 'the snapshot is tracked')
+  assert.truthy(status:find('A  .quickfix-review/events/.gitattributes', 1, true), 'the marker is tracked')
+  assert.equals(vim.uv.fs_stat(a .. '/.gitignore'), nil, 'no root .gitignore')
+  assert.equals(vim.uv.fs_stat(a .. '/.gitattributes'), nil, 'no root .gitattributes')
+  local adds = test_helper.log_ops(dir .. '/events', 'add')
+  assert.length(adds, 4, 'every add is in the repo journal')
+  for _, r in ipairs(adds) do
+    assert.falsy(r.comment.filename:match('^/'), 'filenames are relative: ' .. r.comment.filename)
+    if r.comment.body ~= 'adopted' then assert.equals(r.comment.filename, 'hyg.txt', 'repo-relative') end
+  end
+  assert.length(temps_under(dir), 0, 'no temp or staging dir left')
+end)
+
+storage_test('existing marker files are left byte-identical', function()
+  local a, file = make_repo('mrk')
+  local dir = repo_dir(a)
+  vim.fn.mkdir(dir .. '/local', 'p')
+  vim.fn.mkdir(dir .. '/events', 'p')
+  vim.fn.writefile({ '# mine', '*' }, dir .. '/local/.gitignore')
+  vim.fn.writefile({ '*.jsonl merge=union', '# mine' }, dir .. '/events/.gitattributes')
+  local ignore, attrs = read_bytes(dir .. '/local/.gitignore'), read_bytes(dir .. '/events/.gitattributes')
+  cd(a)
+  restart()
+  note(file, 'one')
+  assert.equals(read_bytes(dir .. '/local/.gitignore'), ignore, '.gitignore untouched')
+  assert.equals(read_bytes(dir .. '/events/.gitattributes'), attrs, '.gitattributes untouched')
+end)
+
+storage_test('a failed rename leaves temp files only under local/tmp', function()
+  local a, file = make_repo('crash')
+  cd(a)
+  restart({ segment_max_bytes = 1 })
+  note(file, 'one')
+  local snapshots = require('quickfix-review.snapshots')
+  local dir = repo_dir(a)
+  local real_rename, real_link, real_unlink = vim.uv.fs_rename, vim.uv.fs_link, vim.uv.fs_unlink
+  -- A crash between writing the temp and moving it into place: neither the
+  -- move nor the cleanup happens
+  vim.uv.fs_rename = function() return nil, 'EIO: simulated' end
+  vim.uv.fs_link = function() return nil, 'EIO: simulated' end
+  vim.uv.fs_unlink = function() return nil, 'EIO: simulated' end
+  local real_remove = os.remove
+  -- Cleanups before the write still run; only the ones after a failed move
+  -- are lost, as in a crash
+  local armed = false
+  os.remove = function(p) if armed then return nil end return real_remove(p) end
+  local real_close = vim.uv.fs_close
+  vim.uv.fs_close = function(...) armed = true return real_close(...) end
+  local ok, err = pcall(function()
+    snapshots.put({ 'crash ' .. vim.uv.hrtime() })
+    capture_notify(function() pcall(note, file, 'two') end)
+  end)
+  vim.uv.fs_rename, vim.uv.fs_link, vim.uv.fs_unlink = real_rename, real_link, real_unlink
+  os.remove, vim.uv.fs_close = real_remove, real_close
+  if not ok then error(err, 0) end
+  assert.truthy(#temps_under(dir) > 0, 'the simulated crash left temps behind')
+  for _, rel in ipairs(temps_under(dir)) do
+    assert.truthy(rel:match('^local/tmp/'), 'temp under local/tmp: ' .. rel)
+  end
+  for _, name in ipairs(vim.fn.readdir(dir .. '/events')) do
+    assert.truthy(name:match('^%d+%.jsonl$') or name == '.gitattributes', 'nothing else in events/: ' .. name)
+  end
+  if vim.fn.isdirectory(dir .. '/snapshots') == 1 then
+    for _, name in ipairs(vim.fn.readdir(dir .. '/snapshots')) do
+      assert.truthy(name:match('^%x+$'), 'nothing else in snapshots/: ' .. name)
+    end
+  end
+end)
+
+storage_test('moving a git repo keeps its review, with no adopt', function()
+  local a, file = make_repo('mv')
+  cd(a)
+  restart()
+  note(file, 'kept')
+  cd(original_cwd)
+  local moved = a .. '-moved'
+  assert.truthy(vim.uv.fs_rename(a, moved), 'moved')
+  moved = vim.uv.fs_realpath(moved)
+  cd(moved)
+  restart()
+  local _, store = mods()
+  assert.equals(store.dir(), moved .. '/.quickfix-review', 'the review moved with the repo')
+  local all = store.all()
+  assert.length(all, 1, 'one comment')
+  assert.equals(all[1].filename, moved .. '/mv.txt', 'under the new root')
+end)
+
+storage_test('two branches adding comments merge by union with no conflict', function()
+  local a, file = make_repo('mrg')
+  cd(a)
+  restart()
+  note(file, 'base')
+  git(a, 'add', '-A')
+  git(a, 'commit', '-q', '-m', 'base')
+  git(a, 'checkout', '-q', '-b', 'b')
+  restart()
+  note(file, 'on b')
+  git(a, 'add', '-A')
+  git(a, 'commit', '-q', '-m', 'b')
+  git(a, 'checkout', '-q', 'main')
+  restart()
+  local _, store = mods()
+  assert.length(store.all(), 1, 'main has the base comment only')
+  note(file, 'on main')
+  git(a, 'add', '-A')
+  git(a, 'commit', '-q', '-m', 'main')
+  local r = git_in(a, 'merge', '-q', '--no-edit', 'b')
+  assert.equals(r.code, 0, 'merge succeeds: ' .. tostring(r.stderr) .. tostring(r.stdout))
+  for _, seg in ipairs(test_helper.segments_of(repo_dir(a) .. '/events')) do
+    assert.falsy(read_bytes(seg.path):find('<<<<<<<', 1, true), 'no conflict markers')
+  end
+  restart()
+  _, store = mods()
+  local bodies = {}
+  for _, c in ipairs(store.all()) do bodies[c.body] = true end
+  assert.truthy(bodies.base and bodies['on b'] and bodies['on main'], 'all three comments')
+  assert.length(store.all(), 3, 'three comments')
+end)
+
+-- The bodies of the live comments, sorted
+local function bodies_of(list)
+  local out = {}
+  for _, c in ipairs(list) do table.insert(out, c.body) end
+  table.sort(out)
+  return out
+end
+
+storage_test('checking out another commit under a live store shows that commit\'s comments', function()
+  local a, file = make_repo('co')
+  cd(a)
+  restart({ checkpoint_every = 1 })
+  local _, store = mods()
+  note(file, 'base')
+  git(a, 'add', '-A')
+  git(a, 'commit', '-q', '-m', 'base')
+  -- A branch diverging from base with a longer journal
+  git(a, 'checkout', '-q', '-b', 'long')
+  note(file, 'x')
+  note(file, 'y')
+  note(file, 'z')
+  note(file, 'w')
+  store.save()
+  git(a, 'add', '-A')
+  git(a, 'commit', '-q', '-m', 'long')
+  local calls = {}
+  local function sync_to(rev, want, what)
+    git(a, 'checkout', '-q', rev)
+    vim.list_extend(calls, capture_notify(function()
+      assert.equals(table.concat(bodies_of(store.all()), ","), table.concat(want, ","), what)
+    end))
+  end
+  sync_to('main', { 'base' }, 'back on main: base only')
+  note(file, 'one')
+  git(a, 'add', '-A')
+  git(a, 'commit', '-q', '-m', 'one')
+  git(a, 'branch', 'short')
+  note(file, 'two')
+  note(file, 'three')
+  store.save()
+  git(a, 'add', '-A')
+  git(a, 'commit', '-q', '-m', 'three')
+  sync_to('short', { 'base', 'one' }, 'a shorter commit')
+  sync_to('long', { 'base', 'w', 'x', 'y', 'z' }, 'a diverged branch with a longer journal')
+  sync_to('main', { 'base', 'one', 'three', 'two' }, 'a diverged branch with a shorter journal')
+  for _, c in ipairs(calls) do
+    assert.truthy(c.level ~= vim.log.levels.ERROR, 'no error: ' .. c.msg)
+  end
+end)
+
+storage_test('a segment rewritten in place, same inode and longer, is reloaded, not read as an append', function()
+  local plain, file = make_plain('inplace')
+  cd(plain)
+  restart({ checkpoint_every = 1 })
+  local _, store = mods()
+  note(file, 'one')
+  note(file, 'two')
+  store.save()
+  assert.equals(table.concat(bodies_of(store.all()), ","), table.concat({ 'one', 'two' }, ","), 'synced')
+  local path = test_helper.segments_of(stdpath_dir(plain) .. '/events')[1].path
+  local before = vim.uv.fs_stat(path)
+  local lines = vim.fn.readfile(path)
+  assert.length(lines, 3, 'a header and two adds')
+  -- Diverged content: the second add replaced by two others
+  local function variant(line, body)
+    local r = vim.json.decode(line)
+    r.comment.id = r.comment.id .. body
+    r.comment.body = body
+    r.eid = r.eid .. body
+    return vim.json.encode(r)
+  end
+  local content = table.concat({ lines[1], lines[2], variant(lines[3], 'xx'), variant(lines[3], 'yy') }, '\n') .. '\n'
+  assert.truthy(#content > before.size, 'longer than what was read')
+  local fh = io.open(path, 'r+b')
+  assert.truthy(fh, 'opened in place')
+  fh:write(content)
+  fh:close()
+  local after = vim.uv.fs_stat(path)
+  assert.equals(after.ino, before.ino, 'the same inode')
+  local calls = capture_notify(function()
+    assert.equals(table.concat(bodies_of(store.all()), ","), table.concat({ 'one', 'xx', 'yy' }, ","), 'the rewritten file, loaded again')
+  end)
+  for _, c in ipairs(calls) do
+    assert.truthy(c.level ~= vim.log.levels.ERROR and c.level ~= vim.log.levels.WARN, 'no warning: ' .. c.msg)
+  end
+  -- A checkpoint now is of the rewritten bytes
+  assert.truthy(store.save(), 'checkpoint written')
+  restart({ checkpoint_every = 1 })
+  _, store = mods()
+  assert.equals(table.concat(bodies_of(store.all()), ","), table.concat({ 'one', 'xx', 'yy' }, ","), 'the same after a restart')
+end)
+
+storage_test('a review left in stdpath gets one notice and no import; :ReviewAdopt brings it over', function()
+  local a, file = make_repo('mig')
+  local old = stdpath_dir(a)
+  write_absolute_review(old, { { id = 'old1', filename = file, lnum = 2 }, { id = 'old2', filename = file, lnum = 3 } })
+  local before = tree(old)
+  cd(a)
+  local calls = capture_notify(function()
+    restart()
+    local _, store = mods()
+    assert.length(store.all(), 0, 'nothing is imported')
+    store.all()
+  end)
+  local moved = mentioning(calls, 'is now kept in ' .. repo_dir(a))
+  assert.length(moved, 1, 'one notice')
+  assert.truthy(moved[1].msg:find(':ReviewAdopt ' .. old, 1, true), 'naming the old dir')
+  assert.truthy(moved[1].msg:find('2 comment', 1, true), 'and the count')
+  assert.length(test_helper.segments_of(repo_dir(a) .. '/events'), 0, 'no journal started, so no import op')
+  local adopted = capture_notify(function() vim.cmd('ReviewAdopt ' .. vim.fn.fnameescape(old)) end)
+  assert.length(mentioning(adopted, 'Adopted'), 1, 'adopted')
+  local _, store = mods()
+  assert.length(store.all(), 2, 'both comments')
+  local after = tree(old)
+  -- (adopt holds the source's lock while it copies: an empty journal.lock
+  -- may appear; nothing else is added, changed or removed)
+  after['journal.lock'] = nil
+  for k, v in pairs(after) do assert.equals(v, before[k], 'unchanged in the old dir: ' .. k) end
+  for k in pairs(before) do assert.truthy(after[k], 'still in the old dir: ' .. k) end
+  restart()
+  _, store = mods()
+  assert.length(store.all(), 2, 'still two after a restart')
+  assert.length(test_helper.log_ops(repo_dir(a) .. '/events', 'import'), 0, 'no import op')
+  assert.equals(vim.uv.fs_stat(repo_dir(a) .. '/snapshots.adopt'), nil, 'no staging left')
+  assert.length(temps_under(repo_dir(a)), 0, 'no temp left')
+  -- The headless CLI, run from the repo, reads the adopted review
+  local r = vim.system({ vim.v.progpath, '--clean', '-l', test_helper.root .. '/scripts/qfr.lua', 'export' },
+    { cwd = a, env = { XDG_DATA_HOME = vim.env.XDG_DATA_HOME }, text = true }):wait()
+  assert.equals(r.code, 0, 'export exits 0: ' .. tostring(r.stderr))
+  local list = vim.json.decode(r.stdout, { luanil = { object = true } })
+  local ids = {}
+  for _, c in ipairs(list) do ids[c.id] = true end
+  assert.length(list, 2, 'export lists the two adopted comments')
+  assert.truthy(ids.old1 and ids.old2, 'by id')
+end)
+
+storage_test('with a legacy file too, the moved notice still stops the import, before and after :ReviewAdopt', function()
+  local a, file = make_repo('migl')
+  local b = make_plain('miglb')
+  local legacy = seed_legacy(a, b)
+  local legacy_bytes = read_bytes(legacy)
+  local old = stdpath_dir(a)
+  write_absolute_review(old, { { id = 'old1', filename = file, lnum = 2 }, { id = 'old2', filename = file, lnum = 3 } })
+  cd(a)
+  local calls = capture_notify(function()
+    restart()
+    local _, store = mods()
+    assert.length(store.all(), 0, 'nothing is imported')
+    store.all()
+  end)
+  assert.length(mentioning(calls, 'is now kept in ' .. repo_dir(a)), 1, 'one notice')
+  assert.length(test_helper.segments_of(repo_dir(a) .. '/events'), 0, 'import_legacy did not run')
+  local adopted = capture_notify(function() vim.cmd('ReviewAdopt ' .. vim.fn.fnameescape(old)) end)
+  assert.length(mentioning(adopted, 'Adopted'), 1, 'adopted')
+  local again = capture_notify(function()
+    restart()
+    local _, store = mods()
+    assert.length(store.all(), 2, 'the adopted two, and not the legacy file\'s')
+  end)
+  assert.length(mentioning(again, 'is now kept in'), 0, 'no notice once adopted')
+  assert.length(test_helper.log_ops(repo_dir(a) .. '/events', 'import'), 0, 'the legacy file is still not imported')
+  assert.equals(read_bytes(legacy), legacy_bytes, 'the legacy file is untouched')
+end)
+
+storage_test('adding a comment before :ReviewAdopt makes the adopt refuse', function()
+  local a, file = make_repo('migr')
+  local old = stdpath_dir(a)
+  write_absolute_review(old, { { id = 'old1', filename = file, lnum = 2 } })
+  cd(a)
+  capture_notify(function() restart() end)
+  note(file, 'new here')
+  local calls = capture_notify(function() vim.cmd('ReviewAdopt ' .. vim.fn.fnameescape(old)) end)
+  assert.length(mentioning(calls, 'already has a review'), 1, 'refused')
+end)
+
+storage_test('a comments.json-only stdpath review gets the notice that it can\'t be adopted', function()
+  local a = make_repo('migj')
+  local old = stdpath_dir(a)
+  vim.fn.mkdir(old, 'p')
+  vim.fn.writefile({ '[]' }, old .. '/comments.json')
+  cd(a)
+  local calls = capture_notify(function()
+    restart()
+    local _, store = mods()
+    store.all()
+  end)
+  local found = mentioning(calls, "can't bring over")
+  assert.length(found, 1, 'one notice')
+  assert.truthy(found[1].msg:find(old .. '/comments.json', 1, true), 'naming the file')
+end)
+
+storage_test('adopting into a marker-only in-repo dir works and keeps the markers', function()
+  local plain, file = make_plain('mkad')
+  cd(plain)
+  restart()
+  note(file, 'from plain')
+  local old = stdpath_dir(plain)
+  local a = make_repo('mkdst')
+  local dir = repo_dir(a)
+  vim.fn.mkdir(dir .. '/events', 'p')
+  vim.fn.writefile({ '*.jsonl merge=union', '# mine' }, dir .. '/events/.gitattributes')
+  local attrs = read_bytes(dir .. '/events/.gitattributes')
+  cd(a)
+  restart()
+  local calls = capture_notify(function() vim.cmd('ReviewAdopt ' .. vim.fn.fnameescape(old)) end)
+  assert.length(mentioning(calls, 'Adopted'), 1, 'adopted')
+  assert.equals(read_bytes(dir .. '/events/.gitattributes'), attrs, 'the marker is intact')
+  local _, store = mods()
+  assert.length(store.all(), 1, 'the comment came over')
+  assert.length(temps_under(dir), 0, 'no temp left')
+end)
+
+storage_test('adopting from a marker-only dir is refused', function()
+  local a = make_repo('mkonly')
+  local src = repo_dir(a)
+  vim.fn.mkdir(src .. '/events', 'p')
+  vim.fn.writefile({ '*.jsonl merge=union' }, src .. '/events/.gitattributes')
+  local plain = make_plain('mkto')
+  cd(plain)
+  restart()
+  local calls = capture_notify(function() vim.cmd('ReviewAdopt ' .. vim.fn.fnameescape(src)) end)
+  assert.length(mentioning(calls, 'Adopted'), 0, 'not adopted')
 end)
 
 -- Put the test configuration back for the files that run after this one

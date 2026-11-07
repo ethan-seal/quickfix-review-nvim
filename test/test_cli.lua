@@ -20,7 +20,9 @@ end
 local function make_repo(name)
   local dir = vim.fn.tempname() .. '-' .. name
   vim.fn.mkdir(dir, 'p')
-  local r = vim.system({ 'git', 'init', '-q', dir }, { text = true }):wait()
+  -- Hermetic: no global or system git config
+  local r = vim.system({ 'git', '-c', 'init.defaultBranch=main', 'init', '-q', dir },
+    { text = true, env = { GIT_CONFIG_GLOBAL = '/dev/null', GIT_CONFIG_NOSYSTEM = '1' } }):wait()
   assert.equals(r.code, 0, 'git init ' .. dir)
   local real = vim.uv.fs_realpath(dir)
   local file = real .. '/' .. name .. '.txt'
@@ -57,10 +59,11 @@ local function add(dir, data, item)
   assert.equals(r.code, 0, 'add exits 0: ' .. tostring(r.stderr))
 end
 
+-- The journal of the repo `dir`: in the repo (`data` is not used: the
+-- review of a git repo is not under stdpath('data'))
 local function events_path(dir, data)
-  local root = vim.uv.fs_realpath(dir)
-  return string.format('%s/nvim/quickfix-review/%s-%s/events', data, vim.fn.fnamemodify(root, ':t'),
-    vim.fn.sha256(root):sub(1, 12))
+  local _ = data
+  return vim.uv.fs_realpath(dir) .. '/.quickfix-review/events'
 end
 
 assert.run_test('export of an empty project prints []', function()
@@ -151,7 +154,8 @@ end)
 assert.run_test('export of a review that cannot be read fails with nothing on stdout', function()
   local dir = make_repo('unreadable')
   local data = fresh_data()
-  local store_dir = vim.fn.fnamemodify(events_path(dir, data), ':h')
+  -- In the repo, comments.json is under local/ (never tracked)
+  local store_dir = vim.fn.fnamemodify(events_path(dir, data), ':h') .. '/local'
   vim.fn.mkdir(store_dir, 'p')
   vim.fn.writefile({ '{ not json' }, store_dir .. '/comments.json')
   local r = qfr(dir, data, 'export')
@@ -182,6 +186,17 @@ assert.run_test('each project sees its own review', function()
   assert.length(export(b, data), 0, 'b has none')
   assert.equals(qfr(b, data, 'clear').code, 0, 'clear in b')
   assert.length(export(a, data), 1, 'a untouched by clear in b')
+end)
+
+assert.run_test('in a git repo the review is <repo>/.quickfix-review/events, which export reads', function()
+  local dir, file = make_repo('inrepo')
+  local data = fresh_data()
+  add(dir, data, { filename = file, lnum = 1, end_lnum = 1, kind = 'note', body = 'in the repo' })
+  assert.length(test_helper.log_ops(events_path(dir, data), 'add'), 1, 'the add is in the repo')
+  assert.equals(vim.fn.isdirectory(data .. '/nvim/quickfix-review'), 0, 'nothing under stdpath(data)')
+  local list = export(dir, data)
+  assert.length(list, 1, 'export reads it')
+  assert.equals(list[1].body, 'in the repo', 'the comment')
 end)
 
 assert.run_test('usage errors exit 2 with usage on stderr', function()

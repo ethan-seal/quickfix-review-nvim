@@ -5,7 +5,9 @@
 -- Run it from inside the project: the review is the one for the cwd's
 -- project. --clean keeps the user's config out (stdpath('data') is unchanged,
 -- so the review is the one an interactive Neovim with the default
--- storage_dir uses). Exit codes: 0 success, 1 failure, 2 usage error.
+-- storage_dir uses: <repo>/.quickfix-review in a git repo, else the
+-- project's stdpath('data') dir). Exit codes: 0 success, 1 failure, 2 usage
+-- error.
 local source = debug.getinfo(1, 'S').source:gsub('^@', '')
 local root = vim.fn.fnamemodify(vim.fn.resolve(vim.fn.fnamemodify(source, ':p')), ':h:h')
 vim.opt.rtp:prepend(root)

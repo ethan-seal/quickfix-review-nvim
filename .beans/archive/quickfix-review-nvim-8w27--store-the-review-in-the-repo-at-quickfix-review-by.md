@@ -1,11 +1,11 @@
 ---
 # quickfix-review-nvim-8w27
 title: Store the review in the repo at .quickfix-review/ by default
-status: todo
+status: completed
 type: feature
 priority: normal
 created_at: 2026-11-07T20:54:47Z
-updated_at: 2026-11-07T21:31:54Z
+updated_at: 2026-11-07T23:17:17Z
 ---
 
 **Background.** The default storage dir is `stdpath('data')/quickfix-review/<basename(root)>-<sha256(root)[1..12]>` (lua/quickfix-review/store/location.lua:100-104), so a review can't be tracked with git. `project_root()` (location.lua:46-61) returns the git toplevel, or falls back to the cwd, without saying which one it returned. The headless CLI never calls `setup()` (cli.lua:12-14), but `config.options` starts out as the defaults (config.lua:387), so changing the default branch of `resolve()` also changes `scripts/qfr.lua export`, review-export, rv-done.sh and /rv.

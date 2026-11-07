@@ -337,6 +337,31 @@ local function load_readonly(loc, src)
   return true, nil, true
 end
 
+-- An in-repo review (<root>/.quickfix-review) with no journal whose root
+-- still has a review in its old stdpath dir (location.stdpath_dir, the
+-- default before reviews moved into the repo): that review is not imported
+-- or adopted automatically (adopt only reads it, on :ReviewAdopt). Told
+-- once per session per root.
+-- Returns: true when the old review is there (the legacy import is then
+-- skipped: the old review already holds whatever it imported)
+local function moved_to_repo(loc)
+  if not loc.in_repo then return false end
+  local old = location.stdpath_location(location.stdpath_dir(loc.root))
+  if not location.has_review(old) then return false end
+  local r = journal.inspect(old.events) and journal.replay(old.events, nil)
+  local msg
+  if r then
+    msg = string.format("this project's review is now kept in %s; run :ReviewAdopt %s before adding comments"
+      .. ' here to bring over the %d comment(s) in the old location', loc.dir, old.dir, #r.state.comments)
+  else
+    msg = string.format("this project's review is now kept in %s; the old review at %s is from a version"
+      .. ' before the v3 journal (or can\'t be read), which :ReviewAdopt can\'t bring over; it is left as it is',
+      loc.dir, uv.fs_stat(old.path) and old.path or old.dir)
+  end
+  notify.once('moved:' .. loc.root, msg, vim.log.levels.WARN)
+  return true
+end
+
 -- There is no journal: migrate comments.json into a new one
 -- (or load it read-only if its dir is not writable), or import from the
 -- legacy global file, or leave it to the first change to start
@@ -351,7 +376,7 @@ function M.init_storage(loc)
   local ok, err = true, nil
   if src then
     ok, err = migrate_json(loc)
-  elseif not loc.explicit then
+  elseif not loc.explicit and not moved_to_repo(loc) then
     import_legacy(loc)
   end
   return ok, err, was_readonly

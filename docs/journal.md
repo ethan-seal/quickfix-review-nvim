@@ -30,7 +30,8 @@ mkdir lock also needed pid liveness checks.
 
 ## Layout
 
-Per review, in the review's storage directory:
+Per review, in the review's storage directory (flat, as below, in a
+stdpath('data') dir, a `storage_dir` option's dir or next to `storage_file`):
 
 ```
 events/
@@ -43,6 +44,34 @@ snapshots/                    unchanged, content-addressed
 journal.lock                  empty file, locked with flock
                               (<storage_file>.journal.lock when storage_file is set)
 ```
+
+In a git repo the default storage directory is `<root>/.quickfix-review/`,
+laid out so that what is tracked is only what other clones need:
+
+```
+events/                       tracked
+  .gitattributes              `*.jsonl merge=union`
+  000001.jsonl ...            segments, as above
+snapshots/                    tracked
+local/                        untracked
+  .gitignore                  `*`: local/ ignores itself
+  journal.lock, lock
+  checkpoints/
+  refs/000001.refs            the `.refs` sidecars
+  gc.stamp
+  tmp/                        every temp file (seal, snapshot, adopt staging)
+```
+
+No temp file is ever created in `events/` or `snapshots/`, so a crash leaves
+nothing there for `git add -A` to pick up; stale temps in `local/tmp/` are
+swept like the others. Neither marker file is rewritten once it exists, and
+the repo's own `.gitignore` and `.gitattributes` are never touched.
+
+Since segments are only appended to, two branches that each append to the
+same active segment merge cleanly with the union driver. The limit: if both
+branches seal (start segment N+1) independently, each has its own
+`00000N+1.jsonl`, and git reports an add/add conflict on that file, which
+has to be resolved by hand. Nothing works around this.
 
 Segment and checkpoint names are zero-padded, so sorting by name sorts by
 position.

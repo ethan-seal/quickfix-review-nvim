@@ -11,7 +11,9 @@
 -- Only the result goes to stdout; every message (including the store's
 -- vim.notify, e.g. the one-time import notice) goes to stderr, so stdout
 -- can be parsed. setup() is never called: the store works with the default
--- config, so a storage_dir set in a user config is not seen here.
+-- config (the review is <repo>/.quickfix-review in a git repo, else the
+-- project's stdpath('data') dir), so a storage_dir set in a user config is
+-- not seen here.
 local M = {}
 
 local USAGE = table.concat({

@@ -26,9 +26,11 @@ M.default_type_keymaps = {
 -- Default configuration
 M.defaults = {
   -- Per-project storage directory: a string (used as-is, for every project)
-  -- or function(root) -> string. nil = stdpath('data')/quickfix-review/
-  -- <basename(root)>-<first 12 hex of sha256(root)>. The review lives in
-  -- comments.json inside it.
+  -- or function(root) -> string. nil = in a git repo, <root>/.quickfix-review/
+  -- (events/ and snapshots/ tracked, the rest under local/, which ignores
+  -- itself); outside git, stdpath('data')/quickfix-review/
+  -- <basename(root)>-<first 12 hex of sha256(root)>. The review is the event
+  -- journal in its events/ (see docs/journal.md).
   storage_dir = nil,
 
   -- Deprecated: a single storage file shared by every project. When set,

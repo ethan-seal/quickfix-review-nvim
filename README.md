@@ -165,13 +165,35 @@ require('quickfix-review').setup({
 
 ### Where reviews are stored
 
-Each project has its own review, kept as an append-only event journal, `events/`, inside a per-project storage directory. By default that is:
+Each project has its own review, kept as an append-only event journal, `events/`, inside a per-project storage directory. By default, in a git repo, that is `.quickfix-review/` at the repo's toplevel:
+
+```
+.quickfix-review/
+  events/       the journal (tracked), with .gitattributes: *.jsonl merge=union
+  snapshots/    copies of the commented files (tracked)
+  local/        everything else (locks, checkpoints, .refs, gc.stamp, temp files);
+                its .gitignore is `*`, so it is never tracked
+```
+
+Commit `events/` and `snapshots/` with the code, and the review travels with the branch:
+
+- **Comments follow the checked-out branch.** After `git checkout` or `git switch`, the review is that commit's journal; a running Neovim picks it up on its next sync.
+- **Branches merge.** Segments are only appended to, so two branches' comments merge as the union of their lines. The limit: if both branches sealed a segment (started a new one past `segment_max_bytes`) on their own, git reports an add/add conflict on the new segment, to be resolved by hand.
+- **A moved, renamed or cloned repo keeps its review**: no `:ReviewAdopt` needed.
+- **Uncommitted comments go with other uncommitted changes**: `git reset --hard` and `git checkout -- .` discard them, and `git stash` takes them along (until `git stash pop`).
+- **`snapshots/` holds a copy of every file you comment on**, `.env` and other secrets included, and committing it publishes them. Don't comment on such files in a repo you push, or remove their snapshots before committing.
+
+The plugin never writes the repo's own `.gitignore` or `.gitattributes`; the two marker files above are created once and never rewritten.
+
+Outside a git repo the storage directory is:
 
 ```
 stdpath('data')/quickfix-review/<basename(root)>-<first 12 hex chars of sha256(root)>/
 ```
 
-e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/events/000001.jsonl`, readable in a file browser. The storage directory must be on a local filesystem: the journal relies on `flock(2)` and hard links. After updating the plugin, restart every running Neovim, so that no older version keeps writing next to it. On a filesystem that refuses `flock`, the plugin warns once and falls back to a lock directory.
+e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/events/000001.jsonl`, readable in a file browser, with `checkpoints/`, `snapshots/` and the lock next to `events/`.
+
+**Reviews from before the move into the repo.** Earlier versions kept a git repo's review in that stdpath directory too. It is not moved, copied or deleted: the first time you open the project you get one warning naming it and its comment count. Run `:ReviewAdopt <that dir>` before adding a comment in the project to bring it over (once the in-repo review has a comment, adopt refuses). A review there that only has a `comments.json` (from before the journal) can't be adopted and is left as it is. The storage directory must be on a local filesystem: the journal relies on `flock(2)` and hard links. After updating the plugin, restart every running Neovim, so that no older version keeps writing next to it. On a filesystem that refuses `flock`, the plugin warns once and falls back to a lock directory.
 
 - **The journal**: `events/000001.jsonl`, `events/000002.jsonl`, ... (segments), one JSON object per line. Each segment starts with a header; every later line is an event (`add`, `delete`, `clear`, `restore`, `import`, ...), and the review is every segment's events replayed in order. Only the highest-numbered segment is written, and only appended to, in a single write under a lock, so several Neovims can share a review and no change can overwrite another. Once it grows past `segment_max_bytes` (4 MiB by default) it is sealed: the next segment is started, and the sealed one is never written again. Segments are never renamed, rewritten or deleted, so the whole history is kept: `:ReviewHistory` reads across them. A line that can't be read is skipped with a warning naming its line number. A segment written by a newer version of the plugin is refused with an ERROR and left unmodified, rather than shown empty.
 - **`checkpoints/`**: the replayed review at a position in the journal, written every `checkpoint_every` events (500), when a segment is sealed, by `:ReviewSave`, and on exit when events were read since the last one; the newest `checkpoint_keep` (2) are kept. They only make loading faster: delete them and the review is rebuilt from the journal. `:ReviewLoad` ignores them.
@@ -180,8 +202,8 @@ e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/events/000001.json
 - **Project root**: the git toplevel of Neovim's global working directory, or that directory itself outside git (symlinks resolved). Each git worktree has its own toplevel, so each worktree gets its own review.
 - **Switching projects**: after `:cd` into another project (or when `'autochdir'` changes directory), the review is re-read from that project's directory and the quickfix view and signs follow. If that project's review can't be read, the list is emptied and it is not modified until the file is fixed. `:lcd` and `:tcd` don't switch projects. The root is looked up once per directory per session, so running `git init` in an open directory takes effect after a restart. Only a definite answer from git is kept: if `git rev-parse` fails or times out, you get a warning, the last root git gave for that directory (else the directory itself) is used meanwhile, and git is asked again a few seconds later.
 - **`storage_dir`**: a function receives the resolved root and returns the directory to use; a string is used as-is, so every project shares it (and the import from the global file below takes every comment, not just one project's).
-- **Repo-relative paths**: in the default per-project directory, a comment on a file inside the project root is logged with its path relative to the root (`src/app.lua`), and read back against the current root, never the working directory; a file outside the root keeps its absolute path. Comments logged by earlier versions keep their absolute paths and load as before. `comments()` always returns absolute paths. With `storage_file` or `storage_dir` set, paths stay absolute, since one directory can hold several projects. An older version of the plugin reads a relative path against the working directory, so after a downgrade those comments only show up when Neovim is started at the project root.
-- **Moved, renamed or cloned projects (`:ReviewAdopt`)**: the storage directory is named after the root's real path, so after `mv ~/src/app ~/work/app` (or in a clone or another worktree) the project starts with an empty review, and the old one is still in the old directory. Run `:ReviewAdopt <old storage dir>` in the project, e.g. `:ReviewAdopt ~/.local/share/nvim/quickfix-review/app-3f9a1c0b7d2e`, to copy it over: the event segments and snapshots are copied (never hard-linked), checkpoints are rebuilt, and the old directory is only read. The current project must not have a review of its own yet. That means no segment, `log.jsonl` or `comments.json` in its directory, even for a review that was cleared; a review that only ever held an empty import counts as empty and is replaced. A comment logged before relative paths existed names the old absolute path. Adopting remaps such paths under the old root to the same place under the current root, when the old root can be confirmed from the old directory's name (its `<name>-<hash>`). That fails for a directory made with a custom `storage_dir`, and for comments logged through a symlinked path. Those comments keep showing at the old location. The logged records are never rewritten, so an older version of the plugin shows them at the old location too.
+- **Repo-relative paths**: in the default per-project directory (in the repo or in stdpath), a comment on a file inside the project root is logged with its path relative to the root (`src/app.lua`), and read back against the current root, never the working directory; a file outside the root keeps its absolute path. Comments logged by earlier versions keep their absolute paths and load as before. `comments()` always returns absolute paths. With `storage_file` or `storage_dir` set, paths stay absolute, since one directory can hold several projects. An older version of the plugin reads a relative path against the working directory, so after a downgrade those comments only show up when Neovim is started at the project root.
+- **Moved, renamed or cloned projects (`:ReviewAdopt`)**: a git repo's review is in the repo and moves with it. Outside git, the storage directory is named after the root's real path, so after `mv ~/src/app ~/work/app` (or in a clone or another worktree) the project starts with an empty review, and the old one is still in the old directory. Run `:ReviewAdopt <old storage dir>` in the project, e.g. `:ReviewAdopt ~/.local/share/nvim/quickfix-review/app-3f9a1c0b7d2e`, to copy it over: the event segments and snapshots are copied (never hard-linked), checkpoints are rebuilt, and the old directory is only read. The current project must not have a review of its own yet. That means no segment, `log.jsonl` or `comments.json` in its directory, even for a review that was cleared; a review that only ever held an empty import counts as empty and is replaced. A comment logged before relative paths existed names the old absolute path. Adopting remaps such paths under the old root to the same place under the current root, when the old root can be confirmed from the old directory's name (its `<name>-<hash>`). That fails for a directory made with a custom `storage_dir`, and for comments logged through a symlinked path. Those comments keep showing at the old location. The logged records are never rewritten, so an older version of the plugin shows them at the old location too.
 
 **Migrating from `comments.json`.** Earlier versions kept the review in `comments.json` in the same directory. When a project has a `comments.json` but no journal yet, its comments are copied into a new journal as one `import` event and the file is renamed to `comments.json.pre-log.bak`, byte for byte as it was (if a `comments.json.pre-log.bak` from an earlier migration is already there, it is kept and the new copy is named `comments.json.pre-log.<unix ms>.bak`). From then on the journal is the review: a `comments.json` that reappears next to it (written by an older version or another tool) is not read; you get one warning and the file is left alone.
 
@@ -191,7 +213,7 @@ e.g. `~/.local/share/nvim/quickfix-review/my-app-3f9a1c0b7d2e/events/000001.json
 
 ### Using a review from outside Neovim
 
-Tools outside Neovim (a review exporter, an agent answering the comments) should not read or write the journal themselves. They run the plugin headless instead, from inside the project:
+Tools outside Neovim (a review exporter, an agent answering the comments) should not read or write the journal themselves. They run the plugin headless instead, from inside the project (in a git repo, the review it reads is `.quickfix-review/events/` there, the same one Neovim uses):
 
 ```bash
 nvim --clean -l /path/to/quickfix-review-nvim/scripts/qfr.lua export

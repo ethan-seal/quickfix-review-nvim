@@ -99,7 +99,8 @@ end
 function M.put(lines)
   local content = canonical(lines)
   local sha = vim.fn.sha256(content)
-  local dir = location.resolve().snapshots
+  local loc = location.resolve()
+  local dir = loc.snapshots
   local path = dir .. '/' .. sha
 
   local stat = uv.fs_stat(path)
@@ -116,7 +117,10 @@ function M.put(lines)
     end
   end
 
-  local wrote, err = storage.atomic_write(path, content)
+  -- In the repo, the temp file goes to local/tmp: never left in snapshots/
+  local tmp_dir, terr = location.ensure_tmp(loc)
+  if terr then return nil, 'Could not write snapshot ' .. path .. ': ' .. terr end
+  local wrote, err = storage.atomic_write(path, content, tmp_dir)
   if not wrote then
     return nil, 'Could not write snapshot ' .. path .. ': ' .. (err or 'unknown error')
   end

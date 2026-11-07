@@ -136,7 +136,32 @@ options are optional; defaults are shown below.
 Storage:~
 
 Each project has its own review, kept as an append-only event journal,
-`events/`, inside the project's storage directory. By default that is: >
+`events/`, inside the project's storage directory.
+
+                                                      *quickfix-review-in-repo*
+In a git repo the default storage directory is `.quickfix-review/` at the
+repo's toplevel: >
+    .quickfix-review/events/      the journal (tracked)
+    .quickfix-review/snapshots/   copies of commented files (tracked)
+    .quickfix-review/local/       locks, checkpoints, .refs, temp files
+<
+`local/.gitignore` is `*`, so `local/` ignores itself, and
+`events/.gitattributes` is `*.jsonl merge=union`. Both are created once
+and never rewritten; the repo's own .gitignore and .gitattributes are never
+touched. Commit `events/` and `snapshots/` and the review follows the
+checked-out branch, and branches merge as the union of their lines (except
+when both sealed a new segment on their own: git then reports an add/add
+conflict on it, resolved by hand). A moved or cloned repo keeps its review.
+Uncommitted comments go with other uncommitted changes: `git reset --hard`
+and `git checkout -- .` discard them, `git stash` takes them along.
+WARNING: `snapshots/` holds a copy of every commented file, `.env` and other
+secrets included; committing it publishes them.
+
+A git repo's review kept in stdpath('data') by an earlier version is left
+there: opening the project warns once, naming it; run |:ReviewAdopt| on it
+before adding a comment to bring it over.
+
+Outside a git repo the storage directory is: >
     stdpath('data')/quickfix-review/<basename(root)>-<sha256(root)[1..12]>/
 <
 where the last part is the first 12 hex characters of the SHA-256 of the
@@ -207,8 +232,8 @@ An older version of the plugin reads a relative path against the working
 directory, so after a downgrade such comments are misplaced unless Neovim
 runs at the project root.
 
-The storage directory is named after the root's real path, so a project
-that is moved or renamed (or opened as a clone or another worktree) starts
+Outside git, the storage directory is named after the root's real path, so
+a project that is moved or renamed (or opened as a clone or another worktree) starts
 with an empty review, and its old review stays in the old directory. Copy
 it over with |:ReviewAdopt|:
 >

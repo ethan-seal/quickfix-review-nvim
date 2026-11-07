@@ -703,7 +703,9 @@ local function guarded_run(env)
     '-c', string.format('lua dofile(%q)', test_helper.root .. '/test/init.lua'),
     '-c', 'qall!',
   }, { env = full_env, clear_env = true, cwd = test_helper.root }):wait(30000)
+  -- The plugin checkout is a git repo: its review would be in it
   local created = vim.fn.isdirectory(full_env.XDG_DATA_HOME .. '/nvim/quickfix-review') == 1
+    or vim.uv.fs_stat(test_helper.root .. '/.quickfix-review') ~= nil
   vim.fn.delete(home, 'rf')
   return result, created
 end

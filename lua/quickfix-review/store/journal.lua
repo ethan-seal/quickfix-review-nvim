@@ -30,7 +30,9 @@ local reduced = reduce.new()
 -- { key = the review (loc.events), loc, mode = nil (no journal yet), 'v3'
 --   or 'readonly', and for 'v3': path (the file read last: the active
 --   segment), seg (its number), ino, offset and lines (how far it was read),
---   journal_id, imports (the source_sha256 of every import), since = { events, bytes } (the tail read
+--   journal_id, tail (the last TAIL_BYTES bytes before offset, as read: a
+--   file rewritten in place under the same inode no longer has them there),
+--   imports (the source_sha256 of every import), since = { events, bytes } (the tail read
 --   past the newest checkpoint this instance knows), sealed (the
 --   { size, sha } of each segment before the active one, by number, as
 --   its bytes were read into the state: what a checkpoint records, see
@@ -84,12 +86,16 @@ end
 function M.clear_refusal() bad_notified = nil end
 
 -- Run fn with the review's lock held (store/lock.lua), creating the storage
--- dir first. Nested calls on the same review (a sync inside a change) run
--- under the outer lock; another review's lock is taken as usual.
+-- dir first (and, in the repo, seeding local/.gitignore and
+-- events/.gitattributes: every writer comes through here). Nested calls on
+-- the same review (a sync inside a change) run under the outer lock;
+-- another review's lock is taken as usual.
 -- Returns: true and fn's two results, or false and the lock error
 function M.locked(loc, fn)
   local mk_ok, mk_err = location.mkdir_for(loc.flock)
   if not mk_ok then return false, 'Could not create ' .. vim.fn.fnamemodify(loc.flock, ':h') .. ': ' .. mk_err end
+  local seeded, serr = location.seed_markers(loc)
+  if not seeded then return false, tostring(serr) end
   -- Through the module table, so tests can wrap lock.with_lock
   local ok, got, a, b = pcall(lock.with_lock, loc, fn)
   if not ok then error(got, 0) end
@@ -146,6 +152,24 @@ end
 -- `offset` (from inode `ino`) into the state, read through one fd: nil if
 -- it is now another file or shorter, as the hash would then not be of the
 -- bytes the state came from
+-- How many bytes before the read position are kept to tell a segment
+-- rewritten in place (a git checkout can reuse the inode) from one appended to
+local TAIL_BYTES = 256
+
+-- The last TAIL_BYTES bytes of `path` before `offset` (fewer near its
+-- start), or nil when they can't be read
+local function tail_at(path, offset)
+  if not path or not offset then return nil end
+  local k = math.min(offset, TAIL_BYTES)
+  if k == 0 then return '' end
+  local fd = uv.fs_open(path, 'r', 0)
+  if not fd then return nil end
+  local data = uv.fs_read(fd, k, offset - k)
+  uv.fs_close(fd)
+  if not data or #data ~= k then return nil end
+  return data
+end
+
 local function hash_read(path, ino, offset)
   local data, st = segment.read_fd(path)
   if not data or st.ino ~= ino or #data < offset then return nil end
@@ -209,6 +233,7 @@ function M.load(loc, opts)
   for _, k in ipairs({ 'journal_id', 'seg', 'path', 'ino', 'offset', 'lines', 'imports', 'since', 'sealed' }) do
     synced[k] = r[k]
   end
+  synced.tail = tail_at(synced.path, synced.offset)
   reduced = r.state
   return true, nil
 end
@@ -241,6 +266,10 @@ function M.read_tail(loc)
   if synced.key ~= loc.events or synced.mode ~= 'v3' then return true, nil, false, true end
   local st = uv.fs_stat(synced.path)
   if not st or st.ino ~= synced.ino or st.size < synced.offset then return true, nil, false, true end
+  -- Rewritten in place (same inode, no shorter): the bytes before the read
+  -- position are not the ones read
+  local tail = tail_at(synced.path, synced.offset)
+  if not tail or tail ~= synced.tail then return true, nil, false, true end
   local next_path = segment.path(loc.events, synced.seg + 1)
   local has_next = uv.fs_stat(next_path) ~= nil
   if st.size == synced.offset and not has_next then return true, nil, false, false end
@@ -259,6 +288,7 @@ function M.read_tail(loc)
     local res, err = read(synced.path, synced.offset, synced.lines)
     if not res then return false, err, changed, false end
     synced.offset, synced.lines = res.offset, res.lines
+    synced.tail = tail_at(synced.path, synced.offset)
   end
   while has_next do
     -- The segment read to its end is sealed: its hash, for checkpoints
@@ -273,6 +303,7 @@ function M.read_tail(loc)
     local res, err = read(next_path, 0, 0)
     if not res then return false, err, changed, false end
     synced.seg, synced.path, synced.ino, synced.offset, synced.lines = n, next_path, nst.ino, res.offset, res.lines
+    synced.tail = tail_at(next_path, res.offset)
     next_path = after
   end
   return true, nil, changed, false
@@ -292,7 +323,9 @@ end
 function M.create(loc, events, mode)
   local all = { log.segment_header(log.new_journal_id(), 1) }
   vim.list_extend(all, events or {})
-  return segment.create(loc.events, 1, all, mode)
+  local tmp_dir, terr = location.ensure_tmp(loc)
+  if terr then return nil, terr end
+  return segment.create(loc.events, 1, all, mode, tmp_dir)
 end
 
 -- Append `events` to the active segment. Call with
@@ -324,6 +357,8 @@ local function current_prefix()
   local data, st = segment.read_fd(synced.path, synced.offset)
   if not data then return nil, st end
   if st.ino ~= synced.ino or #data ~= synced.offset then return nil, synced.path .. ' was replaced' end
+  -- Rewritten in place: these are not the bytes the state came from
+  if data:sub(-TAIL_BYTES) ~= synced.tail then return nil, synced.path .. ' was rewritten' end
   local sha = segment.sha(data)
   if not sha then return nil, 'could not hash ' .. synced.path end
   return sha, segment.refs_of(data)
@@ -378,12 +413,15 @@ function M.seal_if_due(loc)
     vim.notify('quickfix-review: could not seal ' .. synced.path .. ': ' .. tostring(e), vim.log.levels.WARN)
     return false
   end
-  local ok, err, hash = segment.write_refs(loc.events, n, mode)
+  local ok, err, hash = segment.write_refs(loc.events, loc.refs, n, mode)
   if not ok then return warn(err) end
   -- Read to its end under the lock: these are the bytes the state holds
   -- (read_tail hashes it again as it moves on)
   synced.sealed[n] = hash
-  local created, cerr = segment.create(loc.events, n + 1, { log.segment_header(synced.journal_id, n + 1) }, mode)
+  local tmp_dir, terr = location.ensure_tmp(loc)
+  if terr then return warn(terr) end
+  local created, cerr = segment.create(loc.events, n + 1, { log.segment_header(synced.journal_id, n + 1) }, mode,
+    tmp_dir)
   if not created then return warn(cerr) end
   local rok, rerr, _, stale = M.read_tail(loc)
   if not rok or stale or synced.seg ~= n + 1 then return warn(rerr or 'the new segment could not be read') end

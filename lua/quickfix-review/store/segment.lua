@@ -65,12 +65,20 @@ local function write_new(path, str, mode)
   return true, nil
 end
 
--- Write `str` to `path` durably: to `<path>.tmp.<pid>`, fsync'ed, renamed
--- into place, and the directory fsync'ed. A reader sees the old file or
--- the new one, never a part.
+-- The temp name for a write to `path`: `<path>.tmp.<pid>`, or, with
+-- `tmp_dir` (an in-repo review's local/tmp), `<tmp_dir>/<name>.tmp.<pid>`
+local function tmp_for(path, tmp_dir)
+  if not tmp_dir then return path .. '.tmp.' .. uv.os_getpid() end
+  return tmp_dir .. '/' .. vim.fn.fnamemodify(path, ':t') .. '.tmp.' .. uv.os_getpid()
+end
+M.tmp_for = tmp_for
+
+-- Write `str` to `path` durably: to a temp file (see tmp_for), fsync'ed,
+-- renamed into place, and the directory (and `tmp_dir`, when given)
+-- fsync'ed. A reader sees the old file or the new one, never a part.
 -- Returns: ok, err
-function M.durable_write(path, str, mode)
-  local tmp = path .. '.tmp.' .. uv.os_getpid()
+function M.durable_write(path, str, mode, tmp_dir)
+  local tmp = tmp_for(path, tmp_dir)
   os.remove(tmp)
   local ok, err = write_new(tmp, str, mode)
   if not ok then return false, err end
@@ -80,15 +88,17 @@ function M.durable_write(path, str, mode)
     return false, rerr
   end
   M.fsync_dir(vim.fn.fnamemodify(path, ':h'))
+  if tmp_dir then M.fsync_dir(tmp_dir) end
   return true, nil
 end
 
 -- Create segment `n` in `dir` holding `events` (its header first), with
 -- `mode`: written to a temp file beside `dir` (never inside it, where a
--- reader could take it for a segment), fsync'ed, then hard-linked to its
--- name, which fails if it exists (as O_EXCL would), and the dir fsync'ed.
+-- reader could take it for a segment), or in `tmp_dir` when given,
+-- fsync'ed, then hard-linked to its name, which fails if it exists (as
+-- O_EXCL would), and the dir fsync'ed.
 -- Returns: 'created', 'exists' (nothing written), or nil and an error
-function M.create(dir, n, events, mode)
+function M.create(dir, n, events, mode, tmp_dir)
   local parts = {}
   for i, ev in ipairs(events) do
     local ok, line = pcall(vim.json.encode, ev)
@@ -99,8 +109,13 @@ function M.create(dir, n, events, mode)
     local ok = pcall(vim.fn.mkdir, dir, 'p')
     if not ok or vim.fn.isdirectory(dir) == 0 then return nil, 'Could not create ' .. dir end
   end
-  local res, err = M.create_file(M.path(dir, n), table.concat(parts), mode, dir .. '.tmp.' .. uv.os_getpid())
-  if res == 'created' then M.fsync_dir(vim.fn.fnamemodify(dir, ':h')) end
+  local tmp = tmp_dir and (tmp_dir .. '/' .. vim.fn.fnamemodify(dir, ':t') .. '.tmp.' .. uv.os_getpid())
+    or (dir .. '.tmp.' .. uv.os_getpid())
+  local res, err = M.create_file(M.path(dir, n), table.concat(parts), mode, tmp)
+  if res == 'created' then
+    M.fsync_dir(vim.fn.fnamemodify(dir, ':h'))
+    if tmp_dir then M.fsync_dir(tmp_dir) end
+  end
   return res, err
 end
 
@@ -196,16 +211,21 @@ function M.encode_refs(data)
   return vim.json.encode({ sha = sha, refs = M.refs_of(data) }) .. '\n', { size = #data, sha = sha }
 end
 
--- Write the `.refs` sidecar of segment `n` in `dir` (see encode_refs),
+-- Write the `.refs` sidecar of segment `n` in `events` (see encode_refs)
+-- into the dir `refs` (loc.refs: events/ itself, except in the repo),
 -- durably. Derived: a missing one, or one whose sha is not the segment's,
 -- is rebuilt (store/maintenance.lua).
 -- Returns: ok, err, and { size, sha } of the segment as hashed
-function M.write_refs(dir, n, mode)
-  local data, rerr = M.read_fd(M.path(dir, n))
+function M.write_refs(events, refs, n, mode)
+  local data, rerr = M.read_fd(M.path(events, n))
   if not data then return false, rerr end
   local encoded, hash = M.encode_refs(data)
   if not encoded then return false, hash end
-  local ok, err = M.durable_write(M.refs_path(dir, n), encoded, mode)
+  if vim.fn.isdirectory(refs) == 0 then
+    pcall(vim.fn.mkdir, refs, 'p')
+    if vim.fn.isdirectory(refs) == 0 then return false, 'Could not create ' .. refs end
+  end
+  local ok, err = M.durable_write(M.refs_path(refs, n), encoded, mode)
   if not ok then return false, err end
   return true, nil, hash
 end

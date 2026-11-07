@@ -10,14 +10,16 @@ local uv = vim.uv or vim.loop
 -- over `path` and fsync its directory, so the rename survives a crash.
 -- On failure the temp file is removed and `path` is untouched.
 -- A symlink is followed, so the link stays and its target is replaced, and an
--- existing file keeps its permission bits.
+-- existing file keeps its permission bits. With `tmp_dir` (an in-repo
+-- review's local/tmp, see location.ensure_tmp) the temp file is written
+-- there instead, and that dir is fsync'ed too.
 -- Returns: ok (boolean), err (string or nil)
-function M.atomic_write(path, str)
+function M.atomic_write(path, str, tmp_dir)
   -- A new file (or a dangling link) has no realpath: write `path` itself
   local target = uv.fs_realpath(path) or path
   local stat = uv.fs_stat(target)
   local mode = stat and bit.band(stat.mode, 511) or 420 -- 0777 mask; new files 0644
-  local tmp = target .. '.tmp.' .. uv.os_getpid()
+  local tmp = segment.tmp_for(target, tmp_dir)
   local fd, err = uv.fs_open(tmp, 'w', mode)
   if not fd then return false, err end
 
@@ -47,6 +49,7 @@ function M.atomic_write(path, str)
   local renamed, rerr = uv.fs_rename(tmp, target)
   if not renamed then return fail(rerr) end
   segment.fsync_dir(vim.fn.fnamemodify(target, ':h'))
+  if tmp_dir then segment.fsync_dir(tmp_dir) end
 
   return true, nil
 end

@@ -39,8 +39,9 @@ local uv = vim.uv or vim.loop
 -- Neovim's about to be referenced: only those untouched for GC_GRACE are
 -- deleted (put touches an existing one).
 --
--- GC runs at most once per GC_EVERY per review: <snapshots>/gc.stamp's
--- mtime is when it last completed. The sealed segments' `.refs` are read,
+-- GC runs at most once per GC_EVERY per review: loc.gc_stamp's
+-- (<snapshots>/gc.stamp, or local/gc.stamp in the repo) mtime is when it
+-- last completed. The sealed segments' `.refs` are read,
 -- and the segments hashed, before taking the lock (only the active segment
 -- is ever written); under the lock the segments are listed again, missing
 -- or stale `.refs` rebuilt and the active segment and checkpoints read. The
@@ -54,7 +55,8 @@ local SHA_RUN = segment.SHA_RUN
 -- Temp files (<name>.tmp.<pid>) a crashed writer left behind: those of
 -- storage.atomic_write in snapshots/, of segment.durable_write in events/,
 -- and the segment.create temps beside events/ (checkpoints/
--- is checkpoint.gc's). Swept with the GC
+-- is checkpoint.gc's); in the repo, every temp file and adopt's staging
+-- dirs (events.adopt-<pid>, events.replaced-<pid>) in local/tmp. Swept with the GC
 -- (outside the lock: a dead pid has no writer), when the writer's pid is
 -- dead and the file is older than TMP_MAX_AGE; a live (or reused) pid's
 -- file is kept, as another Neovim may be mid-write. In the review's own dir,
@@ -64,7 +66,8 @@ local TMP_MAX_AGE = 3600
 
 local function sweep_tmp(loc)
   local now = os.time()
-  local function sweep(dir, pid_of)
+  -- `dirs`: pid_of may also match staging dirs, removed whole
+  local function sweep(dir, pid_of, dirs)
     local handle = uv.fs_scandir(dir)
     while handle do
       local name = uv.fs_scandir_next(handle)
@@ -72,9 +75,10 @@ local function sweep_tmp(loc)
       local pid = tonumber(pid_of(name))
       if pid then
         local path = dir .. '/' .. name
-        local st = uv.fs_stat(path)
-        if st and st.type == 'file' and now - st.mtime.sec > TMP_MAX_AGE and not log.pid_alive(pid) then
-          os.remove(path)
+        local st = dirs and uv.fs_lstat(path) or uv.fs_stat(path)
+        if st and (st.type == 'file' or (dirs and st.type == 'directory'))
+            and now - st.mtime.sec > TMP_MAX_AGE and not log.pid_alive(pid) then
+          if st.type == 'directory' then vim.fn.delete(path, 'rf') else os.remove(path) end
         end
       end
     end
@@ -87,6 +91,12 @@ local function sweep_tmp(loc)
     local base, pid = name:match('^(.+)%.tmp%.(%d+)$')
     return base == events_name and pid or nil
   end)
+  if loc.tmp then
+    sweep(loc.tmp, function(name)
+      return name:match('^.+%.tmp%.(%d+)$') or name:match('^events%.adopt%-(%d+)$')
+        or name:match('^events%.replaced%-(%d+)$')
+    end, true)
+  end
 end
 
 local function is_sha(s) return type(s) == 'string' and #s == 64 and s:match('^%x+$') ~= nil end
@@ -96,10 +106,10 @@ local function is_sha(s) return type(s) == 'string' and #s == 64 and s:match('^%
 -- segment.content_hash)
 -- Returns: true, or false if it is missing (or unreadable, or in the old
 -- list format, or not of the segment's current bytes) and must be rebuilt
-local function read_refs(dir, n, refs, hashes)
-  local h = segment.content_hash(dir, n, hashes)
+local function read_refs(events, refs_dir, n, refs, hashes)
+  local h = segment.content_hash(events, n, hashes)
   if not h then return false end
-  local raw = location.read_bytes(segment.refs_path(dir, n))
+  local raw = location.read_bytes(segment.refs_path(refs_dir, n))
   if not raw then return false end
   local ok, doc = pcall(vim.json.decode, raw)
   if not ok or type(doc) ~= 'table' or type(doc.sha) ~= 'string' or doc.sha:lower() ~= h.sha then return false end
@@ -126,7 +136,7 @@ function M.gc(loc, opts)
   if journal.readonly_error(loc) then return 0 end
   local dir_stat = uv.fs_stat(loc.snapshots)
   if not dir_stat or dir_stat.type ~= 'directory' then return 0 end
-  local stamp = loc.snapshots .. '/gc.stamp'
+  local stamp = loc.gc_stamp
   local function abort(msg)
     vim.notify('quickfix-review: not collecting snapshots: ' .. msg, vim.log.levels.DEBUG)
     return 0
@@ -147,7 +157,7 @@ function M.gc(loc, opts)
   local first = segment.list(loc.events)
   if #first == 0 then return 0 end
   for i = 1, #first - 1 do
-    if read_refs(loc.events, first[i], refs, hashes) then done[first[i]] = true end
+    if read_refs(loc.events, loc.refs, first[i], refs, hashes) then done[first[i]] = true end
   end
 
   -- Rebuild the missing or stale .refs of sealed segment `n` from its bytes
@@ -161,9 +171,10 @@ function M.gc(loc, opts)
     local encoded, hash = segment.encode_refs(data)
     if not encoded then return hash .. ' ' .. path end
     hashes[n] = hash
-    local ok, err = segment.durable_write(segment.refs_path(loc.events, n), encoded, bit.band(st.mode, 511))
+    location.mkdir_for(segment.refs_path(loc.refs, n))
+    local ok, err = segment.durable_write(segment.refs_path(loc.refs, n), encoded, bit.band(st.mode, 511))
     if not ok then
-      vim.notify('quickfix-review: could not write ' .. segment.refs_path(loc.events, n) .. ': ' .. tostring(err),
+      vim.notify('quickfix-review: could not write ' .. segment.refs_path(loc.refs, n) .. ': ' .. tostring(err),
         vim.log.levels.DEBUG)
     end
   end
@@ -203,7 +214,7 @@ function M.gc(loc, opts)
     if #segs == 0 then return abort('no events found in ' .. loc.events) end
     for i = 1, #segs - 1 do
       local n = segs[i]
-      if not done[n] and not read_refs(loc.events, n, refs, hashes) then
+      if not done[n] and not read_refs(loc.events, loc.refs, n, refs, hashes) then
         local err = rebuild(n)
         if err then return abort(err) end
       end
@@ -228,6 +239,7 @@ function M.gc(loc, opts)
     end
     -- Completed: the next run is a day away
     local now = os.time()
+    location.mkdir_for(stamp)
     if not uv.fs_utime(stamp, now, now) then
       local fh = io.open(stamp, 'wb')
       if fh then fh:close() end

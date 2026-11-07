@@ -16,9 +16,12 @@ local uv = vim.uv or vim.loop
 -- snapshots dir belongs to one journal, in every storage mode.
 --
 -- The live set is the union of:
--- - each sealed segment's `.refs` sidecar. A missing (or unreadable) one is
---   never taken as "no refs": it is rebuilt from its segment under the lock
---   first;
+-- - each sealed segment's `.refs` sidecar, {"sha": <sha256 of the
+--   segment>, "refs": [...]}. A missing (or unreadable) one is never taken
+--   as "no refs": it is rebuilt from its segment under the lock first. So
+--   is one whose sha is not the segment's current hash (the segment was
+--   replaced, say by a git checkout of an in-repo journal) or in the old
+--   bare-list format;
 -- - the active segment's: the newest valid checkpoint's `refs` plus the
 --   hashes in the tail after it, when that checkpoint is in the active
 --   segment; else the hashes of the whole active segment.
@@ -37,10 +40,13 @@ local uv = vim.uv or vim.loop
 -- deleted (put touches an existing one).
 --
 -- GC runs at most once per GC_EVERY per review: <snapshots>/gc.stamp's
--- mtime is when it last completed. The sealed segments' `.refs` are read
--- before taking the lock (only the active segment is ever written); under
--- the lock the segments are listed again, missing `.refs` rebuilt and the
--- active segment and checkpoints read.
+-- mtime is when it last completed. The sealed segments' `.refs` are read,
+-- and the segments hashed, before taking the lock (only the active segment
+-- is ever written); under the lock the segments are listed again, missing
+-- or stale `.refs` rebuilt and the active segment and checkpoints read. The
+-- hashes taken outside the lock are reused under it (segment.content_hash:
+-- only while a segment's size is unchanged), so no sealed segment is read
+-- under the lock unless its `.refs` must be rebuilt.
 local GC_GRACE = 24 * 3600
 local GC_EVERY = 24 * 3600
 local SHA_RUN = segment.SHA_RUN
@@ -85,13 +91,20 @@ end
 
 local function is_sha(s) return type(s) == 'string' and #s == 64 and s:match('^%x+$') ~= nil end
 
--- The hashes in the `.refs` of sealed segment `n` into `refs`
--- Returns: true, or false if it is missing or not a list of hashes
-local function read_refs(dir, n, refs)
+-- The hashes in the `.refs` of sealed segment `n` into `refs`, once its
+-- sha is checked against the segment's bytes (hashed into `hashes`, see
+-- segment.content_hash)
+-- Returns: true, or false if it is missing (or unreadable, or in the old
+-- list format, or not of the segment's current bytes) and must be rebuilt
+local function read_refs(dir, n, refs, hashes)
+  local h = segment.content_hash(dir, n, hashes)
+  if not h then return false end
   local raw = location.read_bytes(segment.refs_path(dir, n))
   if not raw then return false end
-  local ok, list = pcall(vim.json.decode, raw)
-  if not ok or not (vim.islist or vim.tbl_islist)(list) then return false end
+  local ok, doc = pcall(vim.json.decode, raw)
+  if not ok or type(doc) ~= 'table' or type(doc.sha) ~= 'string' or doc.sha:lower() ~= h.sha then return false end
+  local list = doc.refs
+  if type(list) ~= 'table' or not (vim.islist or vim.tbl_islist)(list) then return false end
   for _, sha in ipairs(list) do
     if is_sha(sha) then refs[sha:lower()] = true end
   end
@@ -129,24 +142,26 @@ function M.gc(loc, opts)
   local refs = {}
   -- The sealed segments whose .refs were read, outside the lock
   local done = {}
+  -- The sealed segments' { size, sha }, hashed once in this GC
+  local hashes = {}
   local first = segment.list(loc.events)
   if #first == 0 then return 0 end
   for i = 1, #first - 1 do
-    if read_refs(loc.events, first[i], refs) then done[first[i]] = true end
+    if read_refs(loc.events, first[i], refs, hashes) then done[first[i]] = true end
   end
 
-  -- Rebuild the missing .refs of sealed segment `n` from its bytes
+  -- Rebuild the missing or stale .refs of sealed segment `n` from its bytes
   -- Returns: an error message, or nil once its hashes are in refs
   local function rebuild(n)
     local path = segment.path(loc.events, n)
-    local data = location.read_bytes(path)
+    local data, st = segment.read_fd(path)
     if not data then return 'could not read ' .. path end
     if not log.readable_header(data) then return path .. ' has no header this version reads' end
-    local list = segment.refs_of(data)
-    for _, sha in ipairs(list) do refs[sha] = true end
-    local st = uv.fs_stat(path)
-    local ok, err = segment.durable_write(segment.refs_path(loc.events, n), vim.json.encode(list) .. '\n',
-      st and bit.band(st.mode, 511) or 420)
+    for _, sha in ipairs(segment.refs_of(data)) do refs[sha] = true end
+    local encoded, hash = segment.encode_refs(data)
+    if not encoded then return hash .. ' ' .. path end
+    hashes[n] = hash
+    local ok, err = segment.durable_write(segment.refs_path(loc.events, n), encoded, bit.band(st.mode, 511))
     if not ok then
       vim.notify('quickfix-review: could not write ' .. segment.refs_path(loc.events, n) .. ': ' .. tostring(err),
         vim.log.levels.DEBUG)
@@ -167,7 +182,7 @@ function M.gc(loc, opts)
       -- open a sealed segment, whose .refs already cover it
       for _, c in ipairs((checkpoint.list(loc.checkpoints))) do
         if c.seg ~= n then break end
-        cp = checkpoint.load(c.path, j)
+        cp = checkpoint.load(c.path, j, hashes)
         if cp then break end
       end
     end
@@ -188,7 +203,7 @@ function M.gc(loc, opts)
     if #segs == 0 then return abort('no events found in ' .. loc.events) end
     for i = 1, #segs - 1 do
       local n = segs[i]
-      if not done[n] and not read_refs(loc.events, n, refs) then
+      if not done[n] and not read_refs(loc.events, n, refs, hashes) then
         local err = rebuild(n)
         if err then return abort(err) end
       end

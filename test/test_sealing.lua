@@ -145,8 +145,9 @@ assert.run_test('sealing: N+1 holds only its header, N.refs exists, a checkpoint
   assert.equals(h2.op, 'header', 'a header')
   assert.equals(h2.journal_id, h1.journal_id, 'of the same journal')
   assert.equals(h2.seg, 2, 'numbered')
-  local refs = vim.json.decode(read_bytes(events .. '/000001.refs'))
-  assert.truthy(vim.tbl_contains(refs, sha), 'segment 1\'s refs name its snapshot: ' .. vim.inspect(refs))
+  local refs_doc = vim.json.decode(read_bytes(events .. '/000001.refs'))
+  assert.equals(refs_doc.sha, vim.fn.sha256(s1), 'segment 1\'s refs carry its hash')
+  assert.truthy(vim.tbl_contains(refs_doc.refs, sha), 'segment 1\'s refs name its snapshot: ' .. vim.inspect(refs_doc))
   local cp = checkpoints .. '/' .. string.format('%06d-%012d.json', 2, #s2)
   assert.truthy(uv.fs_stat(cp) ~= nil, 'a checkpoint at the end of segment 2\'s header: ' ..
     vim.inspect(test_helper.checkpoint_files()))
@@ -406,12 +407,179 @@ assert.run_test('snapshot GC rebuilds missing .refs from their segments and keep
   for i = 1, #list - 1 do
     local raw = read_bytes(require('quickfix-review.store.segment').refs_path(events, list[i].n))
     assert.truthy(raw, 'rebuilt: .refs of segment ' .. list[i].n)
-    local refs = vim.json.decode(raw)
-    assert.truthy(type(refs) == 'table', 'a list')
-    if list[i].n == 1 then assert.truthy(vim.tbl_contains(refs, named), 'segment 1\'s names the snapshot') end
+    local doc = vim.json.decode(raw)
+    assert.equals(doc.sha, vim.fn.sha256(read_bytes(list[i].path)), 'the segment\'s hash')
+    assert.truthy(type(doc.refs) == 'table', 'a list')
+    if list[i].n == 1 then assert.truthy(vim.tbl_contains(doc.refs, named), 'segment 1\'s names the snapshot') end
   end
   assert.falsy(uv.fs_stat(require('quickfix-review.store.segment').refs_path(events, list[#list].n)),
     'the active segment has no .refs')
+end)
+
+-- The comments shown after a full replay: every checkpoint deleted, then a
+-- restart
+local function full_replay()
+  vim.fn.delete(checkpoints, 'rf')
+  local store
+  qf, store = restart({}, true)
+  return store.all()
+end
+
+local function bodies(list)
+  local out = {}
+  for i, c in ipairs(list) do out[i] = c.body end
+  return table.concat(out, ',')
+end
+
+local function write_bytes(path, data)
+  local fh = io.open(path, 'wb')
+  assert.truthy(fh, 'opened ' .. path)
+  fh:write(data)
+  fh:close()
+end
+
+local function journal_ref()
+  local h = vim.json.decode(vim.split(read_bytes(test_helper.segment_path(1)), '\n', { plain = true })[1])
+  return { events = events, journal_id = h.journal_id }
+end
+
+assert.run_test('a checkpoint is ignored once its segment is replaced behind the same header', function()
+  reset()
+  local store = require('quickfix-review.store')
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'one' }), 'added one')
+  assert.truthy(store.add({ filename = abs, lnum = 2, kind = 'note', body = 'two' }), 'added two')
+  qf, store = restart() -- a checkpoint at the end of segment 1
+  local seg = test_helper.segment_path(1)
+  local before = read_bytes(seg)
+  local cp = test_helper.checkpoint_path()
+  assert.equals(vim.fn.fnamemodify(cp, ':t'), string.format('%06d-%012d.json', 1, #before), 'checkpoint at X')
+  -- Same header, same length up to X (so X is still a line start), other
+  -- bytes, and a line more after X
+  local swapped = before:gsub('"body":"one"', '"body":"uno"')
+  assert.truthy(swapped ~= before and #swapped == #before, 'a body swapped in place')
+  local replaced = swapped .. vim.json.encode({ op = 'test_unknown_op', eid = 'x' }) .. '\n'
+  os.remove(seg)
+  write_bytes(seg, replaced)
+  capture_notify(function() qf, store = restart({}, true) end)
+  local shown = bodies(store.all())
+  assert.truthy(shown:find('uno', 1, true), 'the new file\'s comment shows: ' .. shown)
+  assert.falsy(shown:find('one', 1, true), 'the old one does not: ' .. shown)
+  local _, why = require('quickfix-review.store.checkpoint').load(cp, journal_ref())
+  assert.equals(why, 'content changed', 'the checkpoint is rejected for its content')
+  assert.truthy(vim.deep_equal(store.all(), full_replay()), 'the same as a full replay')
+end)
+
+assert.run_test('a checkpoint is ignored once an earlier segment is replaced with as many bytes', function()
+  reset()
+  local store = require('quickfix-review.store')
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'one' }), 'added one')
+  qf, store = restart({ segment_max_bytes = 1 }, true)
+  assert.truthy(store.add({ filename = abs, lnum = 2, kind = 'note', body = 'two' }), 'added, sealing')
+  assert.length(segs(), 2, 'segment 1 sealed')
+  local s2 = read_bytes(test_helper.segment_path(2))
+  local cp = checkpoints .. '/' .. string.format('%06d-%012d.json', 2, #s2)
+  assert.truthy(uv.fs_stat(cp), 'a checkpoint in segment 2')
+  local j = journal_ref()
+  assert.truthy(require('quickfix-review.store.checkpoint').load(cp, j), 'valid before the change')
+  local seg = test_helper.segment_path(1)
+  local before = read_bytes(seg)
+  local swapped = before:gsub('"body":"one"', '"body":"uno"')
+  assert.truthy(swapped ~= before and #swapped == #before, 'the same size, other bytes')
+  os.remove(seg)
+  write_bytes(seg, swapped)
+  local got, why = require('quickfix-review.store.checkpoint').load(cp, j)
+  assert.falsy(got, 'rejected')
+  assert.equals(why, 'content changed', 'for its content')
+  qf, store = restart({}, true)
+  local shown = bodies(store.all())
+  assert.equals(shown, 'uno,two', 'the replaced segment\'s comments show')
+end)
+
+assert.run_test('a checkpoint without content hashes is ignored, then rewritten with them', function()
+  reset()
+  for l = 1, 3 do add_at(l) end
+  local store
+  qf, store = restart() -- writes a checkpoint
+  local cp = test_helper.checkpoint_path()
+  local doc = vim.json.decode(read_bytes(cp))
+  assert.truthy(type(doc.prefix_sha) == 'string', 'a checkpoint carries prefix_sha')
+  assert.truthy(type(doc.sealed) == 'table', 'and sealed')
+  doc.prefix_sha, doc.sealed = nil, nil
+  doc.state.comments[1].body = 'from an old checkpoint'
+  vim.fn.writefile({ vim.json.encode(doc) }, cp)
+  local _, why = require('quickfix-review.store.checkpoint').load(cp, journal_ref())
+  assert.equals(why, 'no content hash', 'rejected for its missing hash')
+  qf, store = restart({}, true)
+  assert.falsy(bodies(store.all()):find('from an old checkpoint', 1, true), 'the old checkpoint is not used')
+  local shown = store.all()
+  qf, store = restart() -- writes a checkpoint, deleting the old one
+  local files = test_helper.checkpoint_files()
+  assert.length(files, 1, 'rebuilt, the old one deleted: ' .. vim.inspect(files))
+  assert.truthy(type(vim.json.decode(read_bytes(files[1])).prefix_sha) == 'string', 'with its hash')
+  assert.truthy(vim.deep_equal(shown, full_replay()), 'the same as a full replay')
+  assert.truthy(store.save(), 'saved')
+  files = test_helper.checkpoint_files()
+  assert.length(files, 1, 'one checkpoint: ' .. vim.inspect(files))
+  assert.truthy(type(vim.json.decode(read_bytes(files[1])).prefix_sha) == 'string', 'with its hash')
+end)
+
+assert.run_test('snapshot GC rebuilds a .refs whose segment was replaced and keeps what the new bytes name', function()
+  reset()
+  local store = require('quickfix-review.store')
+  local snapshots = require('quickfix-review.snapshots')
+  local day_ago = os.time() - 25 * 3600
+  local snap_dir = storage_file .. '.snapshots'
+  local function path(sha) return snap_dir .. '/' .. sha end
+
+  local a = snapshots.put({ 'named in the old segment 1' })
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'n',
+    anchor = { sha = a, lnum = 1, end_lnum = 1 } }), 'added')
+  assert.equals(store.remove(store.all()[1].id), 1, 'deleted: only segment 1 names it')
+  qf, store = restart({ segment_max_bytes = 1 }, true)
+  add_at(2)
+  assert.truthy(#segs() >= 2, 'sealed')
+  local refs_path = require('quickfix-review.store.segment').refs_path(events, 1)
+  assert.truthy(vim.tbl_contains(vim.json.decode(read_bytes(refs_path)).refs, a), 'the .refs names A')
+  local b = snapshots.put({ 'named in the new segment 1' })
+  local seg = test_helper.segment_path(1)
+  local before = read_bytes(seg)
+  local replaced = before:gsub(a, b)
+  assert.truthy(replaced ~= before and #replaced == #before, 'A\'s hash replaced by B\'s')
+  os.remove(seg)
+  write_bytes(seg, replaced)
+  for _, sha in ipairs({ a, b }) do uv.fs_utime(path(sha), day_ago, day_ago) end
+
+  store.gc_snapshots({ force = true })
+  assert.truthy(uv.fs_stat(path(b)), 'B, named by the new bytes: kept')
+  assert.falsy(uv.fs_stat(path(a)), 'A, named by no segment now: deleted')
+  local doc = vim.json.decode(read_bytes(refs_path))
+  assert.equals(doc.sha, vim.fn.sha256(replaced), 'the .refs is of the new bytes')
+  assert.truthy(vim.tbl_contains(doc.refs, b), 'and names B')
+  assert.falsy(vim.tbl_contains(doc.refs, a), 'not A')
+end)
+
+assert.run_test('snapshot GC rebuilds a .refs in the old list format', function()
+  reset()
+  local store = require('quickfix-review.store')
+  local snapshots = require('quickfix-review.snapshots')
+  local day_ago = os.time() - 25 * 3600
+  local snap_dir = storage_file .. '.snapshots'
+  local named = snapshots.put({ 'named' })
+  assert.truthy(store.add({ filename = abs, lnum = 1, kind = 'note', body = 'n',
+    anchor = { sha = named, lnum = 1, end_lnum = 1 } }), 'added')
+  assert.equals(store.remove(store.all()[1].id), 1, 'deleted: only segment 1 names it')
+  qf, store = restart({ segment_max_bytes = 1 }, true)
+  add_at(2)
+  assert.truthy(#segs() >= 2, 'sealed')
+  local refs_path = require('quickfix-review.store.segment').refs_path(events, 1)
+  write_bytes(refs_path, vim.json.encode({ named }) .. '\n')
+  uv.fs_utime(snap_dir .. '/' .. named, day_ago, day_ago)
+  store.gc_snapshots({ force = true })
+  assert.truthy(uv.fs_stat(snap_dir .. '/' .. named), 'named by segment 1: kept')
+  local doc = vim.json.decode(read_bytes(refs_path))
+  assert.truthy(type(doc) == 'table' and not vim.islist(doc), 'now an object')
+  assert.equals(doc.sha, vim.fn.sha256(read_bytes(test_helper.segment_path(1))), 'with the segment\'s hash')
+  assert.truthy(vim.tbl_contains(doc.refs, named), 'and its refs')
 end)
 
 assert.run_test('a segment from a newer version is refused, not shown empty', function()

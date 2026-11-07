@@ -31,8 +31,11 @@ local reduced = reduce.new()
 --   or 'readonly', and for 'v3': path (the file read last: the active
 --   segment), seg (its number), ino, offset and lines (how far it was read),
 --   journal_id, imports (the source_sha256 of every import), since = { events, bytes } (the tail read
---   past the newest checkpoint this instance knows), readonly_key (the
---   comments.json version loaded, for 'readonly') }
+--   past the newest checkpoint this instance knows), sealed (the
+--   { size, sha } of each segment before the active one, by number, as
+--   its bytes were read into the state: what a checkpoint records, see
+--   store/checkpoint.lua), readonly_key (the comments.json version loaded,
+--   for 'readonly') }
 local synced
 
 -- Unreadable lines already warned about, by file path and header id, so
@@ -46,7 +49,8 @@ local function seen_lines(path, id)
 end
 
 local function fresh(loc, mode)
-  return { key = loc and loc.events, loc = loc, mode = mode, imports = {}, since = { events = 0, bytes = 0 } }
+  return { key = loc and loc.events, loc = loc, mode = mode, imports = {}, since = { events = 0, bytes = 0 },
+    sealed = {} }
 end
 synced = fresh(nil, nil)
 
@@ -138,6 +142,17 @@ function M.inspect(events)
   return { segs = segs, journal_id = journal_id }
 end
 
+-- The { size, sha } of the whole of segment file `path`, once read to
+-- `offset` (from inode `ino`) into the state, read through one fd: nil if
+-- it is now another file or shorter, as the hash would then not be of the
+-- bytes the state came from
+local function hash_read(path, ino, offset)
+  local data, st = segment.read_fd(path)
+  if not data or st.ino ~= ino or #data < offset then return nil end
+  local sha = segment.sha(data)
+  return sha and { size = #data, sha = sha } or nil
+end
+
 -- Replay the journal in `events` into a new state, from its newest valid
 -- checkpoint in `checkpoints` (unless that is nil). Only reads. When `ids`
 -- is a table, the ids the replayed events mention are collected in it (see
@@ -145,23 +160,26 @@ end
 -- records they carry, returned as .records; pass checkpoints = nil for
 -- every event.
 -- Returns: { state, imports, seg, path, ino, offset, lines, journal_id,
--- since = { events, bytes }, ids, records }, or nil and an error
+-- since = { events, bytes }, sealed, ids, records }, or nil and an error
 function M.replay(events, checkpoints, ids, records)
   local j, err = M.inspect(events)
   if not j then return nil, err end
   local state, imports = reduce.new(), {}
   local from_seg, from_offset, from_lines = 1, 0, 0
+  local out = { journal_id = j.journal_id, since = { events = 0, bytes = 0 }, sealed = {} }
   if checkpoints then
+    -- Each sealed segment hashed at most once in this replay
+    local hashes = {}
     for _, cp in ipairs((checkpoint.list(checkpoints))) do
-      local got = checkpoint.load(cp.path, { events = events, journal_id = j.journal_id })
+      local got = checkpoint.load(cp.path, { events = events, journal_id = j.journal_id }, hashes)
       if got then
         state, imports = got.state, got.imports
         from_seg, from_offset, from_lines = got.seg, got.offset, got.lines
+        for i, h in pairs(got.sealed) do out.sealed[i] = h end
         break
       end
     end
   end
-  local out = { journal_id = j.journal_id, since = { events = 0, bytes = 0 } }
   for _, n in ipairs(j.segs) do
     if n >= from_seg then
       local path = segment.path(events, n)
@@ -173,6 +191,8 @@ function M.replay(events, checkpoints, ids, records)
       out.since.events = out.since.events + #res.events
       out.since.bytes = out.since.bytes + res.offset - offset
       out.seg, out.path, out.ino, out.offset, out.lines = n, path, res.ino, res.offset, res.lines
+      -- Missing when it can't be hashed: no checkpoint is written then
+      if n < j.segs[#j.segs] then out.sealed[n] = hash_read(path, res.ino, res.offset) end
     end
   end
   out.state, out.imports, out.ids, out.records = state, imports, ids, records
@@ -186,7 +206,7 @@ function M.load(loc, opts)
   local r, err = M.replay(loc.events, not (opts and opts.full) and loc.checkpoints or nil)
   if not r then return false, err end
   synced = fresh(loc, 'v3')
-  for _, k in ipairs({ 'journal_id', 'seg', 'path', 'ino', 'offset', 'lines', 'imports', 'since' }) do
+  for _, k in ipairs({ 'journal_id', 'seg', 'path', 'ino', 'offset', 'lines', 'imports', 'since', 'sealed' }) do
     synced[k] = r[k]
   end
   reduced = r.state
@@ -241,6 +261,8 @@ function M.read_tail(loc)
     synced.offset, synced.lines = res.offset, res.lines
   end
   while has_next do
+    -- The segment read to its end is sealed: its hash, for checkpoints
+    synced.sealed[synced.seg] = hash_read(synced.path, synced.ino, synced.offset)
     local h = log.read_header(next_path)
     -- Created complete (see segment.create): no header is another journal's
     if not h or h.journal_id ~= synced.journal_id then return true, nil, changed, true end
@@ -293,22 +315,37 @@ local function option(name)
   return config.defaults[name]
 end
 
--- The newest `refs` of a checkpoint at the current position: the hashes the
--- active segment names up to it, or nil (left out) if it can't be read
-local function current_refs()
-  local data = location.read_bytes(synced.path)
-  if not data then return nil end
-  return segment.refs_of(data, synced.offset)
+-- The active segment as read into the state, for a checkpoint at the
+-- current position: the sha256 of its bytes up to it and the hashes those
+-- name, read through one fd that must still be the file read (its inode,
+-- and no shorter), so the hash is of the bytes the state came from
+-- Returns: prefix_sha, refs; or nil and an error
+local function current_prefix()
+  local data, st = segment.read_fd(synced.path, synced.offset)
+  if not data then return nil, st end
+  if st.ino ~= synced.ino or #data ~= synced.offset then return nil, synced.path .. ' was replaced' end
+  local sha = segment.sha(data)
+  if not sha then return nil, 'could not hash ' .. synced.path end
+  return sha, segment.refs_of(data)
 end
 
 -- Write a checkpoint at the current position, the state encoded before the
--- lock is taken (unless the caller holds it). The tail counts restart.
+-- lock is taken (unless the caller holds it). The tail counts restart. Not
+-- written (an error) when the hashes of the bytes the state came from are
+-- not all known: load would reject it.
 -- Returns: ok, err
 function M.write_checkpoint(loc)
   if synced.mode ~= 'v3' or synced.key ~= loc.events then return true, nil end
   local seg, offset = synced.seg, synced.offset
+  local prefix_sha, refs = current_prefix()
+  if not prefix_sha then return false, 'no checkpoint written: ' .. tostring(refs) end
+  local sealed = {}
+  for i = 1, seg - 1 do
+    sealed[i] = synced.sealed[i]
+    if not sealed[i] then return false, 'no checkpoint written: segment ' .. i .. ' was not hashed' end
+  end
   local encoded, err = checkpoint.encode(synced.journal_id, seg, offset, synced.lines, reduced, synced.imports,
-    current_refs())
+    refs, prefix_sha, sealed)
   if not encoded then return false, err end
   local j = { events = loc.events, journal_id = synced.journal_id }
   local mode = file_mode()
@@ -341,8 +378,11 @@ function M.seal_if_due(loc)
     vim.notify('quickfix-review: could not seal ' .. synced.path .. ': ' .. tostring(e), vim.log.levels.WARN)
     return false
   end
-  local ok, err = segment.write_refs(loc.events, n, mode)
+  local ok, err, hash = segment.write_refs(loc.events, n, mode)
   if not ok then return warn(err) end
+  -- Read to its end under the lock: these are the bytes the state holds
+  -- (read_tail hashes it again as it moves on)
+  synced.sealed[n] = hash
   local created, cerr = segment.create(loc.events, n + 1, { log.segment_header(synced.journal_id, n + 1) }, mode)
   if not created then return warn(cerr) end
   local rok, rerr, _, stale = M.read_tail(loc)

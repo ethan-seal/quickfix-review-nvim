@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-d5nn
 title: Check that checkpoints and .refs sidecars match the segment bytes they were built from
-status: todo
+status: completed
 type: feature
+priority: normal
 created_at: 2026-11-07T21:31:54Z
-updated_at: 2026-11-07T21:31:54Z
+updated_at: 2026-11-07T22:44:00Z
 blocking:
     - quickfix-review-nvim-8w27
 ---

@@ -73,8 +73,9 @@ position.
 - **Sealing** happens when the active segment passes `segment_max_bytes`
   (default 4 MiB). This replaces `log_max_bytes`, and the size is fixed: it
   no longer grows with the checkpoint size. Under the lock, in order:
-  1. Write `N.refs`: a JSON array of the hashes referenced by segment N,
-     written with an atomic rename.
+  1. Write `N.refs`: `{"sha": <sha256 of segment N>, "refs": [...]}`, the
+     hashes referenced by segment N and the hash of the bytes they were
+     read from, written with an atomic rename.
   2. Create `N+1.jsonl` with O_EXCL, containing only its header, then fsync
      it and the directory.
   3. Write a checkpoint at (N+1, end of header).
@@ -96,9 +97,13 @@ position.
 ## Checkpoints
 
 - **Content.**
-  `{"v":3,"state_v":S,"journal_id":…,"seg":N,"offset":O,"state":{comments,trash,removed,rebases},"imports":[…],"refs":[…]}`.
-  `refs` is the set of snapshot hashes referenced by the active segment up to
-  O, so snapshot GC does not need to read the active segment.
+  `{"v":3,"state_v":S,"journal_id":…,"seg":N,"offset":O,"lines":L,"state":{comments,trash,removed,rebases},"imports":[…],"refs":[…],"prefix_sha":…,"sealed":[{"size":…,"sha":…},…]}`.
+  `lines` is how many lines of segment N precede O (for warnings' line
+  numbers). `refs` is the set of snapshot hashes referenced by the active
+  segment up to O, so snapshot GC does not need to read the active segment.
+  `prefix_sha` is the sha256 of segment N's bytes [0, O), and `sealed` has
+  one `{size, sha}` per segment 1 .. N-1, each over its whole file: the
+  bytes the state was built from.
 - **Bounded trash.** `trash` and `removed` keep only the newest
   `reduce.TRASH_KEEP` (1000) removals, plus every removal of the newest
   removing event, so undo of the last delete or clear stays whole. The
@@ -116,7 +121,11 @@ position.
   - after an append that leaves the tail at least `checkpoint_every` events
     (default 500) or 256 KiB past the newest checkpoint;
   - on VimLeavePre when the tail is non-empty.
-- **Write procedure.** Encode the state outside the lock. Under the lock,
+- **Write procedure.** Encode the state outside the lock. `prefix_sha` is
+  hashed from the active segment read through one fd whose inode must still
+  be the one the state was read from; each `sealed` entry was hashed when
+  that segment's bytes were read into the state. If any hash is unknown, no
+  checkpoint is written. Under the lock,
   write `checkpoints/<name>.tmp.<pid>`, fsync it, rename it into place,
   fsync the directory, then run checkpoint GC. Two instances writing the same
   position produce identical files, and the rename makes that harmless.
@@ -126,6 +135,14 @@ position.
   3. `journal_id` matches the segment headers.
   4. Segment `seg` exists, and `offset` is not past its end and falls on a
      line start.
+  5. The content matches: `prefix_sha` is the hash of segment `seg`'s bytes
+     [0, `offset`), and each `sealed` entry the size (checked first) and
+     hash of its segment now. A segment can be replaced with other bytes
+     behind the same header (a git checkout or merge of an in-repo
+     journal), so this is checked on every load, whatever the inode or
+     size. A checkpoint without the hashes (one from before them) is
+     invalid too: it costs one full replay, then is rebuilt. No
+     `STATE_VERSION` bump and no migration.
 - **Load.** Take the newest valid checkpoint and replay from `(seg, offset)`
   to the end. If none is valid, replay from segment 1. That path is slow but
   always correct.
@@ -220,6 +237,8 @@ snapshots that were written but whose event never landed (a crash between
 
 - **Live set.** The union of every sealed segment's `.refs` and the newest
   checkpoint's `refs`, plus the hashes in the tail after that checkpoint. A
+  `.refs` whose `sha` is not the segment's current hash (the segment was
+  replaced), or in the old bare-list format, is treated as missing. A
   sealed segment with no `.refs` (crash) is rebuilt
   under the lock from a 64-hex scan of its bytes (`segment.refs_of`, the same
   scan as at seal time), and the `.refs` file is written then. A checkpoint

@@ -7,10 +7,19 @@
 --
 -- { v = 3, state_v = reduce.STATE_VERSION, journal_id, seg, offset, lines,
 --   state = { comments, trash, removed }, imports = { sha... },
---   refs = { sha... } }
+--   refs = { sha... }, prefix_sha, sealed = { { size, sha }... } }
 -- `lines` is how many lines of segment `seg` precede `offset` (for the
 -- line numbers of warnings); `refs` the snapshot hashes the segment names
 -- up to `offset`. No index is ever written (reduce.persisted).
+--
+-- The content hashes tie a checkpoint to the bytes it was built from:
+-- `prefix_sha` is the sha256 of segment `seg`'s bytes [0, offset), and
+-- `sealed` has one { size, sha } per segment 1 .. seg-1, over its whole
+-- file. A segment can be replaced with other bytes behind the same header
+-- (a git checkout or merge of an in-repo journal), so load hashes them
+-- again every time, whatever the inode or size: a checkpoint without them
+-- is rejected ('no content hash'), and one whose bytes differ ('content
+-- changed'). Either costs a replay from an older checkpoint, never data.
 local M = {}
 
 local log = require('quickfix-review.log')
@@ -54,12 +63,16 @@ end
 
 -- The checkpoint at `path`, decoded and checked against the journal `j`
 -- ({ events = dir, journal_id }): the rules of docs/journal.md#checkpoints
--- (v, state_v, journal_id, a position on a line start within its segment),
--- and a state the reducer accepts.
+-- (v, state_v, journal_id, a position on a line start within its segment,
+-- the content hashes of the bytes before it), and a state the reducer
+-- accepts. `hashes` (optional) is a cache of sealed segments' { size, sha }
+-- taken earlier in the same operation (segment.content_hash), filled as
+-- segments are hashed.
 -- Returns: { state (reindexed), imports (set), seg, offset, lines, refs
--- (list of hashes, or nil when it has none) }, or nil
--- and why it is invalid
-function M.load(path, j)
+-- (list of hashes, or nil when it has none), sealed (the verified
+-- { size, sha } of segments 1 .. seg-1, by number) }, or nil and why it is
+-- invalid
+function M.load(path, j, hashes)
   local fh = io.open(path, 'rb')
   if not fh then return nil, 'unreadable' end
   local raw = fh:read('*a')
@@ -73,6 +86,28 @@ function M.load(path, j)
   local st = uv.fs_stat(segment.path(j.events, doc.seg))
   if not st or doc.offset > st.size then return nil, 'past the end of the journal' end
   if not log.at_line_start(segment.path(j.events, doc.seg), doc.offset) then return nil, 'mid-line' end
+  -- The content hashes: the prefix first, then each sealed segment's size
+  -- (cheap), then its hash
+  if type(doc.prefix_sha) ~= 'string' or not is_list(doc.sealed) or #doc.sealed ~= doc.seg - 1 then
+    return nil, 'no content hash'
+  end
+  for _, e in ipairs(doc.sealed) do
+    if type(e) ~= 'table' or type(e.size) ~= 'number' or type(e.sha) ~= 'string' then return nil, 'no content hash' end
+  end
+  local prefix = segment.read_fd(segment.path(j.events, doc.seg), doc.offset)
+  if not prefix or #prefix ~= doc.offset then return nil, 'unreadable segment' end
+  if segment.sha(prefix) ~= doc.prefix_sha then return nil, 'content changed' end
+  for i, e in ipairs(doc.sealed) do
+    local st = uv.fs_stat(segment.path(j.events, i))
+    if not st or st.size ~= e.size then return nil, 'content changed' end
+  end
+  hashes = hashes or {}
+  local sealed = {}
+  for i, e in ipairs(doc.sealed) do
+    local h = segment.content_hash(j.events, i, hashes)
+    if not h or h.size ~= e.size or h.sha ~= e.sha then return nil, 'content changed' end
+    sealed[i] = { size = e.size, sha = e.sha }
+  end
   -- The reducer's own checks of a state: the records are copied, and the
   -- index rebuilt
   local state = reduce.new()
@@ -91,16 +126,31 @@ function M.load(path, j)
   end
   return {
     state = state, imports = imports, seg = doc.seg, offset = doc.offset,
-    lines = type(doc.lines) == 'number' and doc.lines or 0, refs = refs,
+    lines = type(doc.lines) == 'number' and doc.lines or 0, refs = refs, sealed = sealed,
   }
 end
 
--- Encode a checkpoint of `state` at (seg, offset) of journal `journal_id`
+-- Encode a checkpoint of `state` at (seg, offset) of journal `journal_id`,
+-- built from the bytes whose hashes are `prefix_sha` (segment seg's
+-- [0, offset)) and `sealed` ({ size, sha } of segments 1 .. seg-1): both
+-- required, as a checkpoint without them is never loaded
 -- Returns: the JSON, or nil and an error
-function M.encode(journal_id, seg, offset, lines, state, imports, refs)
+function M.encode(journal_id, seg, offset, lines, state, imports, refs, prefix_sha, sealed)
+  if type(prefix_sha) ~= 'string' or type(sealed) ~= 'table' or #sealed ~= seg - 1 then
+    return nil, 'no content hash for the checkpoint'
+  end
+  local list = {}
+  for i = 1, seg - 1 do
+    local e = sealed[i]
+    if type(e) ~= 'table' or type(e.size) ~= 'number' or type(e.sha) ~= 'string' then
+      return nil, 'no content hash of segment ' .. i .. ' for the checkpoint'
+    end
+    list[i] = { size = e.size, sha = e.sha }
+  end
   local ok, encoded = pcall(vim.json.encode, {
     v = 3, state_v = reduce.STATE_VERSION, journal_id = journal_id, seg = seg, offset = offset,
     lines = lines, state = reduce.persisted(state), imports = vim.tbl_keys(imports), refs = refs,
+    prefix_sha = prefix_sha, sealed = list,
   })
   if not ok then return nil, 'could not encode the checkpoint' end
   return encoded
@@ -119,8 +169,10 @@ function M.gc(dir, j, keep)
     if os.remove(p) then count = count + 1 end
   end
   local kept = 0
+  -- Each sealed segment hashed at most once in this GC
+  local hashes = {}
   for _, cp in ipairs(list) do
-    if kept < keep and M.load(cp.path, j) then
+    if kept < keep and M.load(cp.path, j, hashes) then
       kept = kept + 1
     elseif os.remove(cp.path) then
       count = count + 1

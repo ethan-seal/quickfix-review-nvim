@@ -138,15 +138,76 @@ function M.refs_of(data, upto)
   return out
 end
 
--- Write the `.refs` sidecar of segment `n` in `dir` (the hashes it names,
--- see refs_of), durably. Derived: a missing or stale one is rebuilt.
--- Returns: ok, err
+-- The sha256 of `data` (hex), or nil if it can't be hashed
+function M.sha(data)
+  local ok, sha = pcall(vim.fn.sha256, data)
+  if not ok or type(sha) ~= 'string' or #sha ~= 64 then return nil end
+  return sha
+end
+
+-- The bytes of `path` and the stat of the file they came from, read
+-- through one fd (so the two describe the same file), up to `upto` bytes
+-- (default all)
+-- Returns: data, stat, or nil and an error
+function M.read_fd(path, upto)
+  local fd, err = uv.fs_open(path, 'r', 0)
+  if not fd then return nil, 'Could not read ' .. path .. ': ' .. tostring(err) end
+  local st = uv.fs_fstat(fd)
+  if not st then
+    uv.fs_close(fd)
+    return nil, 'Could not stat ' .. path
+  end
+  local len = upto and math.min(upto, st.size) or st.size
+  local data, rerr = '', nil
+  if len > 0 then data, rerr = uv.fs_read(fd, len, 0) end
+  uv.fs_close(fd)
+  if not data then return nil, 'Could not read ' .. path .. ': ' .. tostring(rerr) end
+  return data, st
+end
+
+-- The content hash of sealed segment `n` in `dir`: { size, sha } over its
+-- whole file. `hashes` ({ [n] = { size, sha } }, optional) is a cache of
+-- hashes taken earlier in the same operation: an entry is used, without
+-- reading the segment, only when its size is the file's size now (fs_stat);
+-- else the segment is read, hashed and the entry replaced. Never keep a
+-- cache across operations: it would stand in for reading the bytes.
+-- Returns: { size, sha }, or nil and an error
+function M.content_hash(dir, n, hashes)
+  local path = M.path(dir, n)
+  local st = uv.fs_stat(path)
+  if not st then return nil, path .. ' is missing' end
+  local cached = hashes and hashes[n]
+  if cached and cached.size == st.size then return cached end
+  local data, err = M.read_fd(path)
+  if not data then return nil, err end
+  local sha = M.sha(data)
+  if not sha then return nil, 'Could not hash ' .. path end
+  local h = { size = #data, sha = sha }
+  if hashes then hashes[n] = h end
+  return h
+end
+
+-- The `.refs` sidecar of a sealed segment whose bytes are `data`:
+-- {"sha": <sha256 of data>, "refs": [<hashes it names>...]} and a newline
+-- Returns: the JSON, and { size, sha } of data; or nil and an error
+function M.encode_refs(data)
+  local sha = M.sha(data)
+  if not sha then return nil, 'could not hash the segment' end
+  return vim.json.encode({ sha = sha, refs = M.refs_of(data) }) .. '\n', { size = #data, sha = sha }
+end
+
+-- Write the `.refs` sidecar of segment `n` in `dir` (see encode_refs),
+-- durably. Derived: a missing one, or one whose sha is not the segment's,
+-- is rebuilt (store/maintenance.lua).
+-- Returns: ok, err, and { size, sha } of the segment as hashed
 function M.write_refs(dir, n, mode)
-  local fh = io.open(M.path(dir, n), 'rb')
-  if not fh then return false, 'Could not read ' .. M.path(dir, n) end
-  local data = fh:read('*a')
-  fh:close()
-  return M.durable_write(M.refs_path(dir, n), vim.json.encode(M.refs_of(data)) .. '\n', mode)
+  local data, rerr = M.read_fd(M.path(dir, n))
+  if not data then return false, rerr end
+  local encoded, hash = M.encode_refs(data)
+  if not encoded then return false, hash end
+  local ok, err = M.durable_write(M.refs_path(dir, n), encoded, mode)
+  if not ok then return false, err end
+  return true, nil, hash
 end
 
 return M

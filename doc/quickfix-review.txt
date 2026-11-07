@@ -407,7 +407,9 @@ Basic workflow:
 1. Open the file(s) you want to review
 2. Navigate to a line and press `<leader>ci` to add an ISSUE comment
    (or use other comment type keymaps)
-3. Enter your comment text when prompted
+3. Enter your comment text when prompted. Cancelling the prompt (`<Esc>`)
+   keeps what you typed: it is put in register `"`, and the next comment on
+   the same line starts with it.
 4. Repeat for all comments
 5. Press `<leader>co` to open the quickfix list and see all comments
 6. Press `<leader>ce` to export the review to markdown

@@ -1,10 +1,11 @@
 ---
 # quickfix-review-nvim-1w4f
 title: Warn on a cancelled add prompt and keep its text as a per-line draft
-status: todo
+status: completed
 type: bug
+priority: normal
 created_at: 2026-11-01T18:04:43Z
-updated_at: 2026-11-01T18:04:43Z
+updated_at: 2026-11-07T21:17:02Z
 ---
 
 **Symptom**: Typing a comment and pressing `<Esc>` (or `<C-c>`) at the add prompt discards it with no message. The text isn't in a register or the input history, so it can't be recovered.

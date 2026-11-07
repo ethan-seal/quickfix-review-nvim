@@ -91,6 +91,34 @@ local function keep_typed(text)
   vim.fn.histadd('input', text)
 end
 
+-- Text typed at an add prompt that was cancelled, or whose add was refused,
+-- by file and line range: offered again by the next add prompt there. Not
+-- logged, so it is gone after a restart.
+local drafts = {}
+
+local function draft_key(file, start_line, end_line)
+  return utils.path_key(file) .. ':' .. start_line .. '-' .. end_line
+end
+
+-- vim.fn.input, but also says whether it was cancelled (<Esc>, <C-c>) and
+-- what was typed when it was: input() returns '' for a cancel, as it does
+-- for an empty <CR>
+-- Returns: text, cancelled (boolean)
+local function prompt_text(prompt, default)
+  local left = { abort = false, text = '' }
+  local id = vim.api.nvim_create_autocmd('CmdlineLeave', {
+    pattern = '@',
+    once = true,
+    callback = function()
+      left = { abort = vim.v.event.abort, text = vim.fn.getcmdline() }
+    end,
+  })
+  local ok, text = pcall(vim.fn.input, { prompt = prompt, default = default or '' })
+  pcall(vim.api.nvim_del_autocmd, id)
+  if not ok or left.abort then return left.text, true end
+  return text, false
+end
+
 -- Add comment to quickfix and place sign
 -- Optional range parameter: { start_line, end_line } for multiline comments
 function M.add_comment(comment_type, range)
@@ -134,7 +162,17 @@ function M.add_comment(comment_type, range)
   if start_line ~= end_line then
     prompt = prompt .. ' (L' .. start_line .. '-' .. end_line .. ')'
   end
-  local text = vim.fn.input(prompt .. ': ')
+  local key = draft_key(file, start_line, end_line)
+  local text, cancelled = prompt_text(prompt .. ': ', drafts[key])
+  if cancelled then
+    if text ~= '' then
+      drafts[key] = text
+      keep_typed(text)
+      vim.notify('quickfix-review: ' .. comment_type:upper() .. ' comment not added (cancelled); '
+        .. 'the text is kept for the next comment on this line, and in register "', vim.log.levels.WARN)
+    end
+    return
+  end
 
   if text ~= '' then
     local bufnr = vim.api.nvim_get_current_buf()
@@ -160,12 +198,14 @@ function M.add_comment(comment_type, range)
       })
     end)
     if not added then
+      drafts[key] = text
       keep_typed(text)
       vim.notify('quickfix-review: ' .. comment_type:upper() .. ' comment was not added ('
         .. (err or UNCHANGED) .. '); the text is in register "', vim.log.levels.WARN)
       return
     end
     stored = true
+    drafts[key] = nil
 
     local display_file = vim.fn.fnamemodify(file, ':.')
     if start_line ~= end_line then

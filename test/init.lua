@@ -50,6 +50,9 @@ end
 -- Test helper functions
 local M = {}
 
+-- The real vim.fn.input, for a test that drives the prompt with feedkeys
+M.real_input = original_input
+
 -- The repo root (cwd is the throwaway work dir)
 M.root = vim.env.QFR_TEST_ROOT
 

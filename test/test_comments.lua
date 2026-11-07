@@ -1522,6 +1522,69 @@ assert.run_test('respond: a multi-line response round-trips', function()
   assert.equals(store.get(id).response, text, 'response survives a full replay')
 end)
 
+-- Run fn with the real input() prompt, which reads `keys` (fed beforehand)
+local function with_real_prompt(keys, fn)
+  local mock = vim.fn.input
+  vim.fn.input = test_helper.real_input
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), 't', false)
+  local ok, err = pcall(fn)
+  vim.fn.input = mock
+  if not ok then error(err, 0) end
+end
+
+-- add_comment('ISSUE') on `line`, its prompt reading `keys`; returns the notifies
+local function prompt_add(keys, line)
+  local calls
+  with_real_prompt(keys, function()
+    vim.fn.cursor(line, 1)
+    calls = capture_notify(function() qf.add_comment('ISSUE') end)
+  end)
+  return calls
+end
+
+assert.run_test('a cancelled add prompt warns and keeps its text as a draft for that line', function()
+  qf.clear_review()
+  vim.fn.setreg('"', '')
+  local calls = prompt_add('hello<Esc>', 4)
+  assert.length(qf.comments(), 0, 'no comment added')
+  assert.equals(vim.fn.getreg('"'), 'hello', 'text in register "')
+  assert.equals(#calls, 1, 'one notify')
+  assert.equals(calls[1].level, vim.log.levels.WARN, 'a warning')
+  assert.truthy(calls[1].msg:find('cancelled', 1, true), 'says cancelled: ' .. calls[1].msg)
+
+  -- The next prompt on the line starts with the draft: <CR> adds it
+  calls = prompt_add('<CR>', 4)
+  assert.equals(#calls, 0, 'no notify')
+  local list = qf.comments()
+  assert.length(list, 1, 'draft added')
+  assert.equals(list[1].body, 'hello', 'draft text')
+
+  -- The add cleared the draft: the next prompt opens empty
+  prompt_add('<CR>', 4)
+  assert.length(qf.comments(), 1, 'nothing more added')
+  qf.clear_review()
+end)
+
+assert.run_test('a cancelled add prompt draft is kept per line', function()
+  qf.clear_review()
+  prompt_add('hello<Esc>', 1)
+  prompt_add('<CR>', 2)
+  assert.length(qf.comments(), 0, 'line 2 prompt opens empty')
+  -- Use up the draft on line 1, so it does not leak into later tests
+  prompt_add('<CR>', 1)
+  assert.length(qf.comments(), 1, 'line 1 draft added')
+  qf.clear_review()
+end)
+
+assert.run_test('an empty add prompt stays silent, cancelled or not', function()
+  qf.clear_review()
+  local calls = prompt_add('<Esc>', 6)
+  assert.equals(#calls, 0, 'no notify on an empty cancel')
+  calls = prompt_add('<CR>', 6)
+  assert.equals(#calls, 0, 'no notify on an empty <CR>')
+  assert.length(qf.comments(), 0, 'nothing added')
+end)
+
 test_helper.cleanup_test_environment()
 
 return assert

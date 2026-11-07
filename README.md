@@ -55,7 +55,7 @@ use {
 
 1. Open a file to review
 2. Press `<leader>ci` to add an ISSUE comment (or `cs`/`cn`/`cp`/`cq`/`ck` for other types)
-3. Enter your comment text
+3. Enter your comment text. Cancelling the prompt (`<Esc>`) keeps what you typed: it is put in register `"`, and the next comment on the same line starts with it.
 4. Press `<leader>cm` to edit the comment under the cursor (text and type)
 5. Use `]r` and `[r` to navigate between comments
 6. Press `<leader>ce` to export the review to markdown
